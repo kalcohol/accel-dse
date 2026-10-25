@@ -1,8 +1,7 @@
 """0.392: Granite Speech conformer + Q-Former on the granite LM.
 
 Shaw block attention and the BLIP-2 query bridge are billed from the public class.
-The CTC-only 470m encoder has no autoregressive backbone and stays out of the catalog.
-Reviewed 0.388-0.391 bills are unchanged.
+The CTC-only 470m encoder is catalogued in 0.393. Reviewed 0.388-0.391 bills are unchanged.
 """
 from __future__ import annotations
 
@@ -32,8 +31,8 @@ _BYTES = {
 
 def test_granite_speech_catalog_matches_headers():
     ids = [e["id"] for e in list_models() if e["family"] == "Granite-Speech"]
-    assert ids == ["granite-speech-5.0-2b", "granite-speech-4.1-2b-plus"]
-    assert "granite-speech-5.0-470m-turboctc" not in {e["id"] for e in list_models()}
+    assert ids[:2] == ["granite-speech-5.0-2b", "granite-speech-4.1-2b-plus"]
+    assert "granite-speech-5.0-470m-turboctc" in ids
     for mid, llm in _LLM.items():
         m = get_model(mid)
         rel = load_release(m.hf_id)

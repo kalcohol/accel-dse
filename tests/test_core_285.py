@@ -46,6 +46,14 @@ def test_tower_formats_and_bytes():
         m = get_model(e["id"])
         if getattr(m, "vision", None) is None or e["id"] == M:
             continue
+        if e["id"] == "granite-speech-5.0-470m-turboctc":
+            # BatchNorm affine is fp32; every GEMM weight is bf16. Storage uses the mixed byte count.
+            assert m.vision.wfmt == () and m.vision.audio.w_fmt == "bf16"
+            rel = json.loads((ROOT / "accel_dse/data/releases/ibm-granite__granite-speech-5.0-470m-turboctc.json").read_text())
+            vb = sum(x["bytes"] for x in rel["roles"]["vision"].values())
+            assert abs(m.vision.params * m.vision.w_Bpp - vb) < 1
+            assert rel["roles"]["vision"]["fp32"]["params"] > 0
+            continue
         if m.vision.family == "qwen" and m.vision.w_Bpp == 4.0:
             fm = {k: (f, b, a) for k, f, b, a in m.vision.wfmt}
             assert fm == {k: ("fp32", 32.0, "bf16") for k in ("attn", "merger", "mlp", "patch")}, e["id"]

@@ -1882,7 +1882,10 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             if m.is_pair else
                             "(video / protein models: ep = etp = 1)" if not m.kv_cache else
                             "(MoE needs ep·etp = tp·dp; dense needs dp=ep=etp=1; sp only for video / protein models)"))
-    if lay.pp > m.n_layers:
+    if m.ctc_only:
+        if lay.pp > 1:
+            raise ValueError("pp exceeds layer count")
+    elif lay.pp > m.n_layers:
         raise ValueError("pp exceeds layer count")
     if lay.cp > 1:
         _cp_check(m, sv)
@@ -1910,6 +1913,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if not m.kv_cache:
         if scn.pd.enabled:              # 0.90: was silently ignored
             warnings.append("PD 分离（pd.enabled）对视频 / 蛋白模型无效：没有 KV 缓存，也没有 decode 阶段——按单一部署评估，PD 设置被忽略")
+        if m.ctc_only:
+            return _evaluate_ctc(scn, m, sys, warnings)
         return _evaluate_full(scn, m, sys, warnings)
     if scn.workload.step_skip:
         warnings.append("workload.step_skip 已忽略：只用于视频 / 图像生成（去噪步）")
@@ -2477,6 +2482,49 @@ def _cfg_chain(seqs: int, mb: int, per_req: int) -> int:
     return max(sizes.values())
 
 
+def _evaluate_ctc(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]) -> Result:
+    """One Granite Speech 5 CTC forward. The output is CTC frames, not LM tokens."""
+    sv, lay = scn.serving, scn.layout
+    if lay.tp != 1 or lay.sp != 1:
+        raise ValueError("CTC 编码器按整段前向计，tp / sp 只支持 1")
+    au = m.vision.audio
+    clips = _cdiv(sv.batch, lay.dp) if sv.audio_s > 0 else 0
+    if sv.phase == "decode":
+        warnings.append("CTC 模型没有自回归 decode：按一次编码器前向计")
+    if sv.audio_s <= 0:
+        warnings.append("serving.audio_s 为 0：CTC 编码器没有输入帧")
+    ops = audio_ops(au, sv.audio_s, clips, m.act_fmt) if clips else []
+    if ops:
+        c = _component_time([(ops, 1)], sys, scn.mapping, m.act_fmt)
+    else:
+        stt = StageTime(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        c = {"s": 0.0, "tflop": 0.0, "dram_GB": 0.0, "bound": stt.bound, "time": stt}
+    w = m.vision.params * m.vision.w_Bpp
+    fits = w <= sys.dram_bytes
+    if not fits:
+        warnings.append("CTC 编码器权重放不进该卡的 DRAM")
+    mp = MemPlan(stored_w=w, kv_total=0.0, state_total=0.0, dram_need=w, dram_cap=sys.dram_bytes,
+                 fits=fits, sram=0.0, staging=0.0, pinned_hot=0.0, pinned_expert=0.0, kv_sram=0.0,
+                 residency=1.0 if w else 0.0)
+    stage = StageResult(0, (0, 0), c["time"], mp, {"total": c["dram_GB"] * 1e9, "weights": w}, 0.0,
+                        flops_u=c["tflop"] * 1e12)
+    step = c["s"]
+    frames = au.tokens(sv.audio_s) if sv.audio_s > 0 else 0
+    thr = sv.batch * frames / step if step > 0 else 0.0
+    r = Result(scn, m, [stage], step, step, float(frames) if frames else 1.0, 0.0, step, thr,
+               thr / lay.cards, fits, c["bound"], 0, warnings, 1)
+    k_w = (sv.batch / clips) if clips else 0.0
+    r.vision = {"s": step, "tflop": c["tflop"] * k_w, "image_tokens": 0, "weights_GB": w / 1e9,
+                "audio": {"seconds": sv.audio_s, "tokens": frames, "params_M": au.params / 1e6,
+                          "s": step, "tflop": c["tflop"] * k_w, "clips_per_card": clips}}
+    if sv.audio_s > 0:
+        r.asr = _asr_info(m, sv, r.vision, step, 0.0, thr, lay.cards)
+        if sv.phase != "prefill":
+            r.asr["encoder_s"] = step
+            r.asr["first_token_s"] = step
+    return r
+
+
 def _evaluate_full(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]) -> Result:
     """Non-autoregressive request: video clip (steps × CFG forwards over every latent token) or protein batch
     (one encoder forward).  Same op-graph → mapping → memplan → schedule path as the LLM phases.
@@ -2949,7 +2997,8 @@ def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, a
                     0.0, d["flops"], d["t_ideal"], t_dram_kv=kv_b / (sys.dram_GBps * 1e9), t_kern=d["kern"], t_disp=disp)
     ch = sys.chip
     extra = {"sync_s": sync, "dispatch_s": disp} if sync else {}     # only when a knob is set (summaries unchanged)
-    return {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound, **extra,
+    return {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound,
+            "time": stt, **extra,
             # action counts (0.47.1, core/energy.py): bf16-equivalent MAC slots, vector element-ops, SRAM-port bytes
             "acts": {"mac": d["t_ideal"] * ch.macs * ch.freq_ghz * 1e9, "vec": d["t_vec"] * ch.lanes * ch.freq_ghz * 1e9,
                      "sram": d["sram"], "dram": dram, "link": 0.0, "d2d": 0.0, "net": 0.0,
