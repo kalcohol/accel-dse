@@ -6,6 +6,29 @@
 
 
 
+## [0.393.0] — 2026-10-25
+
+### Granite Speech 5 CTC 只计编码器
+
+- **新增 1 个发布**（2026-10-25 读取 config 与 safetensors header）。`param_check().rel_err == 0`。覆盖 full。`params_mtp == 0`。
+  - **granite-speech-5.0-470m-turboctc。** `GraniteSpeech5ForCTC`，`model_type=granite_speech5_ctc`。没有 granite 语言模型，也没有 Q-Former。编码器参数 472,928,256（`params_llm` 为 0，全部在 vision）。550 张量，`bytes_total` 946,249,856。`ctc_head` 与 `encoder.out` 绑在同一份权重上，checkpoint 里没有第二份。BatchNorm 仿射是 fp32（65,536 参数），其余权重是 bf16。GEMM 按 bf16 计，存储按混合字节计。running_mean / running_var / num_batches_tracked 是 buffer（262,272 字节），不进参数。
+- **机制。** 16 kHz、hop 160。mel 帧数是 `samples // hop`，再与 delta 拼接并两帧一叠，编码器输入宽 320。1 秒是 100 个 mel 帧、50 个编码器帧。`subsample_layers=[0, 1]`：第 0、1 层卷积 stride 为 2，残差池化保留 `T // 2`（50 → 25 → 12）。之后各层停在 12 帧。注意力按 `context_size` 128 补成整块：q / k / v 和 Shaw 的 matmul 看补齐后的块，o、两段 FFN 和 stride-1 卷积看未补齐的帧。stride-2 的深度卷积和 `pointwise_lin2` 看卷积输出长度（25 帧时是 13，再切到 12）。Shaw 的 FLOPs 与 0.392 的分块 einsum 相同。`num_hidden_layers // 2` 处 `out` 与 `out_mid` 各跑一次。最终 CTC 头再用 `out` 的权重跑一次，参数不重复计。0.5 残差、dropout、GLU、SiLU 不另计 GEMM。`tie_word_embeddings` 不是 true、`attention_bias` 不是 true、激活不是 silu、`num_key_value_heads` 不等于头数、`head_dim * heads` 不等于 hidden、context 超过 `max_position_embeddings`、kernel 不是奇数、词表对不上、或者 `subsample_layers` 越界或重复时，不建这条塔。
+- **0.392 Granite Speech 复核。** Shaw 相对位置、无文本输入的 Q-Former、BatchNorm running stats、0.5 残差 / dropout / GLU / granite 标量、以及 plus 的 `cat_hidden_layers=[3]` 只加宽交叉注意力 K，和已发布的类一致。参数和 GEMM 形状不改。
+- **未纳入：**
+  - **LiquidAI/d1-omni-600M。** 本轮重读了 config、`encoder.py`、`audio.py`。`model_type=d1_omni`，类是 `D1OmniModel`，dtype float32。`encoder.py` 写明主干是双向的 LFM2.5-Encoder（居中 3-tap，没有因果 mask），没有 lm_head，旁边是 `DecisionHead`。音频是 `audio.py` 的 FastConformer（`RelPositionAttention`，17 层）。视觉是 `siglip2_vision_model`，整模不是 `lfm2` / `lfm2_vl`。按现有路径计会对不上参数，也会把双向主干记成因果解码。不新写决策头或 FastConformer。
+  - **omniasr-ctc。** 本轮读了 `bezzam/omniasr-ctc-300m-v2` 的 config。`model_type=omniasr_ctc`，音频是 `omniasr_audio`（Wav2Vec2），没有文本 hidden。和 Granite Speech 5 的 Shaw Conformer 不是同一条塔。CTC-only 目录路径不把 wav2vec 头套进 gspeech。继续延期。
+  - **2026-10-23 之后的公开扫描**（ibm-granite、LiquidAI、Qwen、google、baidu、mistralai、nvidia、OpenGVLab、meituan-longcat、internlm，各取最近 30 个仓库）。新行是 granite-switch-4.1 的 GGUF、已入库的 granite-speech-5.0-2b / LFM2.5-2.6B / Atria-Dawn / Nemotron-3.5，以及 nvidia Cosmos3 / Cosmos-H-Dreams、`RE-USE`（不是 transformers config）、`alpajudge` 与 Wan2.2 FP8 diffusers 的根 `config.json` 404。没有能套上现有机制的新 safetensors 或 PT。GGUF / MLX / ONNX / tensorrt / DFlash 不单列。Cosmos3 仍不新写扩散专家栈。
+  - **LongCat-Flash MTP。** 类仍忽略 `model.mtp.*`。不另写递推。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused`。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **Gemma-4 assistant / QAT。** 与已入库的发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **LFM2.5-d1。** 仓库仍是 401。
+  - **softcap / scalar-gate。** 不把标量门或 softcap 写成新的 GEMM。
+
 ## [0.392.0] — 2026-10-25
 
 ### Granite Speech 走 Conformer 加 Q-Former，接到已有的 granite 文本

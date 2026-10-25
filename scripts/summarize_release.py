@@ -181,7 +181,8 @@ def _whisper_role(name: str) -> str:
 def _granite_speech_role(name: str, n_layers: int | None) -> str:
     """0.392 Granite Speech / Speech Plus. encoder.* and projector.* are the audio tower.
     BatchNorm running_mean / running_var are buffers (num_batches_tracked is I64 and is
-    already dropped). language_model.* is the granite LM."""
+    already dropped). language_model.* is the granite LM.
+    0.393 Granite Speech 5 CTC uses the same encoder prefix and has no language_model."""
     if name.endswith((".running_mean", ".running_var", ".num_batches_tracked")):
         return "buffer"
     if name.startswith(("encoder.", "projector.")):
@@ -522,7 +523,8 @@ def summarize(repo: str, key: str | None = None) -> dict:
                 _moss_tts_role(name, nl) if cfg.get("model_type") == "moss_tts_delay" else
                 _qwen3_omni_role(name, nl) if cfg.get("model_type") == "qwen3_omni_moe" else
                 _step_audio_role(name, nl) if cfg.get("model_type") == "step_audio_2" else
-                _granite_speech_role(name, nl) if cfg.get("model_type") in ("granite_speech", "granite_speech_plus") else
+                _granite_speech_role(name, nl) if cfg.get("model_type") in (
+                    "granite_speech", "granite_speech_plus", "granite_speech5_ctc") else
                 _moshi_role(name, nl) if cfg.get("model_type") == "moshi" else
                 _firered_role(name, nl) if cfg.get("model_type") == "fireredtts3" else
                 _qwen3_tts_role(name, nl) if cfg.get("model_type") == "qwen3_tts" else

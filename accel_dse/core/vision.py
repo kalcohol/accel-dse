@@ -384,6 +384,9 @@ class AudioSpec:
     gs_qh: int = 0
     gs_qheads: int = 0
     gs_qff: int = 0
+    # 0.393 Granite Speech 5 CTC (kind "gsctc"): conformer layers whose conv is stride-2.
+    # Each listed layer keeps T // 2 frames (residual pool). Empty for every other kind.
+    gs_sub: tuple[int, ...] = ()
 
     @property
     def samples_per_token(self) -> int:
@@ -434,6 +437,8 @@ class AudioSpec:
         """0.270 encoder output positions per clip (Whisper: 1500 per 30 s window — the decoder cross-attention keys)."""
         if self.kind == "gspeech":
             return self._gs_lens(seconds)[0]
+        if self.kind == "gsctc":
+            return self.tokens(seconds)
         if self.kind == "aut":
             return sum(self.aut_len(n) for n in self.chunks(seconds))
         if self.kind == "sanm":
@@ -448,6 +453,8 @@ class AudioSpec:
 
     def prompt_tokens(self, seconds: float) -> int:
         """0.270 audio positions inserted into the LLM prompt (0 for an encoder-decoder: cross-attention instead)."""
+        if self.kind == "gsctc":
+            return 0
         return 0 if self.cross else self.tokens(seconds)
 
     def chunk_len(self, n: int) -> tuple[int, int]:
@@ -502,7 +509,33 @@ class AudioSpec:
         pad = -(-enc // self.chunk) * self.chunk
         return enc, pad, nblocks * self.gs_q
 
+    def _gsctc_frames(self, seconds: float) -> tuple[int, ...]:
+        """Encoder-frame length entering each conformer layer, then the CTC length.
+
+        GraniteSpeech5FeatureExtractor: mel frames are samples // hop, then pairs are
+        stacked (ceil). GraniteSpeech5EncoderSubsamplingBlock keeps T // 2. The last
+        entry is the CTC head length. Empty when the clip has no mel frame.
+        """
+        if self.kind != "gsctc" or self.patches[0] <= 0 or self.chunk <= 0 or not self.depths:
+            return ()
+        n = max(0, round(seconds * self.rate))
+        mel = n // self.patches[0]
+        if mel <= 0:
+            return ()
+        t = -(-mel // 2)
+        sub = set(self.gs_sub)
+        lengths = []
+        for i in range(self.depths[0]):
+            lengths.append(t)
+            if i in sub:
+                t = t // 2
+        lengths.append(t)
+        return tuple(lengths)
+
     def tokens(self, seconds: float) -> int:
+        if self.kind == "gsctc":
+            frames = self._gsctc_frames(seconds)
+            return frames[-1] if frames else 0
         if self.kind == "gspeech":
             return self._gs_lens(seconds)[2]
         if self.kind == "g4conf":
@@ -665,6 +698,63 @@ def _granite_speech_audio_spec(cfg: dict) -> AudioSpec | None:
                      gs_qff=qff)
 
 
+def _conv_same(length: int, kernel: int, stride: int) -> int:
+    """Conv1d length with padding (kernel - 1) // 2. Stride 1 keeps length when kernel is odd."""
+    pad = (kernel - 1) // 2
+    return (length + 2 * pad - kernel) // stride + 1
+
+
+def _granite_speech5_ctc_audio_spec(cfg: dict) -> AudioSpec | None:
+    """GraniteSpeech5ForCTC: the conformer encoder and a CTC head tied to encoder.out.
+
+    There is no granite LM and no Q-Former. Q/K/V are bias-free. o_proj, both FFN linears,
+    the input linear, and both CTC linears have bias (attention_bias is true). Shaw's table
+    is an embedding of (2 * max_position_embeddings + 1, head_dim). The distance buffer is
+    not stored. BatchNorm affine is a parameter; running stats are not. Returns None when
+    a width has no header path.
+    """
+    if cfg.get("model_type") != "granite_speech5_ctc":
+        return None
+    enc = cfg.get("encoder_config") if isinstance(cfg.get("encoder_config"), dict) else {}
+    if enc.get("model_type") != "granite_speech5_encoder":
+        return None
+    if cfg.get("tie_word_embeddings") is not True or enc.get("attention_bias") is not True:
+        return None
+    if enc.get("hidden_act") != "silu":
+        return None
+    h = enc.get("hidden_size")
+    layers = enc.get("num_hidden_layers")
+    heads = enc.get("num_attention_heads")
+    kv = enc.get("num_key_value_heads")
+    hd = enc.get("head_dim")
+    ff = enc.get("intermediate_size")
+    exp = enc.get("conv_expansion_factor")
+    kern = enc.get("conv_kernel_size")
+    ctx = enc.get("context_size")
+    pos = enc.get("max_position_embeddings")
+    mel = enc.get("num_mel_bins")
+    vocab = enc.get("vocab_size")
+    sub = enc.get("subsample_layers")
+    if not all(_pos_int(x) for x in (h, layers, heads, kv, hd, ff, exp, kern, ctx, pos, mel, vocab)):
+        return None
+    if kv != heads or hd * heads != h or ctx > pos or kern % 2 == 0:
+        return None
+    if cfg.get("vocab_size") != vocab:
+        return None
+    if not isinstance(sub, list) or len(set(sub)) != len(sub) or any(not _gs_idx(i) or i >= layers for i in sub):
+        return None
+    ind = mel * 4
+    inner = h * exp
+    ff1 = _lin(h, ff) + _lin(ff, h)
+    attn = 3 * (h * h) + _lin(h, h) + (2 * pos + 1) * hd
+    conv = _lin(h, inner * 2) + inner * kern + 2 * inner + _lin(inner, h)
+    block = 2 * ff1 + attn + conv + 5 * (2 * h)
+    params = layers * block + _lin(ind, h) + _lin(h, vocab) + _lin(vocab, h)
+    return AudioSpec(16000, (160,), (h,), (layers,), kern, float(ff) / h, vocab, params, kind="gsctc",
+                     heads=heads, n_mels=ind, chunk=ctx, gs_mid=vocab, gs_pos=pos, gs_ff=ff, gs_inner=inner,
+                     gs_sub=tuple(sub))
+
+
 def audio_spec(cfg: dict) -> AudioSpec | None:
     ac = cfg.get("audio_config") or {}
     mt = cfg.get("model_type")
@@ -722,6 +812,8 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
         return _gemma4_audio_spec(cfg, ac)
     if mt in ("granite_speech", "granite_speech_plus"):
         return _granite_speech_audio_spec(cfg)
+    if mt == "granite_speech5_ctc":
+        return _granite_speech5_ctc_audio_spec(cfg)
     if ac.get("model_type") != "muse_spark_audio":
         return None
     pt, dm, dp, k, r = tuple(ac["patch_sizes"]), tuple(ac["hidden_sizes"]), tuple(ac["depths"]), ac["conv_kernel_size"], ac["mlp_ratio"]
@@ -1196,11 +1288,76 @@ def _gspeech_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
     return ops
 
 
+def _gsctc_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
+    """Shaw conformer with stride-2 subsampling. No Q-Former and no LM prompt.
+
+    q / k / v and the Shaw matmul see each block padded to context_size. o_proj, both
+    FFNs, and the stride-1 conv see the unpadded length. A subsample layer's depthwise
+    conv and pointwise_lin2 see the conv output length; ff2 and the residual see T // 2.
+    Mid CTC (out, then out_mid) runs once after layer num_layers // 2. The final CTC
+    head is the same tensor as out and is read again.
+    """
+    from .dtypes import fmt as _fmt
+    frames = a._gsctc_frames(seconds)
+    if not frames or clips <= 0:
+        return []
+    ab = _fmt(af).bytes
+    h = a.dims[0]
+    hd = h // a.heads
+    wf, wb = a.w_fmt, a.w_bits
+    sub = set(a.gs_sub)
+    n_layers = a.depths[0]
+
+    def gemm(name: str, m: int, k: int, n: int, layer: int = 0) -> Op:
+        return Op(name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=wb, w_fmt=wf,
+                  a_fmt=af, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+
+    def attn(name: str, m: int, k: int, n: int, count: int, layer: int) -> Op:
+        return Op(name, "attn", layer, m=m, k=k, n=n, count=count, causal=1.0,
+                  act_bytes=count * m * k * ab, stream=True, orient=True)
+
+    ops = [gemm("aud.in", frames[0] * clips, a.n_mels, h)]
+    for li in range(n_layers):
+        t = frames[li]
+        blocks = -(-t // a.chunk) if t else 0
+        pad = blocks * a.chunk
+        tp = pad * clips
+        tm = t * clips
+        ops += [gemm(f"aud.{li}.ff1_up", tm, h, a.gs_ff, li), gemm(f"aud.{li}.ff1_down", tm, a.gs_ff, h, li)]
+        ops += [gemm(f"aud.{li}.q", tp, h, h, li), gemm(f"aud.{li}.k", tp, h, h, li),
+                gemm(f"aud.{li}.v", tp, h, h, li), gemm(f"aud.{li}.o", tm, h, h, li)]
+        cnt = a.heads * blocks * clips
+        if cnt:
+            ops += [attn(f"aud.{li}.shaw", a.chunk, hd, a.chunk, cnt, li),
+                    attn(f"aud.{li}.qk", a.chunk, hd, a.chunk, cnt, li),
+                    attn(f"aud.{li}.pv", a.chunk, a.chunk, hd, cnt, li),
+                    Op(f"aud.{li}.softmax", "vector", li, vec=cnt * a.chunk * a.chunk * 5.0)]
+        stride = 2 if li in sub else 1
+        cout = _conv_same(t, a.kernel, stride) if t else 0
+        kept = t // 2 if li in sub else t
+        ops += [gemm(f"aud.{li}.conv_up", tm, h, 2 * a.gs_inner, li),
+                Op(f"aud.{li}.dconv", "vector", li, vec=cout * clips * a.gs_inner * a.kernel,
+                   act_bytes=2 * cout * clips * a.gs_inner * ab),
+                gemm(f"aud.{li}.conv_down", cout * clips, a.gs_inner, h, li),
+                gemm(f"aud.{li}.ff2_up", kept * clips, h, a.gs_ff, li),
+                gemm(f"aud.{li}.ff2_down", kept * clips, a.gs_ff, h, li)]
+        if li + 1 == n_layers // 2:
+            mid = frames[li + 1] * clips
+            ops += [gemm("aud.mid.out", mid, h, a.gs_mid, li + 1),
+                    gemm("aud.mid.back", mid, a.gs_mid, h, li + 1),
+                    Op("aud.mid.softmax", "vector", li + 1, vec=mid * a.gs_mid * 5.0)]
+    final = frames[-1] * clips
+    ops.append(gemm("aud.ctc", final, h, a.gs_mid, n_layers))
+    return ops
+
+
 def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> list[Op]:
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
     if a.kind == "gspeech":
         return _gspeech_ops(a, seconds, clips, af)
+    if a.kind == "gsctc":
+        return _gsctc_ops(a, seconds, clips, af)
     if a.kind == "g4conf":
         return _g4conf_ops(a, seconds, clips, af)
     if a.kind == "g4lin":
@@ -1789,6 +1946,10 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                    cfg.get("model_type") == "granite_speech_plus" else
                    "Granite Speech：Conformer（Shaw 分块相对位置）+ Q-Former 查询桥")
             return VisionSpec("audio", lab, 0, 1, au.dims[0], au.gs_ff, au.depths[0], au.heads, au.dims[0],
+                              False, 1, (), au.params, (), audio=au)
+        if au is not None and au.kind == "gsctc":
+            return VisionSpec("audio", "Granite Speech 5 CTC：Shaw Conformer（时间下采样）+ 绑定的 CTC 头",
+                              0, 1, au.dims[0], au.gs_ff, au.depths[0], au.heads, au.dims[0],
                               False, 1, (), au.params, (), audio=au)
         if au is not None and au.kind in ("whisper", "aut", "sanm", "w2v"):
             # 0.268 audio-only release (Ming-3.0-asr-tiny): an encoder container with no image path (family "audio":

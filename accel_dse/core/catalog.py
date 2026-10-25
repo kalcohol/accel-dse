@@ -127,9 +127,11 @@ EXTRA_TAIL = [
     ("intern-decision-2b", "internlm/Intern-Decision-2B"),
     ("intern-decision-0.8b", "internlm/Intern-Decision-0.8B"),
     # 0.392: Granite Speech. Conformer (Shaw block attention) + BLIP-2 Q-Former
-    # onto the granite LM. The CTC-only 470m has no autoregressive backbone.
+    # onto the granite LM.
+    # 0.393: the 470m turbo CTC release is the encoder only (no granite LM).
     ("granite-speech-5.0-2b", "ibm-granite/granite-speech-5.0-2b"),
     ("granite-speech-4.1-2b-plus", "ibm-granite/granite-speech-4.1-2b-plus"),
+    ("granite-speech-5.0-470m-turboctc", "ibm-granite/granite-speech-5.0-470m-turboctc"),
     # 0.383: Granite-4.2-8b / 3b. Same GEMM shapes as 4.1, untied lm_head.
     # 0.386: granite-4.2-30b. Same GEMM shapes as 4.1-30b, untied lm_head.
     # embedding / residual / logits scalars do not change shapes.

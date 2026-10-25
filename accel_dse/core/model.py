@@ -542,6 +542,9 @@ class ModelSpec:
     # 0.270 encoder-decoder (Whisper): encoder positions each decoder sequence cross-attends to (1500 per 30 s window);
     # the cross K/V of every layer is computed at prefill and kept per sequence (fixed size, like recurrent state)
     enc_ctx: int = 0
+    # 0.393 Granite Speech 5 CTC: the catalog model is the encoder. params() is vision_params
+    # only (no embedding table). kv_cache stays false; evaluate costs one encoder forward.
+    ctc_only: bool = False
 
     # ----- derived
     @property
@@ -582,6 +585,10 @@ class ModelSpec:
         return any(L.pair_linears or L.pair_cores for L in self.layers)
 
     def params(self, include_mtp: bool = False) -> int:
+        # 0.393 CTC-only encoder: the release is the audio tower. There is no token embedding,
+        # final norm, or untied LM head to add on top of vision_params.
+        if self.ctc_only:
+            return self.vision_params
         p = sum(l.params(self.hidden) for l in self.layers) + self.embed_params + self.head_params + self.lookup_params
         p += self.hidden if self.final_norm_params is None else self.final_norm_params
         p += sum(l.params for l in self.io_pre + self.io_post) + self.io_misc_params
@@ -3342,12 +3349,44 @@ def _moe_groups(c: dict) -> tuple[int, ...]:
     return (int(G), int(g))
 
 
+def _from_granite_speech5_ctc(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelSpec:
+    """Encoder-only GraniteSpeech5ForCTC. No granite stack is invented."""
+    from .vision import audio_spec, vision_spec
+    au = audio_spec(cfg)
+    vs = vision_spec(hf_id, cfg)
+    if au is None or vs is None or au.kind != "gsctc":
+        raise ValueError(f"{hf_id}: granite_speech5_ctc encoder does not match the released class")
+    vr = (rel.get("roles") or {}).get("vision") or {}
+    p = sum(int(x["params"]) for x in vr.values())
+    b = sum(int(x["bytes"]) for x in vr.values())
+    if p != au.params or (rel.get("params_llm") or 0) or (rel.get("params_vision") or 0) != p:
+        raise ValueError(f"{hf_id}: CTC encoder params {au.params} != release vision {p}")
+    if b and p:
+        vs = replace(vs, w_Bpp=b / p)
+    fp32 = (vr.get("fp32") or {}).get("params") or 0
+    note = (f"Granite Speech 5 CTC：只有编码器，没有 granite 语言模型，也没有 Q-Former。"
+            f"Shaw 分块相对位置按 context {au.chunk} 补齐。subsample_layers {list(au.gs_sub)} "
+            f"每层把保留的时间长度减半。中间 CTC 的 out 与 out_mid 各跑一次，最终 ctc_head "
+            f"与 out 绑在同一份权重上，再读一次。BatchNorm 仿射是 fp32（{fp32} 参数），"
+            "running stats 是 buffer。0.5 残差、dropout、GLU 和 SiLU 不另计 GEMM。")
+    return ModelSpec(
+        id=model_id, hf_id=hf_id, arch="GraniteSpeech5ForCTC", hidden=au.dims[0], vocab=au.gs_mid,
+        layers=(), tie_embeddings=True, coverage="full", notes=(note,),
+        formats=(("attn", RoleFormat("bf16", 16.0)),), act_fmt="bf16", kv_fmt="bf16",
+        release_params=p, release_bytes=b or None, vision=vs, vision_params=au.params,
+        domain="asr", kv_cache=False, ctc_only=True, final_norm_params=0)
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
         if rel is None:
             raise ValueError(f"no release metadata for {hf_id}; run scripts/fetch_hf_release.py")
         cfg = rel["config"]
+    if (cfg.get("model_type") or "") == "granite_speech5_ctc":
+        if rel is None:
+            raise ValueError(f"no release metadata for {hf_id}; run scripts/fetch_hf_release.py")
+        return _from_granite_speech5_ctc(model_id, hf_id, cfg, rel)
     c = _tc(cfg)
     build, arch = _builder(c)
     layers, mtp, notes, cov = build(c)

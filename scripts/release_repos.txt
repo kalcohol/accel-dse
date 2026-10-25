@@ -295,6 +295,7 @@ ibm-granite/granite-4.2-3b-nvfp4
 ibm-granite/granite-4.2-30b-mxfp4
 ibm-granite/granite-4.2-30b-nvfp4
 # 0.392 Granite Speech. Conformer + Q-Former onto the granite LM.
-# The CTC-only 470m turbo is not listed (no autoregressive backbone).
 ibm-granite/granite-speech-5.0-2b
 ibm-granite/granite-speech-4.1-2b-plus
+# 0.393 Granite Speech 5 CTC. Encoder only; the CTC head is tied to encoder.out.
+ibm-granite/granite-speech-5.0-470m-turboctc
