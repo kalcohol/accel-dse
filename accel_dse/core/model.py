@@ -468,6 +468,11 @@ class ModelSpec:
     mtp_eh_role: str = ""
     lookup_params: int = 0                   # n-gram / engram tables (lookup only)
     lookup_bits: float = 0.0                 # stored bits per lookup param incl. scales (0 = embed format)
+    # 0.400 LongCat-Flash-Lite: NgramEmbedding order, splits, and per-table row width.
+    # 0 means this checkpoint has no n-gram tables. Projections live in io_pre.
+    ngram_order: int = 0
+    ngram_splits: int = 0
+    ngram_dim: int = 0
     ple_packed: int = 0                      # 0.369 Gemma-4 PLE row width (layers * ple). 0 = none. One row per token.
     sidecar_params: int = 0                  # 0.347 same-card extras outside params_llm (MOSS audio heads, Moshi depth); storage only, not in params()
     sidecar_bits: float = 0.0                # 0 = attn format bits (used only when sidecar_bytes == 0)
@@ -2488,7 +2493,7 @@ def _longcat_attn(h: int, nh: int, q_lora: int, kv_lora: int, nope: int, rope: i
     return lin, core
 
 
-def _build_longcat_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+def _build_longcat_flash(c: dict, *, draft: bool = True) -> tuple[list[Layer], list[Layer], list[str], str]:
     """LongCat-Flash (meituan-longcat/LongCat-Flash-Chat, modeling_longcat_flash.py).
 
     Each of ``num_layers`` blocks runs two sub-layers. Both have MLA attention and a dense SwiGLU
@@ -2519,6 +2524,9 @@ def _build_longcat_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], 
     ``from_release`` remainder (no separate lookup, no second ``lm_head``). ``enorm`` / ``hnorm`` are the
     extra RMSNorms on the layer. ``mla_scale_*`` is a load-time norm scale. The main stack follows the HF
     class and keeps unpadded V.
+
+    ``draft=False`` is the n-gram subclass (``LongcatFlashNgramForCausalLM``). That class and public vLLM
+    both drop ``model.mtp.*``, so this builder emits no MTP layer and does not pad V.
     """
     h = int(c["hidden_size"])
     n_blocks = int(c.get("num_layers") or c["num_hidden_layers"])
@@ -2550,12 +2558,31 @@ def _build_longcat_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], 
         ffn1, flin1 = _ffn_dense(h, d_ff)
         layers.append(Layer(lin1, core1, ffn1, flin1, attn_misc))
     qk = nope + rope
-    if qk < vdim:
-        raise ValueError("longcat_flash MTP pads V up to qk_head_dim")
-    mtp_lin, mtp_core = _longcat_attn(h, nh, q_lora, kv_lora, nope, rope, vdim)
-    mtp_core = replace(mtp_core, v_dim=qk)
-    mtp_ffn, mtp_flin = _ffn_dense(h, d_ff)
-    mtp = [Layer(mtp_lin, mtp_core, mtp_ffn, mtp_flin, attn_misc + 2 * h)]
+    mtp: list[Layer] = []
+    if draft:
+        if qk < vdim:
+            raise ValueError("longcat_flash MTP pads V up to qk_head_dim")
+        mtp_lin, mtp_core = _longcat_attn(h, nh, q_lora, kv_lora, nope, rope, vdim)
+        mtp_core = replace(mtp_core, v_dim=qk)
+        mtp_ffn, mtp_flin = _ffn_dense(h, d_ff)
+        mtp = [Layer(mtp_lin, mtp_core, mtp_ffn, mtp_flin, attn_misc + 2 * h)]
+        mtp_note = (
+            "发布的 HF 类仍把 model.mtp.* 列在 _keys_to_ignore_on_load_unexpected。"
+            "公开 vLLM 的 LongCatFlashMTP 会加载并运行这一层：speculative 把 model_type 改成 longcat_flash_mtp，"
+            "use_mla 为假，注意力是 DeepseekV2Attention。kv_b 先展开，再把 V 从 v_head_dim 补到 qk_head_dim 写入 KV cache，"
+            "o_proj 之前再切回 v_head_dim。o 与 kv_b 的形状仍是已发布的 v_head_dim。"
+            "draft 清空 n_routed_experts，所以 MTP 的 MLP 是稠密 SwiGLU，没有 router。"
+            "只有一层（checkpoint 是 model.mtp.layers.0，config 没有 num_nextn_predict_layers）。"
+            "eh_proj 是 2h→h。enorm / hnorm 在层内 misc。私有 embedding 与 mtp.norm 留在余量里，不另做查表，也不另写 lm_head。"
+            "mla_scale_* 在加载时折进 norm 权重。主栈仍按 HF 类把未填充的 V 写入 cache。"
+        )
+    else:
+        mtp_note = (
+            "这个类是 LongcatFlashNgramForCausalLM。HF 把 model.mtp.* 列在 "
+            "_keys_to_ignore_on_load_unexpected，公开 vLLM 的 hf_to_vllm_mapper 把 model.mtp. 映射成空。"
+            "speculative 只改写 model_type longcat_flash，不改写 longcat_flash_ngram。"
+            "不建 MTP 层，也不把 V 补到 qk_head_dim。主栈仍按 HF 类把未填充的 V 写入 cache。"
+        )
     notes = [
         f"LongCat-Flash：{n_blocks} 个 block，每个 block 两套注意力 + 两套稠密 SwiGLU（intermediate {d_ff}）。"
         f"第 0 子层的 MoE 与该子层稠密 MLP 读同一条 post-attention 流，MoE 输出加在第 1 子层残差之后。",
@@ -2564,16 +2591,21 @@ def _build_longcat_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], 
         f"MoE：{routed} 个有权重的专家（intermediate {d_exp}）top-{topk}，另有 {zero} 个恒等 zero-expert（无参数）。"
         f"router 对 {pool} 类打分，classifier.weight 与 e_score_correction_bias 按发布是 fp32。",
         "mla_scale_q_lora / mla_scale_kv_lora 与 routed_scaling_factor 是 Python 标量，不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。",
-        "发布的 HF 类仍把 model.mtp.* 列在 _keys_to_ignore_on_load_unexpected。"
-        "公开 vLLM 的 LongCatFlashMTP 会加载并运行这一层：speculative 把 model_type 改成 longcat_flash_mtp，"
-        "use_mla 为假，注意力是 DeepseekV2Attention。kv_b 先展开，再把 V 从 v_head_dim 补到 qk_head_dim 写入 KV cache，"
-        "o_proj 之前再切回 v_head_dim。o 与 kv_b 的形状仍是已发布的 v_head_dim。"
-        "draft 清空 n_routed_experts，所以 MTP 的 MLP 是稠密 SwiGLU，没有 router。"
-        "只有一层（checkpoint 是 model.mtp.layers.0，config 没有 num_nextn_predict_layers）。"
-        "eh_proj 是 2h→h。enorm / hnorm 在层内 misc。私有 embedding 与 mtp.norm 留在余量里，不另做查表，也不另写 lm_head。"
-        "mla_scale_* 在加载时折进 norm 权重。主栈仍按 HF 类把未填充的 V 写入 cache。",
+        mtp_note,
     ]
     return layers, mtp, notes, "full"
+
+
+def _build_longcat_ngram(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """LongCat-Flash-Lite. Same dual-sublayer decoder as Flash. Block count is ``num_layers``.
+
+    vLLM ``FlashNgramModel`` overwrites ``num_hidden_layers`` with ``num_layers`` when the config
+    class default (attention-module count) disagrees. Tables and projections are attached from the
+    safetensors header in ``_attach_longcat_ngram``, not invented here.
+    """
+    if c.get("num_layers") is None:
+        raise ValueError("longcat_flash_ngram block count is num_layers")
+    return _build_longcat_flash(c, draft=False)
 
 
 def _seq0(v, default: int = 0) -> int:
@@ -2915,6 +2947,8 @@ def _build_ernie4_5_moe_vl(c: dict) -> tuple[list[Layer], list[Layer], list[str]
 
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
+    if "LongcatFlashNgramForCausalLM" in (c.get("architectures") or []) or mt == "longcat_flash_ngram":
+        return _build_longcat_ngram, "LongCat-Flash-Lite（n-gram 嵌入；不跑 MTP）"
     if "LongcatFlashForCausalLM" in (c.get("architectures") or []) or mt == "longcat_flash":
         return _build_longcat_flash, "LongCat-Flash（主栈展开 KV；MTP 按 vLLM 把 V 补到 qk_head_dim）"
     if mt == "hunyuan_v1_moe":
@@ -2980,7 +3014,7 @@ def _builder(c: dict):
 
 
 # ---------------------------------------------------------------- release formats
-_ROLE_KEYS = ("attn", "mlp", "expert", "shared_expert", "router", "embed", "lm_head", "mtp", "other")
+_ROLE_KEYS = ("attn", "mlp", "expert", "shared_expert", "router", "embed", "lm_head", "mtp", "ngram", "other")
 
 
 def _release_formats(rel: dict) -> dict[str, RoleFormat]:
@@ -3203,7 +3237,7 @@ def _coverage_reasons(c: dict, spec: ModelSpec, gap: float) -> tuple[str, ...]:
             and mt not in ("whisper", "moshi", "moss_tts_delay", "rwkv8") and not c.get("cosyvoice") and spec.fish is None
             and getattr(spec, "qwen3_tts", None) is None
             and getattr(spec, "moss_tts", None) is None
-            and not spec.ple_packed):  # 0.274 Moshi / 0.338 Qwen3-TTS / 0.346 MOSS / 0.361 RWKV-8 / 0.369 Gemma-4 PLE
+            and not spec.ple_packed and not spec.ngram_dim):  # 0.274 Moshi / 0.338 Qwen3-TTS / 0.346 MOSS / 0.361 RWKV-8 / 0.369 Gemma-4 PLE / 0.400 LongCat n-gram
         r.append(f"n-gram / engram 查表（{spec.lookup_params / 1e9:.1f}B 参数）：计存储，每 token 只读少量行")
     if getattr(spec, "moss_tts", None) is not None:
         r.append("外置 audio tokenizer / vocoder 不在本权重：波形解码未计「来源」")
@@ -3415,6 +3449,232 @@ def _cell_pb(cells: dict, fmt: str) -> tuple[int, int]:
     return int(cell.get("params") or 0), int(cell.get("bytes") or 0)
 
 
+def _is_longcat_ngram(c: dict) -> bool:
+    archs = c.get("architectures") or []
+    mt = c.get("model_type") or ""
+    return "LongcatFlashNgramForCausalLM" in archs or mt == "longcat_flash_ngram"
+
+
+def _longcat_ngram_layout(c: dict, hidden: int, vocab: int) -> tuple[int, int, int, int, int, int]:
+    """HF ``NgramEmbedding``: ``num = k*(n-1)`` tables, row ``int(m + 2*i + 1)``, width ``hidden // num``.
+
+    Returns ``(order, splits, dim, num, table_params, proj_params)``.
+    """
+    ratio = c.get("ngram_vocab_size_ratio")
+    k = c.get("emb_split_num")
+    n = c.get("emb_neighbor_num")
+    if isinstance(ratio, bool) or not isinstance(ratio, (int, float)) or ratio <= 0:
+        raise ValueError("longcat ngram vocab ratio is missing")
+    if isinstance(k, bool) or not isinstance(k, int) or isinstance(n, bool) or not isinstance(n, int):
+        raise ValueError("longcat ngram emb_split_num / emb_neighbor_num are not ints")
+    if k < 1 or n < 2:
+        raise ValueError("longcat ngram needs at least one embedder")
+    num = k * (n - 1)
+    if hidden % num:
+        raise ValueError("longcat ngram hidden size is not divisible by the embedder count")
+    dim = hidden // num
+    m = ratio * vocab
+    rows = [int(m + i * 2 + 1) for i in range(num)]
+    if any(r <= 0 for r in rows):
+        raise ValueError("longcat ngram table row count is not positive")
+    table = sum(r * dim for r in rows)
+    proj = num * dim * hidden
+    return n, k, dim, num, table, proj
+
+
+def _require_pure(rel: dict, role: str, fmt: str, params: int, byte_per: int) -> None:
+    got = _role_cells(rel, role)
+    if set(got) != {fmt}:
+        raise ValueError(f"longcat ngram {role} is not pure {fmt}")
+    p, b = _cell_pb(got, fmt)
+    if p != params or b != byte_per * p:
+        raise ValueError(f"longcat ngram {role} bytes do not match {byte_per} per parameter")
+
+
+def _retag_kv_a(layers: tuple) -> tuple:
+    return tuple(
+        replace(L, attn_linears=tuple(
+            replace(lin, role="kv_a") if lin.name == "kv_a" else lin for lin in L.attn_linears))
+        for L in layers)
+
+
+def _attach_longcat_ngram(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
+    """0.400: bill LongCat-Flash-Lite n-gram tables as lookups and the projections as bf16 GEMMs.
+
+    HF ``NgramEmbedding.forward`` adds the word embedding and each projected n-gram row, then
+    divides by ``1 + k*(n-1)``. vLLM concatenates the tables, runs one ``bmm``, and takes the
+    mean of the word row plus those projections. The arithmetic matches. Both drop ``model.mtp.*``,
+    so a checkpoint MTP module stays in ``params_mtp`` and is not a layer.
+
+    A fp8 config must be e4m3, dynamic, block ``[128, 128]``, with ``disable_quant_module`` empty
+    (attention GEMMs are quantized, unlike Chat-FP8). Ignored names must not include a main-stack
+    expert, dense, or attention GEMM. ``kv_a`` is its own role when its scale tiles are not the
+    uniform 128 ratio. N-gram tables and projections stay bf16 because they are ignored and the
+    projection input is the bf16 embedding row. A byte mismatch raises.
+    """
+    if not spec.layers or len(spec.layers) % 2 or spec.mtp_layers:
+        raise ValueError("longcat ngram builder did not emit paired blocks without MTP")
+    n_blocks = len(spec.layers) // 2
+    h = spec.hidden
+    order, splits, dim, num, table, proj = _longcat_ngram_layout(c, h, spec.vocab)
+    _require_pure(rel, "embed", "bf16", spec.embed_params + table, 2)
+    _require_pure(rel, "ngram", "bf16", proj, 2)
+    _require_pure(rel, "lm_head", "bf16", spec.vocab * h, 2)
+    moe0 = spec.layers[0]
+    if moe0.ffn.kind != "moe" or not moe0.ffn.gated:
+        raise ValueError("longcat ngram block 0 is not a SwiGLU MoE")
+    n_exp = moe0.ffn.n_experts
+    d_exp = moe0.ffn.d_expert
+    d_ff = moe0.ffn.d_ff
+    zero = moe0.ffn.zero_experts
+    q_lora = next(lin.n for lin in moe0.attn_linears if lin.name == "q_a")
+    kv_n = next(lin.n for lin in moe0.attn_linears if lin.name == "kv_a")
+    rope = moe0.core.rope_dim
+    attn_misc = 2 * h + q_lora + (kv_n - rope)
+    norm_p = 2 * n_blocks * attn_misc + h
+    _require_pure(rel, "norm", "bf16", norm_p, 2)
+    pool = n_exp + zero
+    _require_pure(rel, "router", "fp32", n_blocks * (h * pool + pool), 4)
+    io = tuple(Linear(f"ngram_{i}", dim, h, "rep", role="ngram") for i in range(num))
+    fm = dict(spec.formats)
+    fm["ngram"] = RoleFormat("bf16", 16.0)
+    fm["act_ngram"] = RoleFormat("bf16", 16.0)
+    note = (
+        f"N-gram 嵌入：order {order}，splits {splits}，{num} 张表，行宽 {dim}。"
+        f"第 i 张是 Embedding(int(ratio*vocab + 2*i + 1), {dim})，共 {table} 参数，bf16，只查行。"
+        f"每张表一个 Linear({dim}→{h}, bias=False)，共 {proj} 参数。",
+        "HF forward 把词嵌入与各投影相加，再除以 1+k*(n-1)。"
+        "公开 vLLM 把表拼成一张 VocabParallelEmbedding，投影做成一次 bmm，再对词嵌入和投影求均值。"
+        "两边的算术相同。投影在每个 TP rank 上是完整参数，表按词表切分。",
+        "哈希按 HF _get_ngram_ids：每个 order 一次右移，k 路多项式乘加再取模。"
+        "词表模数在加载时算好。不把 n-1 个历史 token 记成常驻状态。",
+        "HF 与 vLLM 都丢掉 model.mtp.*。checkpoint 里的 MTP 留在 params_mtp，不建层，也不跑 draft。",
+    )
+    spec = replace(
+        spec, lookup_params=table, lookup_bits=16.0, ngram_order=order, ngram_splits=splits,
+        ngram_dim=dim, io_pre=io, formats=tuple(sorted(fm.items())), notes=spec.notes + note)
+    qc = c.get("quantization_config")
+    if not isinstance(qc, dict):
+        qc = rel.get("quantization_config")
+    if not isinstance(qc, dict) or not qc:
+        one_exp = n_exp * (2 * h * d_exp + d_exp * h)
+        _require_pure(rel, "expert", "bf16", n_blocks * one_exp, 2)
+        one_m = 2 * (h * 2 * d_ff + d_ff * h)
+        _require_pure(rel, "mlp", "bf16", n_blocks * one_m, 2)
+        attn_p = sum(lin.params for L in spec.layers for lin in L.attn_linears)
+        _require_pure(rel, "attn", "bf16", attn_p, 2)
+        return spec
+    return _apply_longcat_ngram_fp8(spec, rel, c, qc)
+
+
+_NGRAM_GEMM_RE = re.compile(
+    r"^model\.layers\.\d+\.(?:mlp\.experts\.\d+|mlps\.[01]|self_attn\.[01])\."
+    r"(?:gate_proj|up_proj|down_proj|q_a_proj|q_b_proj|kv_a_proj_with_mqa|kv_b_proj|o_proj)$")
+
+
+def _apply_longcat_ngram_fp8(spec: "ModelSpec", rel: dict, c: dict, qc: dict) -> "ModelSpec":
+    """Bill Lite-FP8 from the block formula. Attention is quantized. kv_a splits when its tiles differ."""
+    if (qc.get("quant_method") != "fp8" or qc.get("fmt") != "e4m3"
+            or qc.get("activation_scheme") != "dynamic"):
+        raise ValueError("longcat ngram fp8 scheme is not e4m3 with dynamic activations")
+    if list(qc.get("weight_block_size") or []) != [128, 128]:
+        raise ValueError("longcat ngram fp8 weight_block_size is not [128, 128]")
+    if c.get("disable_quant_module") != []:
+        raise ValueError("longcat ngram fp8 disable_quant_module is not empty")
+    ignored = qc.get("ignored_layers")
+    if not isinstance(ignored, list) or not ignored:
+        raise ValueError("longcat ngram fp8 ignored_layers is missing")
+    if any(isinstance(name, str) and _NGRAM_GEMM_RE.match(name) for name in ignored):
+        raise ValueError("longcat ngram fp8 ignored_layers names a main-stack GEMM")
+    num = spec.ngram_splits * (spec.ngram_order - 1)
+    need = {f"model.ngram_embeddings.embedders.{i}" for i in range(num)}
+    need |= {f"model.ngram_embeddings.post_projs.{i}" for i in range(num)}
+    need |= {"lm_head", "model.embed_tokens", "model.norm"}
+    got_names = {name for name in ignored if isinstance(name, str)}
+    if not need <= got_names:
+        raise ValueError("longcat ngram fp8 ignored_layers misses embed, ngram, or lm_head")
+    h = spec.hidden
+    n_blocks = len(spec.layers) // 2
+    moe0 = spec.layers[0]
+    n_exp, d_exp, d_ff = moe0.ffn.n_experts, moe0.ffn.d_expert, moe0.ffn.d_ff
+    block = 128
+    gate_p, down_p = h * d_exp, d_exp * h
+    gate_b, down_b = _fp8_block_bytes(h, d_exp, block), _fp8_block_bytes(d_exp, h, block)
+    if gate_b * down_p != down_b * gate_p:
+        raise ValueError("longcat ngram expert gate and down fp8 scales do not share one ratio")
+    one_p, one_b = 2 * gate_p + down_p, 2 * gate_b + down_b
+    exp_p, exp_b = n_blocks * n_exp * one_p, n_blocks * n_exp * one_b
+    got_e = _role_cells(rel, "expert")
+    if set(got_e) != {"fp8"} or _cell_pb(got_e, "fp8") != (exp_p, exp_b):
+        raise ValueError("longcat ngram expert bytes do not match block fp8")
+    up_b = _fp8_block_bytes(h, 2 * d_ff, block)
+    if up_b != 2 * _fp8_block_bytes(h, d_ff, block):
+        raise ValueError("longcat ngram fused gate_up scale bytes do not equal separate gate and up")
+    dn_b = _fp8_block_bytes(d_ff, h, block)
+    up_p, dn_p = h * 2 * d_ff, d_ff * h
+    if up_b * dn_p != dn_b * up_p:
+        raise ValueError("longcat ngram dense gate_up and down fp8 scales do not share one ratio")
+    mlp_p = n_blocks * 2 * (up_p + dn_p)
+    mlp_b = n_blocks * 2 * (up_b + dn_b)
+    got_m = _role_cells(rel, "mlp")
+    if set(got_m) != {"fp8"} or _cell_pb(got_m, "fp8") != (mlp_p, mlp_b):
+        raise ValueError("longcat ngram dense MLP bytes do not match block fp8")
+    attn_rows: list[tuple[int, int]] = []
+    kv_rows: list[tuple[int, int]] = []
+    for L in spec.layers:
+        for lin in L.attn_linears:
+            row = (lin.params, _fp8_block_bytes(lin.k, lin.n, block))
+            if lin.name == "kv_a":
+                kv_rows.append(row)
+            else:
+                attn_rows.append(row)
+    if not attn_rows or not kv_rows:
+        raise ValueError("longcat ngram attention is missing kv_a or another projection")
+
+    def _ratio(p: int, b: int) -> tuple[int, int]:
+        g = math.gcd(b, p)
+        return b // g, p // g
+
+    if len({_ratio(p, b) for p, b in attn_rows}) != 1:
+        raise ValueError("longcat ngram attention fp8 scales do not share one ratio")
+    if len({_ratio(p, b) for p, b in kv_rows}) != 1:
+        raise ValueError("longcat ngram kv_a fp8 scales do not share one ratio")
+    split = _ratio(*kv_rows[0]) != _ratio(*attn_rows[0])
+    if split:
+        attn_p = sum(p for p, _b in attn_rows)
+        attn_b = sum(b for _p, b in attn_rows)
+        kv_p = sum(p for p, _b in kv_rows)
+        kv_b = sum(b for _p, b in kv_rows)
+    else:
+        attn_p = sum(p for p, _b in attn_rows) + sum(p for p, _b in kv_rows)
+        attn_b = sum(b for _p, b in attn_rows) + sum(b for _p, b in kv_rows)
+        kv_p = kv_b = 0
+    got_a = _role_cells(rel, "attn")
+    if set(got_a) != {"fp8"} or _cell_pb(got_a, "fp8") != (attn_p + kv_p, attn_b + kv_b):
+        raise ValueError("longcat ngram attention bytes do not match block fp8")
+    fm = dict(spec.formats)
+    fm["expert"] = RoleFormat("fp8", 8.0 * exp_b / exp_p)
+    fm["mlp"] = RoleFormat("fp8", 8.0 * mlp_b / mlp_p)
+    layers = spec.layers
+    if split:
+        fm["attn"] = RoleFormat("fp8", 8.0 * attn_b / attn_p)
+        fm["kv_a"] = RoleFormat("fp8", 8.0 * kv_b / kv_p)
+        layers = _retag_kv_a(spec.layers)
+        kv_note = "kv_a 的 scale 按 ceil 单独记 kv_a，不并进 attn。"
+    else:
+        fm["attn"] = RoleFormat("fp8", 8.0 * attn_b / attn_p)
+        kv_note = "kv_a 与其余注意力投影共用同一个 128 比例，留在 attn。"
+    note = (
+        "FP8（e4m3，动态激活，128×128 的 fp32 scale）。disable_quant_module 是空的，"
+        "所以注意力 GEMM 也量化。专家和两套稠密 MLP 都不在 ignored_layers 里，整份按块 fp8 计。",
+        "n-gram 表、投影、embedding、lm_head、norm 和 router 在忽略名单里。"
+        "表和投影仍是 bf16。投影的激活是 bf16 嵌入行，不是全局 fp8。",
+        "router 权重是 fp32。它的激活仍是全局 fp8 输入，不另记一种激活。",
+        kv_note + " checkpoint 里的 MTP 仍不建层。",
+    )
+    return replace(spec, layers=layers, formats=tuple(sorted(fm.items())), notes=spec.notes + note)
+
+
 def _apply_longcat_fp8(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
     """0.399: bill LongCat-Flash FP8 from ignored_layers, not as one role-average width.
 
@@ -3428,6 +3688,8 @@ def _apply_longcat_fp8(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
     """
     archs = c.get("architectures") or []
     mt = c.get("model_type") or ""
+    if _is_longcat_ngram(c):
+        return spec
     if "LongcatFlashForCausalLM" not in archs and mt != "longcat_flash":
         return spec
     qc = c.get("quantization_config")
@@ -3881,7 +4143,10 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         # lookup-only tables (n-gram / engram embeddings): stored, read a few rows per token
         emb_rel = sum(v["params"] for v in rel.get("roles", {}).get("embed", {}).values())
         cosy = (cfg.get("model_type") or "") in ("cosyvoice2", "cosyvoice3")
-        if emb_rel > 1.05 * spec.embed_params and cosy:
+        if _is_longcat_ngram(c):
+            # 0.400: tables are the embed surplus; projections are io_pre. Do not dump both into lookup.
+            spec = _attach_longcat_ngram(spec, rel, c)
+        elif emb_rel > 1.05 * spec.embed_params and cosy:
             # 0.271 CosyVoice: text embedding (prompt text, a few rows / token) + the stored text lm_head (never read by
             # the speech-token loop) — stored in fp32 as released
             spec = replace(spec, lookup_params=emb_rel - spec.embed_params, lookup_bits=32.0,
@@ -3930,8 +4195,9 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                                "按发布 safetensors 头计入存储；每 token 只读少量行",))
         # MTP modules: stored size as released (incl. embed/head copies some releases store)
         rmtp = rel.get("params_mtp") or 0
-        if rmtp and not spec.mtp_layers:
+        if rmtp and not spec.mtp_layers and not spec.ngram_dim:
             # weights ship an MTP module the config does not declare (e.g. Qwen3-Next) → infer one
+            # 0.400 LongCat-Flash-Lite keeps the checkpoint MTP in params_mtp and does not run it.
             last = spec.layers[-1]
             spec = replace(spec, mtp_layers=(replace(last, misc_params=last.misc_params + 2 * h),),
                            notes=spec.notes + ("MTP 模块由发布权重推断（config 中没有 MTP 字段）",))

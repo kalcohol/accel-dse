@@ -1628,11 +1628,31 @@ def embed_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
     return rank_shares(_embed_ops(model, ph, sh), sh, lambda: _embed_ops(model, ph, Shard()))
 
 
+def _longcat_ngram_hash_ops(order: int, splits: int) -> int:
+    """Scalar ops per token of HF ``NgramEmbedding._get_ngram_ids`` plus one shift per order.
+
+    For each order ``i`` in ``2..n``: one right shift, and ``k`` hashes. Each hash does
+    ``i - 1`` multiply-adds and one modulo. The vocab-mod table is computed once at load.
+    """
+    return sum(1 + splits * (2 * (i - 1) + 1) for i in range(2, order + 1))
+
+
 def _embed_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard()) -> list[Op]:
     b_loc = _cdiv(ph.batch, sh.dp)
     t = b_loc * ph.q
     rf = model.fmt("embed")
     ops = [Op("embed_lookup", "lookup", -1, kv_read=t * model.hidden * rf.bits / 8, vec=t * model.hidden)]
+    if model.ngram_dim:
+        # 0.400 LongCat-Flash-Lite. Tables are vocab-parallel; the bmm matches vLLM oe_projection
+        # (one replicated GEMM per embedder, same FLOPs as k*(n-1) separate linears).
+        num = model.ngram_splits * (model.ngram_order - 1)
+        dim = model.ngram_dim
+        bits = model.lookup_bits or rf.bits
+        ops.append(Op("ngram_lookup", "lookup", -1, kv_read=t * num * dim * bits / 8,
+                      vec=t * _longcat_ngram_hash_ops(model.ngram_order, model.ngram_splits)))
+        ops.append(gemm(model, "ngram.proj", -1, t, dim, model.hidden, "ngram", count=num,
+                        replicated=sh.tp, stream=True))
+        ops.append(Op("ngram_mean", "vector", -1, vec=t * model.hidden * (num + 1)))
     if model.ple_packed:
         # 0.369 Gemma-4: one packed PLE row per token, then RMSNorm on each layer slice (width ple).
         bits = model.lookup_bits or rf.bits

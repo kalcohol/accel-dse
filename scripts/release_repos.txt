@@ -321,3 +321,6 @@ meituan-longcat/LongCat-Flash-Thinking
 # 0.399 LongCat-Flash Chat-FP8 and Thinking-FP8. Per-block bf16 experts and dense MLP.
 meituan-longcat/LongCat-Flash-Chat-FP8
 meituan-longcat/LongCat-Flash-Thinking-FP8
+# 0.400 LongCat-Flash-Lite and Lite-FP8. N-gram tables plus bf16 projections. MTP is stored, not run.
+meituan-longcat/LongCat-Flash-Lite
+meituan-longcat/LongCat-Flash-Lite-FP8

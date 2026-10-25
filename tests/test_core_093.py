@@ -39,7 +39,10 @@ def test_act_fmt_for_default_and_override():
                  # 0.399: LongCat-Flash FP8 leaves attention and the ignored expert / dense blocks in bf16.
                  "longcat-flash-chat-fp8": {"act_attn": "bf16", "act_expert_bf16": "bf16", "act_mlp_bf16": "bf16"},
                  "longcat-flash-thinking-fp8": {"act_attn": "bf16", "act_expert_bf16": "bf16",
-                                                "act_mlp_bf16": "bf16"}}
+                                                "act_mlp_bf16": "bf16"},
+                 # 0.400: n-gram projections read the bf16 embedding row. Other GEMMs keep the global act format.
+                 "longcat-flash-lite": {"act_ngram": "bf16"},
+                 "longcat-flash-lite-fp8": {"act_ngram": "bf16"}}
         if e["id"] in mixed:
             assert acts == mixed[e["id"]], (e["id"], acts)
             continue
