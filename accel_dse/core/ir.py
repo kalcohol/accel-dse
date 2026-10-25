@@ -1467,7 +1467,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp,
                               comm_bytes=t * h * rb))
 
-        def _pool(name: str, n_exp: int, d_exp: int, tokens: int, zero: int) -> None:
+        def _pool(name: str, n_exp: int, d_exp: int, tokens: int, zero: int, role: str) -> None:
             if tokens <= 0 or n_exp <= 0:
                 return
             if zero and not f.groups:
@@ -1480,9 +1480,9 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 mats_up = 2 if f.gated else 1
                 # padded rows (hit · m_e ≥ token-expert pairs) cost time but are not work: share = useful fraction (0.63)
                 u = min(1.0, r.pairs_local / (r.hit * r.m_e))
-                ops.append(replace(gemm(model, f"{name}.gate_up", li, r.m_e, ein, mats_up * d_loc, "expert",
+                ops.append(replace(gemm(model, f"{name}.gate_up", li, r.m_e, ein, mats_up * d_loc, role,
                                         count=r.hit), share=u))
-                ops.append(replace(gemm(model, f"{name}.down", li, r.m_e, d_loc, ein, "expert", count=r.hit),
+                ops.append(replace(gemm(model, f"{name}.down", li, r.m_e, d_loc, ein, role, count=r.hit),
                                    share=u))
                 ops.append(Op(f"{name}_act" if name == "expert" else f"{name}.act", "vector", li,
                               vec=r.pairs_local * d_loc * 4, sfu=r.pairs_local * d_loc * 2))
@@ -1498,9 +1498,9 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 ops.append(Op("expert_allreduce" if name == "expert" else "expert_b_allreduce", "comm", li,
                               comm_kind="allreduce", comm_group=sh.etp, comm_bytes=r.pairs_local * ein * rb))
 
-        _pool("expert", f.n_experts, f.d_expert, text_T, f.zero_experts)
+        _pool("expert", f.n_experts, f.d_expert, text_T, f.zero_experts, f.expert_role or "expert")
         if mm and f.n_experts_b:
-            _pool("expert_b", f.n_experts_b, f.d_expert_b, mm, 0)
+            _pool("expert_b", f.n_experts_b, f.d_expert_b, mm, 0, "expert")
         if tp > 1 and f.n_shared:
             ops.append(Op("shared_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     if L.ple_in:
@@ -1932,7 +1932,8 @@ def _mtp_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), depth: int = 0) -
                gemm(model, "mtp.fc_hidden", li, t * N, h, h, "mtp", replicated=sh.tp, stream=True),
                Op("mtp.fuse", "vector", li, vec=t * (4 * h + 4 * N * h + N * h), replicated=sh.tp)]
     else:
-        ops = [gemm(model, "mtp.eh_proj", li, t, 2 * h, h, "mtp", replicated=sh.tp, stream=True)]
+        eh_role = model.mtp_eh_role or "mtp"
+        ops = [gemm(model, "mtp.eh_proj", li, t, 2 * h, h, eh_role, replicated=sh.tp, stream=True)]
     ops += _rank_ops(model, li, ph, sh, layer=L)
     ops += [gemm(model, "mtp.head", li, t, h, _cdiv(model.vocab, sh.tp), "lm_head", stream=True)]
     return ops
@@ -2249,6 +2250,8 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
             if mm_tok == 0 and l.name.startswith("router_b"):
                 continue
             role = "router" if l.name.startswith("router") else ("shared_expert" if l.name.startswith("shared") else "mlp")
+            if l.role == "mlp_bf16" or l.role.startswith("mtp_"):
+                role = l.role
             ops.append(lin("moe", l, role))
         if f.zero_experts and not f.groups:
             r = identity_zero_routing(f.n_experts, f.zero_experts, f.top_k, text_tok, 1)
@@ -2257,9 +2260,10 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         d_loc, ein = _cdiv(f.d_expert, tp), f.expert_in(h)
         if r.hit:
             u = min(1.0, r.pairs_local / (r.hit * r.m_e))
+            er = f.expert_role or "expert"
             ops.append(replace(gemm(model, "expert.gate_up", li, r.m_e, ein, (2 if f.gated else 1) * d_loc,
-                                    "expert", count=r.hit, stream=True), share=u))
-            ops.append(replace(gemm(model, "expert.down", li, r.m_e, d_loc, ein, "expert", count=r.hit, stream=True),
+                                    er, count=r.hit, stream=True), share=u))
+            ops.append(replace(gemm(model, "expert.down", li, r.m_e, d_loc, ein, er, count=r.hit, stream=True),
                                share=u))
         pairs_b, d_loc_b = 0.0, 0
         if mm_tok and f.n_experts_b:
@@ -2281,7 +2285,8 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
                             + t * _cdiv(f.n_shared * f.d_shared, tp)) * 2
                            + t * n_route + t * dense_ff * 2)))   # SiLU; sigmoid router + top-k (6 / class)
     else:
-        ops += [lin("mlp", l, "mlp") for l in L.ffn_linears]
+        ops += [lin("mlp", l, l.role if l.role == "mlp_bf16" or l.role.startswith("mtp_") else "mlp")
+                for l in L.ffn_linears]
         ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))     # GELU (tanh) / SwiGLU 「假设」 8 ops / element
     if L.post_norm:      # 0.144 sandwich norms (RMSNorm on the attention and FFN outputs before the gated residual)
         ops.append(Op("post_norm", "vector", li, vec=2 * t * h * 4))

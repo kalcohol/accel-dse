@@ -35,7 +35,11 @@ def test_act_fmt_for_default_and_override():
                  "granite-4.2-30b-mxfp4": {"act_attn": "mxfp4", "act_mlp": "mxfp4"},
                  "granite-4.2-3b-nvfp4": {"act_attn": "nvfp4", "act_mlp": "nvfp4"},
                  "granite-4.2-8b-nvfp4": {"act_attn": "nvfp4", "act_mlp": "nvfp4"},
-                 "granite-4.2-30b-nvfp4": {"act_attn": "nvfp4", "act_mlp": "nvfp4"}}
+                 "granite-4.2-30b-nvfp4": {"act_attn": "nvfp4", "act_mlp": "nvfp4"},
+                 # 0.399: LongCat-Flash FP8 leaves attention and the ignored expert / dense blocks in bf16.
+                 "longcat-flash-chat-fp8": {"act_attn": "bf16", "act_expert_bf16": "bf16", "act_mlp_bf16": "bf16"},
+                 "longcat-flash-thinking-fp8": {"act_attn": "bf16", "act_expert_bf16": "bf16",
+                                                "act_mlp_bf16": "bf16"}}
         if e["id"] in mixed:
             assert acts == mixed[e["id"]], (e["id"], acts)
             continue

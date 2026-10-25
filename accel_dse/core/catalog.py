@@ -77,6 +77,12 @@ EXTRA_TAIL = [
     # model.mtp.* (one dense block, eh_proj, private embed). The vLLM draft pads V to qk_head_dim.
     # The index total_size is not the stored byte total, same as Chat.
     ("longcat-flash-thinking", "meituan-longcat/LongCat-Flash-Thinking"),
+    # 0.399: LongCat-Flash Chat-FP8 and Thinking-FP8. Same geometry as the bf16 twins.
+    # ignored_layers keeps experts and both dense MLPs in bf16 on 9 blocks; the other
+    # blocks are block-fp8. Attention stays bf16. MTP eh_proj is fp8; kv_a scale tiles
+    # are billed on their own role. No role-average bit width.
+    ("longcat-flash-chat-fp8", "meituan-longcat/LongCat-Flash-Chat-FP8"),
+    ("longcat-flash-thinking-fp8", "meituan-longcat/LongCat-Flash-Thinking-FP8"),
     # 0.376: Hunyuan-A13B-Instruct. Text MoE only (vit fields are null). Mixed shared MLP + q/k RMSNorm.
     ("hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"),
     # 0.377: ERNIE-4.5-21B-A3B-PT. Text MoE. Repo has no modeling file; transformers class + headers close rel_err.

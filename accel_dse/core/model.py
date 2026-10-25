@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
@@ -320,6 +321,9 @@ class Ffn:
     # Both are zero on every earlier MoE.
     n_experts_b: int = 0
     d_expert_b: int = 0
+    # 0.399: routed-expert weight role when a block is not the model's expert format.
+    # Empty keeps the expert role (every release before LongCat-Flash FP8).
+    expert_role: str = ""
 
     @property
     def mats(self) -> int:
@@ -458,6 +462,10 @@ class ModelSpec:
     tie_embeddings: bool = False
     mtp_layers: tuple[Layer, ...] = ()
     mtp_extra_params: int = 0                # eh_proj etc. per MTP module
+    # 0.399: eh_proj params inside mtp_extra when that GEMM is not fmt("mtp").
+    # 0 keeps the whole remainder on the mtp role.
+    mtp_eh_params: int = 0
+    mtp_eh_role: str = ""
     lookup_params: int = 0                   # n-gram / engram tables (lookup only)
     lookup_bits: float = 0.0                 # stored bits per lookup param incl. scales (0 = embed format)
     ple_packed: int = 0                      # 0.369 Gemma-4 PLE row width (layers * ple). 0 = none. One row per token.
@@ -3393,6 +3401,294 @@ def _retag_o_proj(layers: tuple) -> tuple:
         for L in layers)
 
 
+def _fp8_block_bytes(k: int, n: int, block: int) -> int:
+    """Stored bytes of one block-fp8 weight: the payload plus one fp32 scale per tile."""
+    return k * n + 4 * math.ceil(k / block) * math.ceil(n / block)
+
+
+def _role_cells(rel: dict, role: str) -> dict:
+    return dict((rel.get("roles") or {}).get(role) or {})
+
+
+def _cell_pb(cells: dict, fmt: str) -> tuple[int, int]:
+    cell = cells.get(fmt) or {}
+    return int(cell.get("params") or 0), int(cell.get("bytes") or 0)
+
+
+def _apply_longcat_fp8(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
+    """0.399: bill LongCat-Flash FP8 from ignored_layers, not as one role-average width.
+
+    Experts and the dense SwiGLU stay bf16 only on the blocks named in ignored_layers.
+    Every other block is e4m3 with a fp32 scale per 128x128 tile. Attention is the
+    self_attn module that quantization leaves in bf16. MTP eh_proj and the draft
+    GEMMs are fp8; the private embedding and mtp.norm stay bf16. kv_a is its own
+    role when its scale tiles are not the uniform 128 ratio. A LongCat-Flash config
+    with no quantization_config is unchanged. A fp8 config whose headers do not
+    match this partition raises instead of smearing the two buckets.
+    """
+    archs = c.get("architectures") or []
+    mt = c.get("model_type") or ""
+    if "LongcatFlashForCausalLM" not in archs and mt != "longcat_flash":
+        return spec
+    qc = c.get("quantization_config")
+    if not isinstance(qc, dict):
+        qc = rel.get("quantization_config")
+    if not isinstance(qc, dict) or not qc:
+        return spec
+    if (qc.get("quant_method") != "fp8" or qc.get("fmt") != "e4m3"
+            or qc.get("activation_scheme") != "dynamic"):
+        raise ValueError("longcat_flash fp8 scheme is not e4m3 with dynamic activations")
+    if list(qc.get("weight_block_size") or []) != [128, 128]:
+        raise ValueError("longcat_flash fp8 weight_block_size is not [128, 128]")
+    if c.get("disable_quant_module") != ["self_attn"]:
+        raise ValueError("longcat_flash fp8 disable_quant_module is not ['self_attn']")
+    ignored = qc.get("ignored_layers")
+    if not isinstance(ignored, list) or not ignored:
+        raise ValueError("longcat_flash fp8 ignored_layers is missing")
+    if not spec.layers or len(spec.layers) % 2 or len(spec.mtp_layers) != 1:
+        raise ValueError("longcat_flash fp8 builder did not emit paired blocks and one MTP layer")
+    n_blocks = len(spec.layers) // 2
+    moe0 = spec.layers[0]
+    dense1 = spec.layers[1]
+    if moe0.ffn.kind != "moe" or not moe0.ffn.gated:
+        raise ValueError("longcat_flash block 0 is not a SwiGLU MoE")
+    if dense1.ffn.kind != "dense" or not dense1.ffn.gated or dense1.ffn.d_ff != moe0.ffn.d_ff:
+        raise ValueError("longcat_flash sublayer 1 is not the dense SwiGLU")
+    h = spec.hidden
+    n_exp = moe0.ffn.n_experts
+    d_exp = moe0.ffn.d_expert
+    d_ff = moe0.ffn.d_ff
+    zero = moe0.ffn.zero_experts
+    exp_re = re.compile(r"^model\.layers\.(\d+)\.mlp\.experts\.(\d+)\.(?:gate_proj|up_proj|down_proj)$")
+    den_re = re.compile(r"^model\.layers\.(\d+)\.mlps\.[01]\.(?:gate_proj|up_proj|down_proj)$")
+    exp_n = [0] * n_blocks
+    den_n = [0] * n_blocks
+    for name in ignored:
+        if not isinstance(name, str):
+            raise ValueError("longcat_flash ignored_layers entry is not a string")
+        em = exp_re.match(name)
+        if em:
+            b, e = int(em.group(1)), int(em.group(2))
+            if b >= n_blocks or e >= n_exp:
+                raise ValueError(f"longcat_flash ignored expert {name} is outside the builder")
+            exp_n[b] += 1
+            continue
+        dm = den_re.match(name)
+        if dm:
+            b = int(dm.group(1))
+            if b >= n_blocks:
+                raise ValueError(f"longcat_flash ignored dense MLP {name} is outside the builder")
+            den_n[b] += 1
+    full_e = n_exp * 3
+    expert_skip: set[int] = set()
+    dense_skip: set[int] = set()
+    for b in range(n_blocks):
+        if exp_n[b] == full_e:
+            expert_skip.add(b)
+        elif exp_n[b] != 0:
+            raise ValueError(
+                f"longcat_flash block {b} ignores {exp_n[b]} expert projections, not 0 or {full_e}")
+        if den_n[b] == 6:
+            dense_skip.add(b)
+        elif den_n[b] != 0:
+            raise ValueError(
+                f"longcat_flash block {b} ignores {den_n[b]} dense projections, not 0 or 6")
+    block = 128
+    gate_p = h * d_exp
+    down_p = d_exp * h
+    gate_b = _fp8_block_bytes(h, d_exp, block)
+    down_b = _fp8_block_bytes(d_exp, h, block)
+    if gate_b * down_p != down_b * gate_p:
+        raise ValueError("longcat_flash expert gate and down fp8 scales do not share one ratio")
+    one_exp_p = 2 * gate_p + down_p
+    one_exp_b = 2 * gate_b + down_b
+    n_bf = len(expert_skip)
+    n_fp = n_blocks - n_bf
+    exp_bf_p, exp_bf_b = n_bf * n_exp * one_exp_p, 2 * n_bf * n_exp * one_exp_p
+    exp_fp_p, exp_fp_b = n_fp * n_exp * one_exp_p, n_fp * n_exp * one_exp_b
+    got_e = _role_cells(rel, "expert")
+    if set(got_e) - {"bf16", "fp8"}:
+        raise ValueError("longcat_flash expert role has an unexpected format")
+    if (_cell_pb(got_e, "bf16"), _cell_pb(got_e, "fp8")) != ((exp_bf_p, exp_bf_b), (exp_fp_p, exp_fp_b)):
+        raise ValueError("longcat_flash expert bytes do not match the ignored blocks")
+    up_b = _fp8_block_bytes(h, 2 * d_ff, block)
+    if up_b != 2 * _fp8_block_bytes(h, d_ff, block):
+        raise ValueError("longcat_flash fused gate_up scale bytes do not equal separate gate and up")
+    dn_b = _fp8_block_bytes(d_ff, h, block)
+    up_p = h * 2 * d_ff
+    dn_p = d_ff * h
+    if up_b * dn_p != dn_b * up_p:
+        raise ValueError("longcat_flash dense gate_up and down fp8 scales do not share one ratio")
+    one_m_p, one_m_b = up_p + dn_p, up_b + dn_b
+    n_m_bf, n_m_fp = len(dense_skip), n_blocks - len(dense_skip)
+    mlp_bf_p, mlp_bf_b = n_m_bf * 2 * one_m_p, 2 * n_m_bf * 2 * one_m_p
+    mlp_fp_p, mlp_fp_b = n_m_fp * 2 * one_m_p, n_m_fp * 2 * one_m_b
+    got_m = _role_cells(rel, "mlp")
+    if set(got_m) - {"bf16", "fp8"}:
+        raise ValueError("longcat_flash mlp role has an unexpected format")
+    if (_cell_pb(got_m, "bf16"), _cell_pb(got_m, "fp8")) != ((mlp_bf_p, mlp_bf_b), (mlp_fp_p, mlp_fp_b)):
+        raise ValueError("longcat_flash dense MLP bytes do not match the ignored blocks")
+    names = tuple(l.name for l in spec.layers[0].attn_linears)
+    if names != ("q_a", "q", "kv_a", "kv_up", "o"):
+        raise ValueError("longcat_flash attention projections are not the released MLA set")
+    attn_one = sum(l.params for l in spec.layers[0].attn_linears)
+    attn_p = 2 * n_blocks * attn_one
+    got_a = _role_cells(rel, "attn")
+    if set(got_a) != {"bf16"}:
+        raise ValueError("longcat_flash attention is not pure bf16")
+    ap, ab = _cell_pb(got_a, "bf16")
+    if ap != attn_p or ab != 2 * ap:
+        raise ValueError("longcat_flash attention bytes are not 2 per parameter")
+    pool = n_exp + zero
+    rt_p = n_blocks * (h * pool + pool)
+    got_r = _role_cells(rel, "router")
+    if set(got_r) != {"fp32"}:
+        raise ValueError("longcat_flash router is not pure fp32")
+    rp, rb = _cell_pb(got_r, "fp32")
+    if rp != rt_p or rb != 4 * rp:
+        raise ValueError("longcat_flash router bytes are not fp32")
+    for role in ("embed", "lm_head"):
+        got = _role_cells(rel, role)
+        if set(got) != {"bf16"}:
+            raise ValueError(f"longcat_flash {role} is not pure bf16")
+        p, b = _cell_pb(got, "bf16")
+        if p != spec.vocab * h or b != 2 * p:
+            raise ValueError(f"longcat_flash {role} bytes are not 2 per parameter")
+    q_lora = next(l.n for l in spec.layers[0].attn_linears if l.name == "q_a")
+    kv_n = next(l.n for l in spec.layers[0].attn_linears if l.name == "kv_a")
+    rope = spec.layers[0].core.rope_dim
+    attn_misc = 2 * h + q_lora + (kv_n - rope)
+    norm_p = 2 * n_blocks * attn_misc + h
+    got_n = _role_cells(rel, "norm")
+    if set(got_n) != {"bf16"}:
+        raise ValueError("longcat_flash norm is not pure bf16")
+    np_, nb = _cell_pb(got_n, "bf16")
+    if np_ != norm_p or nb != 2 * np_:
+        raise ValueError("longcat_flash norm bytes are not the main-stack norms")
+    mt_layer = spec.mtp_layers[0]
+    if mt_layer.ffn.kind != "dense" or mt_layer.ffn.n_experts:
+        raise ValueError("longcat_flash MTP MLP is not the dense SwiGLU")
+    mtp_bf_p = spec.vocab * h + h + mt_layer.misc_params
+    got_mtp = _role_cells(rel, "mtp")
+    if set(got_mtp) - {"bf16", "fp8"}:
+        raise ValueError("longcat_flash MTP role has an unexpected format")
+    if _cell_pb(got_mtp, "bf16") != (mtp_bf_p, 2 * mtp_bf_p):
+        raise ValueError("longcat_flash MTP bf16 bucket is not the embedding, mtp.norm, and layer norms")
+    named = {l.name: l for l in mt_layer.attn_linears}
+    ff = {l.name: l for l in mt_layer.ffn_linears}
+    if set(named) != {"q_a", "q", "kv_a", "kv_up", "o"} or set(ff) != {"gate_up", "down"}:
+        raise ValueError("longcat_flash MTP GEMMs are not the dense draft block")
+    if (ff["gate_up"].k, ff["gate_up"].n) != (h, 2 * d_ff):
+        raise ValueError("longcat_flash MTP gate_up is not the fused dense SwiGLU")
+    gemms = (
+        ("eh", 2 * h, h),
+        ("q_a", named["q_a"].k, named["q_a"].n),
+        ("q", named["q"].k, named["q"].n),
+        ("kv_a", named["kv_a"].k, named["kv_a"].n),
+        ("kv_up", named["kv_up"].k, named["kv_up"].n),
+        ("o", named["o"].k, named["o"].n),
+        ("gate_up", ff["gate_up"].k, ff["gate_up"].n),
+        ("down", ff["down"].k, ff["down"].n),
+    )
+    rows = tuple((name, k * n, _fp8_block_bytes(k, n, block)) for name, k, n in gemms)
+    fp_p = sum(p for _, p, _b in rows)
+    fp_b = sum(b for _, _p, b in rows)
+    if _cell_pb(got_mtp, "fp8") != (fp_p, fp_b):
+        raise ValueError("longcat_flash MTP fp8 bytes do not match per-GEMM 128x128 scales")
+    if spec.mtp_extra_params < 2 * h * h:
+        raise ValueError("longcat_flash mtp remainder is smaller than eh_proj")
+    groups: dict[tuple[int, int], list[tuple[str, int, int]]] = {}
+    for name, p, b in rows:
+        g = math.gcd(b, p)
+        groups.setdefault((b // g, p // g), []).append((name, p, b))
+    ranked = sorted(groups.items(), key=lambda kv: (-sum(p for _, p, _b in kv[1]), kv[0]))
+    top = sum(p for _, p, _b in ranked[0][1])
+    if sum(1 for _k, items in ranked if sum(p for _, p, _b in items) == top) != 1:
+        raise ValueError("longcat_flash MTP fp8 ratio clusters tie for most parameters")
+    role_of: dict[str, str] = {}
+    extra_fm: dict[str, RoleFormat] = {}
+    for i, (_key, items) in enumerate(ranked):
+        gnames = [nm for nm, _p, _b in items]
+        if i == 0:
+            role = "mtp_fp8"
+        elif len(gnames) == 1:
+            role = "mtp_" + gnames[0]
+        else:
+            role = "mtp_" + "_".join(sorted(gnames))
+        pb = sum(p for _, p, _b in items)
+        bb = sum(b for _, _p, b in items)
+        extra_fm[role] = RoleFormat("fp8", 8.0 * bb / pb)
+        for nm in gnames:
+            role_of[nm] = role
+
+    def _tag(lins: tuple) -> tuple:
+        out = []
+        for lin in lins:
+            if lin.name not in role_of:
+                raise ValueError(f"longcat_flash MTP linear {lin.name} has no fp8 role")
+            out.append(replace(lin, role=role_of[lin.name]))
+        return tuple(out)
+
+    new_layers = []
+    for i, L in enumerate(spec.layers):
+        blk = i // 2
+        ffn = L.ffn
+        fl = L.ffn_linears
+        if i % 2 == 0 and blk in expert_skip:
+            ffn = replace(ffn, expert_role="expert_bf16")
+        if blk in dense_skip:
+            fl = tuple(replace(lin, role="mlp_bf16") if lin.name in ("gate_up", "down", "up") else lin
+                       for lin in fl)
+        new_layers.append(replace(L, ffn=ffn, ffn_linears=fl))
+    fm = dict(spec.formats)
+    if exp_fp_p:
+        fm["expert"] = RoleFormat("fp8", 8.0 * exp_fp_b / exp_fp_p)
+    elif exp_bf_p:
+        fm["expert"] = RoleFormat("bf16", 16.0)
+    if exp_bf_p:
+        fm["expert_bf16"] = RoleFormat("bf16", 16.0)
+        fm["act_expert_bf16"] = RoleFormat("bf16", 16.0)
+    if mlp_fp_p:
+        fm["mlp"] = RoleFormat("fp8", 8.0 * mlp_fp_b / mlp_fp_p)
+    elif mlp_bf_p:
+        fm["mlp"] = RoleFormat("bf16", 16.0)
+    if mlp_bf_p and mlp_fp_p:
+        fm["mlp_bf16"] = RoleFormat("bf16", 16.0)
+        fm["act_mlp_bf16"] = RoleFormat("bf16", 16.0)
+    elif mlp_bf_p:
+        fm["mlp_bf16"] = RoleFormat("bf16", 16.0)
+        fm["act_mlp_bf16"] = RoleFormat("bf16", 16.0)
+    fm["attn"] = RoleFormat("bf16", 16.0)
+    fm["act_attn"] = RoleFormat("bf16", 16.0)
+    fm["mtp"] = RoleFormat("bf16", 16.0)
+    fm.update(extra_fm)
+
+    def _lst(xs: set[int]) -> str:
+        return "、".join(str(i) for i in sorted(xs)) or "（无）"
+
+    eh_role = role_of["eh"]
+    kv_role = role_of["kv_a"]
+    note = (
+        f"FP8（e4m3，动态激活，128×128 的 fp32 scale）：专家只在 block {_lst(expert_skip)} 保持 bf16，"
+        f"稠密 MLP 只在 block {_lst(dense_skip)} 保持 bf16。其余专家和稠密 MLP 按各自的 fp8 桶计，"
+        "不把 bf16 和 fp8 平均成一个角色。",
+        "注意力在 disable_quant_module 的 self_attn 里，权重和激活都是 bf16。",
+        "量化过的专家、稠密 MLP 和 MTP GEMM 的激活仍是动态 fp8。未量化的专家和稠密 MLP 激活是 bf16。",
+        "router 权重是 fp32。它的激活仍是全局 fp8 输入；forward 里把两边 cast 到 fp32 不另记一种激活。",
+        "embedding、lm_head、norm，以及 MTP 的私有 embedding 和 mtp.norm，是 bf16。",
+        f"MTP 的 eh_proj 记 {eh_role}。kv_a 的 scale 按 ceil 单独记 {kv_role}。"
+        "主栈 V 仍不填充。draft 的 V 仍补到 qk_head_dim。",
+    )
+    return replace(
+        spec, layers=tuple(new_layers), mtp_layers=(_tag_layer(mt_layer, _tag),),
+        mtp_eh_params=2 * h * h, mtp_eh_role=eh_role,
+        formats=tuple(sorted(fm.items())), notes=spec.notes + note)
+
+
+def _tag_layer(layer: Layer, tag) -> Layer:
+    return replace(layer, attn_linears=tag(layer.attn_linears), ffn_linears=tag(layer.ffn_linears))
+
+
 def _moe_groups(c: dict) -> tuple[int, ...]:
     """0.255: (n_group, topk_group) when the router is group-limited — transformers DeepseekV3TopkRouter /
     BeamTopKRouter, vLLM grouped_topk (bailing_moe use_grouped_topk = both set) 「来源」: group scores = sum of the top-2
@@ -3697,6 +3993,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                            notes=spec.notes + (
                                "MTP 的 bf16 桶恰好是 o_proj + eh_proj + 层内 misc，"
                                "eh_proj 与 MTP 的 o_proj 按 bf16 计。",))
+        spec = _apply_longcat_fp8(spec, rel, c)
         if (c.get("model_type") or "").startswith("qwen4_exp") or (c.get("model_type") or "") == "dory":
             spec = replace(spec, final_norm_params=0)       # 0.253 Dory: nGPT, final state justnorm (no weight)
         if (c.get("model_type") or "") == "dory":

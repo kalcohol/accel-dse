@@ -6,6 +6,33 @@
 
 
 
+## [0.399.0] — 2026-10-25
+
+### LongCat-Flash FP8 按 ignored_layers 逐块计，不按角色平均位宽
+
+- **新增 2 个发布**（2026-10-25 读取 config 与 safetensors header）。每一份 `param_check().rel_err == 0`。覆盖 full。
+  - **longcat-flash-chat-fp8。** `LongcatFlashForCausalLM`。`quant_method=fp8`，`fmt=e4m3`，`activation_scheme=dynamic`，`weight_block_size=[128, 128]`，`disable_quant_module=['self_attn']`。73063 张量，语言参数 560,664,980,480，MTP 1,197,899,776，`bytes_total` 747,862,918,848（`bytes_llm` 745,859,584,000，`bytes_mtp` 2,003,334,848）。index 的 `total_size` 为空，不采用仓库文件体积。
+  - **longcat-flash-thinking-fp8。** 张量角色、config、`ignored_layers` 和字节与 Chat-FP8 相同。
+- **机制。** `ignored_layers` 点名哪些 block 不量化。专家投影（每 block 512×3）和两套稠密 MLP（`mlps.0/1` 的 gate/up/down，共 6 个名字）只在 block 0、2、14、17、18、24、25、26、27 被忽略，共 9 个 block。这 9 个 block 的专家记 `expert_bf16`（恰好 2 字节/参数，173,946,175,488 参数），稠密 MLP 记 `mlp_bf16`（4,076,863,488 参数）。其余 19 个 block 的专家和稠密 MLP 仍是 `expert` / `mlp`，位宽是该 fp8 桶自己的 `8 × 16388/16384`（专家 367,219,703,808 参数、367,309,357,056 字节；稠密 8,606,711,808 参数、8,608,813,056 字节）。融合 `gate_up` 的 scale 字节与分开的 gate、up 相等，专家的 gate 与 down 共用同一个比例；对不上就拒绝，不把 bf16 和 fp8 平均进一个角色。注意力投影全部在 `self_attn` 里，角色是纯 bf16（5,071,962,112 参数，恰好 2 字节），激活改记 bf16。量化过的专家、稠密 MLP 和 MTP GEMM 的激活仍是全局动态 fp8。未量化的专家和稠密 MLP 激活是 bf16。router 权重仍是 fp32；它的激活保持全局 fp8 输入，forward 里的 fp32 cast 不另记一种激活。embedding、lm_head、主栈 norm 是 bf16。
+- **MTP。** 私有 embedding、`mtp.norm` 和层内 norm 是 bf16（805,339,136 参数，恰好 2 字节），`fmt("mtp")` 记这一份，不再用角色平均。`eh_proj`（2h→h）和其余对齐的 draft GEMM 记 `mtp_fp8`（同一 128 比例）。`kv_a` 是 `[576, 6144]`，scale 是 `[5, 48]`，比均匀的 128 分块多 96 字节，单独记 `mtp_kv_a`（位宽 `8 × 3539904/3538944`）。`eh_proj` 的参数从 `mtp_extra` 里拆出来按 `mtp_fp8` 存，embedding 与 `mtp.norm` 仍按 bf16 存。主栈 V 仍是 128。draft 仍把 V 补到 `qk_head_dim` 192 再在 `o_proj` 前切回 128。`use_mla` 不改变这条填充。config 里的 `n_routed_experts` 仍是 512，MTP 的 MLP 仍是稠密 SwiGLU，没有 router，也不另做查表。
+- **0.398 MTP 复核。** bf16 的 Chat / Thinking 没有量化配置，不走这条拆分。`eh_proj` 仍是 bf16，`mtp_eh_params` 仍是 0，专家角色仍是 `expert`。把 `use_mla` 设成 true 或 false，主栈 V 仍是 128，draft V 仍是 192。`qk_head_dim` 小于 `v_head_dim` 仍拒绝。专家 bf16 字节被改过、或某个 block 的忽略名单不完整、或 `weight_block_size` 不是 `[128, 128]`，都拒绝，不退回平均位宽。
+- **未纳入：**
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401（2026-10-25）。
+  - **LongCat-Flash-Lite / Lite-FP8。** 类是 `LongcatFlashNgramForCausalLM`（`modeling_longcat_ngram.py`）。`ngram_vocab_size_ratio` 是 78，`emb_neighbor_num` 是 4，`emb_split_num` 是 4。没有现成的 ngram 路径。Lite-FP8 的忽略名单不单独入库。
+  - **LongCat-Flash-Lite-Sparse。** 类是 `LongcatCausalLM`。注意力是 LSA，另有 `index_*`、`indexer_rope_interleave`、`mtp_num_layers=3`、`oe_vocab_size_ratio` 78。仓库列表里没有 modeling 文件。不把它套到现有的 Flash 或 DeepSeek DSA 上。
+  - **LongCat-Flash-Thinking-2601 / Prover。** 类是 `LongcatCausalLM`（`configuration_longcat.py` / `modeling_longcat.py`），不是 `LongcatFlashForCausalLM`。`max_position_embeddings` 是 983040，`rope_theta` 是 1000000，`rope_scaling` 是 deepseek_yarn。不记成 Flash。
+  - **LongCat-Flash-Omni。** pipeline 是 any-to-any。另有 `audio/config.json` 和 `vision/config.json`。不是文本 Flash builder。不新写多模态塔。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 `config.json` 仍是 404。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 与 `tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `config.json` 仍是 401。
+  - **nvidia Cosmos3。** 仍是扩散栈，不是已有的条件生成路径。
+  - **Gemma-4 assistant / QAT。** 没有新的可对上的 header。不单列。
+  - **2026-10-26 及之后的公开扫描**（120 个组织，`createdAt` ≥ 2026-10-26）。没有新行。没有能套上现有机制的新 safetensors 或 PT。GGUF / MLX / ONNX / tensorrt / DFlash 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.398.0] — 2026-10-25
 
 ### LongCat-Flash MTP 按公开 vLLM 的 draft cache 计

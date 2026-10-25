@@ -974,9 +974,9 @@ def _layer_routes(m: ModelSpec, sv, lay: Layout, skew_g: float, warnings: list[s
     skew_l = exp_pl = v_pl = ()
     if getattr(sv, "moe_expert_load_layers", ()) and m.is_moe:
         sl, el = [None] * n, [None] * n
-        eb = m.fmt("expert").bits / 8
         for i, ld in _ffn_layer_loads(m, sv):
             f = m.layers[i].ffn
+            eb = m.fmt(f.expert_role or "expert").bits / 8
             s = skew_from_load(ld, lay.ep) if lay.ep > 1 else 1.0     # EP 1: no cross-rank skew (as _moe_skew)
             hp = hot_rank_probs(ld, lay.ep, f.top_k)
             r = SkewSpec(s, hp) if s != 1.0 else 1.0

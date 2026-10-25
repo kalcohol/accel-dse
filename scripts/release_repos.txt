@@ -318,3 +318,6 @@ baidu/ERNIE-4.5-VL-28B-A3B-Base
 baidu/ERNIE-4.5-VL-424B-A47B
 # 0.398 LongCat-Flash-Thinking. Same headers as Chat. vLLM MTP pads V to qk_head_dim.
 meituan-longcat/LongCat-Flash-Thinking
+# 0.399 LongCat-Flash Chat-FP8 and Thinking-FP8. Per-block bf16 experts and dense MLP.
+meituan-longcat/LongCat-Flash-Chat-FP8
+meituan-longcat/LongCat-Flash-Thinking-FP8
