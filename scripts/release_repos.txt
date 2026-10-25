@@ -316,3 +316,5 @@ baidu/ERNIE-4.5-300B-A47B-Base
 baidu/ERNIE-4.5-VL-28B-A3B
 baidu/ERNIE-4.5-VL-28B-A3B-Base
 baidu/ERNIE-4.5-VL-424B-A47B
+# 0.398 LongCat-Flash-Thinking. Same headers as Chat. vLLM MTP pads V to qk_head_dim.
+meituan-longcat/LongCat-Flash-Thinking

@@ -2497,11 +2497,20 @@ def _build_longcat_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], 
     Identity zero-experts have no parameters; a hit copies the token. ``e_score_correction_bias`` is an
     fp32 buffer of that width, stored in the MoE sublayer's misc. ``classifier.weight`` is fp32 as released.
     ``mla_scale_*`` and ``routed_scaling_factor`` are Python floats. They do not change GEMM or KV shape,
-    so they add no cycles. The published class lists ``model.mtp.*`` in ``_keys_to_ignore_on_load_unexpected``
-    and does not run that module. The checkpoint still stores one dense sublayer (same GEMMs as the last
-    sublayer), ``eh_proj`` [hidden, 2·hidden], enorm / hnorm, ``mtp.norm`` and a private embedding.
-    ``from_release`` keeps the existing undeclared-MTP path: clone that last sublayer and leave the private
-    embedding in the remainder. There is no separate lookup table and no LongCat MTP forward.
+    so they add no cycles. The published HF class still lists ``model.mtp.*`` in
+    ``_keys_to_ignore_on_load_unexpected``. Public vLLM ``LongCatFlashMTP`` loads and runs that module.
+    ``speculative.py`` rewrites ``model_type`` from ``longcat_flash`` to ``longcat_flash_mtp``
+    (architecture ``LongCatFlashMTPModel``, ``n_predict = num_nextn_predict_layers or 1``).
+    ``is_deepseek_mla()`` is true for ``longcat_flash`` and false for ``longcat_flash_mtp``, so the draft
+    block is ``DeepseekV2Attention``, not latent MLA. That forward expands ``kv_b``, then pads V from
+    ``v_head_dim`` to ``qk_head_dim`` before ``Attention``. ``Attention`` defaults ``head_size_v`` to
+    ``head_size``, and the call passes ``qk_head_dim`` with no ``head_size_v``, so the KV cache stores
+    the pad. The pad is sliced off before ``o_proj``. Released ``o`` and ``kv_b`` stay at ``v_head_dim``.
+    The draft clears ``n_routed_experts``, so the MLP is the dense SwiGLU. The checkpoint has
+    ``model.mtp.layers.0`` only. ``eh_proj`` (2h → h), the private embedding and ``mtp.norm`` stay in the
+    ``from_release`` remainder (no separate lookup, no second ``lm_head``). ``enorm`` / ``hnorm`` are the
+    extra RMSNorms on the layer. ``mla_scale_*`` is a load-time norm scale. The main stack follows the HF
+    class and keeps unpadded V.
     """
     h = int(c["hidden_size"])
     n_blocks = int(c.get("num_layers") or c["num_hidden_layers"])
@@ -2532,19 +2541,31 @@ def _build_longcat_flash(c: dict) -> tuple[list[Layer], list[Layer], list[str], 
         lin1, core1 = _longcat_attn(h, nh, q_lora, kv_lora, nope, rope, vdim)
         ffn1, flin1 = _ffn_dense(h, d_ff)
         layers.append(Layer(lin1, core1, ffn1, flin1, attn_misc))
+    qk = nope + rope
+    if qk < vdim:
+        raise ValueError("longcat_flash MTP pads V up to qk_head_dim")
+    mtp_lin, mtp_core = _longcat_attn(h, nh, q_lora, kv_lora, nope, rope, vdim)
+    mtp_core = replace(mtp_core, v_dim=qk)
+    mtp_ffn, mtp_flin = _ffn_dense(h, d_ff)
+    mtp = [Layer(mtp_lin, mtp_core, mtp_ffn, mtp_flin, attn_misc + 2 * h)]
     notes = [
         f"LongCat-Flash：{n_blocks} 个 block，每个 block 两套注意力 + 两套稠密 SwiGLU（intermediate {d_ff}）。"
         f"第 0 子层的 MoE 与该子层稠密 MLP 读同一条 post-attention 流，MoE 输出加在第 1 子层残差之后。",
-        f"注意力在写入 cache 之前用 kv_b 展开成多头 K/V（{nh} 头，K {nope + rope}，V {vdim}），"
+        f"注意力在写入 cache 之前用 kv_b 展开成多头 K/V（{nh} 头，K {qk}，V {vdim}），"
         f"不是 latent cache（kv_lora {kv_lora} + RoPE {rope}）。q/k 的低秩 RMSNorm 在 q_lora / kv_lora 上。",
         f"MoE：{routed} 个有权重的专家（intermediate {d_exp}）top-{topk}，另有 {zero} 个恒等 zero-expert（无参数）。"
         f"router 对 {pool} 类打分，classifier.weight 与 e_score_correction_bias 按发布是 fp32。",
         "mla_scale_q_lora / mla_scale_kv_lora 与 routed_scaling_factor 是 Python 标量，不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。",
-        "checkpoint 另有 model.mtp.*：一层与子层相同的展开 KV 注意力、一份稠密 MLP、eh_proj [hidden, 2·hidden]、"
-        "enorm / hnorm、mtp.norm 和私有 embedding。发布的类把这些 key 列在 _keys_to_ignore_on_load_unexpected，没有 MTP forward。"
-        "参数按未声明 MTP 的既有路径记在最后一层子层上（GEMM 形状与这份权重相同），不另写递推。",
+        "发布的 HF 类仍把 model.mtp.* 列在 _keys_to_ignore_on_load_unexpected。"
+        "公开 vLLM 的 LongCatFlashMTP 会加载并运行这一层：speculative 把 model_type 改成 longcat_flash_mtp，"
+        "use_mla 为假，注意力是 DeepseekV2Attention。kv_b 先展开，再把 V 从 v_head_dim 补到 qk_head_dim 写入 KV cache，"
+        "o_proj 之前再切回 v_head_dim。o 与 kv_b 的形状仍是已发布的 v_head_dim。"
+        "draft 清空 n_routed_experts，所以 MTP 的 MLP 是稠密 SwiGLU，没有 router。"
+        "只有一层（checkpoint 是 model.mtp.layers.0，config 没有 num_nextn_predict_layers）。"
+        "eh_proj 是 2h→h。enorm / hnorm 在层内 misc。私有 embedding 与 mtp.norm 留在余量里，不另做查表，也不另写 lm_head。"
+        "mla_scale_* 在加载时折进 norm 权重。主栈仍按 HF 类把未填充的 V 写入 cache。",
     ]
-    return layers, [], notes, "full"
+    return layers, mtp, notes, "full"
 
 
 def _seq0(v, default: int = 0) -> int:
@@ -2887,7 +2908,7 @@ def _build_ernie4_5_moe_vl(c: dict) -> tuple[list[Layer], list[Layer], list[str]
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
     if "LongcatFlashForCausalLM" in (c.get("architectures") or []) or mt == "longcat_flash":
-        return _build_longcat_flash, "LongCat-Flash（展开 KV 的 MLA + 零专家 MoE）"
+        return _build_longcat_flash, "LongCat-Flash（主栈展开 KV；MTP 按 vLLM 把 V 补到 qk_head_dim）"
     if mt == "hunyuan_v1_moe":
         return _build_hunyuan_v1_moe, "GQA（q/k RMSNorm）+ 共享 MLP 的 MoE"
     if mt == "ernie4_5":

@@ -1,7 +1,8 @@
 """0.376: LongCat-Flash review holds, and Hunyuan-A13B closes on the text MoE.
 
-LongCat's published class does not run model.mtp.*. The undeclared-MTP clone keeps
-the private embedding in the remainder. Hunyuan-A13B is GQA with q/k RMSNorm, a
+LongCat's published HF class does not run model.mtp.*. Public vLLM does, and the
+draft cache pads V to qk_head_dim. The private embedding stays in the remainder.
+Hunyuan-A13B is GQA with q/k RMSNorm, a
 shared SwiGLU on every token, and an fp32 router. CLA, MLA, and the ViT are off.
 """
 from __future__ import annotations
@@ -29,7 +30,7 @@ def test_longcat_review_holds():
     assert m.mtp_extra_params == m.vocab * m.hidden + 2 * m.hidden * m.hidden + m.hidden
     mt = m.mtp_layers[0]
     assert mt.core.kind == "gqa" and mt.core.kv_lora == 0
-    assert mt.core.kv_elems_per_token() == 64 * (192 + 128)
+    assert mt.core.v_dim == 192 and mt.core.kv_elems_per_token() == 64 * (192 + 192)
     assert mt.ffn.kind == "dense" and mt.ffn.d_ff == 12288
     assert mt.misc_params == 2 * m.hidden + 1536 + 512 + 2 * m.hidden
     ops = _mtp_ops(m, Phase("decode", 1, 1, 16), Shard())
