@@ -46,6 +46,12 @@ def test_tower_formats_and_bytes():
         m = get_model(e["id"])
         if getattr(m, "vision", None) is None or e["id"] == M:
             continue
+        if e["id"] == "d1-omni-600m":
+            # Released weights and activations are fp32. vision_fmt stays unset.
+            fm = {k: (f, b, a) for k, f, b, a in m.vision.wfmt}
+            assert fm == {k: ("fp32", 32.0, "fp32") for k in ("attn", "merger", "mlp", "patch")}, e["id"]
+            assert m.vision.w_Bpp == 4.0 and m.vision.audio.w_fmt == "fp32" and m.vision.audio.w_bits == 32.0
+            continue
         if e["id"] == "granite-speech-5.0-470m-turboctc":
             # BatchNorm affine is fp32; every GEMM weight is bf16. Storage uses the mixed byte count.
             assert m.vision.wfmt == () and m.vision.audio.w_fmt == "bf16"

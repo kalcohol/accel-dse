@@ -124,7 +124,7 @@ def test_lfm25_vl_siglip2_and_d1():
     ids = [e["id"] for e in list_models() if e["family"] == "LFM2.5"]
     assert ids.index("lfm2.5-350m") < ids.index("lfm2.5-350m-base") < ids.index("lfm2.5-vl-450m") < ids.index("lfm2.5-230m")
     assert ids.index("lfm2.5-2.6b") < ids.index("lfm2.5-vl-3b")
-    assert [e["id"] for e in list_models() if e["family"] == "d1"] == ["d1-3b"]
+    assert [e["id"] for e in list_models() if e["family"] == "d1"] == ["d1-3b", "d1-omni-600m"]
 
 
 def test_lfm2_vl_rejects_a_different_tower():

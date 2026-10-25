@@ -453,7 +453,8 @@ class AudioSpec:
 
     def prompt_tokens(self, seconds: float) -> int:
         """0.270 audio positions inserted into the LLM prompt (0 for an encoder-decoder: cross-attention instead)."""
-        if self.kind == "gsctc":
+        if self.kind in ("gsctc", "d1fc"):
+            # d1 prefix embeddings are not text tokens. expand_images must not add them.
             return 0
         return 0 if self.cross else self.tokens(seconds)
 
@@ -533,6 +534,8 @@ class AudioSpec:
         return tuple(lengths)
 
     def tokens(self, seconds: float) -> int:
+        if self.kind == "d1fc":
+            return _d1_audio_lens(seconds)[1]
         if self.kind == "gsctc":
             frames = self._gsctc_frames(seconds)
             return frames[-1] if frames else 0
@@ -755,9 +758,130 @@ def _granite_speech5_ctc_audio_spec(cfg: dict) -> AudioSpec | None:
                      gs_sub=tuple(sub))
 
 
+_D1_RATE = 16000
+_D1_HOP = 160
+_D1_MIN_SAMPLES = 8000
+_D1_MAX_SAMPLES = 30 * _D1_RATE
+_D1_PAD = 1024
+_D1_TILE = 512
+_D1_PX = 32
+_D1_TEXT_FLOOR = 64
+
+
+def _d1_conv_len(n: int) -> int:
+    """Conv2d k3 s2 p1 length: (n + 2 - 3) // 2 + 1."""
+    return (n - 1) // 2 + 1 if n > 0 else 0
+
+
+def _d1_audio_lens(seconds: float) -> tuple[int, int]:
+    """(mel frames, FastConformer prefix tokens).
+
+    waveform() drops a missing clip, pads under 0.5 s up to 8000 samples, and cuts at 30 s.
+    n_fft is even, so the centered STFT frame count is samples // hop. Three stride-2 convs
+    then keep (L - 1) // 2 + 1.
+    """
+    if seconds <= 0:
+        return 0, 0
+    n = min(_D1_MAX_SAMPLES, max(0, round(seconds * _D1_RATE)))
+    if n <= 0:
+        return 0, 0
+    if n < _D1_MIN_SAMPLES:
+        n = _D1_MIN_SAMPLES
+    mel = n // _D1_HOP
+    t = mel
+    for _ in range(3):
+        t = _d1_conv_len(t)
+    return mel, t
+
+
+def _d1_ff_width(intermediate: int, mult: float, multiple: int) -> int:
+    """Lfm2MLP auto-adjust, always on for this encoder (no block_auto_adjust_ff_dim flag)."""
+    hidden = int(mult * int(2 * intermediate / 3))
+    return multiple * ((hidden + multiple - 1) // multiple)
+
+
+def _d1_head_params(d: int, layers: int) -> int:
+    """DecisionHead: type embedding, pre-norm TransformerEncoderLayer, scorer LN-Linear-GELU-Linear."""
+    ff = 4 * d
+    # in_proj (3d, d) + bias, out_proj, fc1, fc2, two LayerNorms. ReLU and GELU have no parameters.
+    layer = 4 * d * d + 2 * ff * d + ff + 9 * d
+    scorer = 2 * d + (d * d + d) + (d + 1)
+    return layers * layer + 3 * d + scorer
+
+
+def _d1_audio_spec(cfg: dict) -> AudioSpec | None:
+    """FastConformer prefix tower. None unless the released widths match audio.py."""
+    ac = cfg.get("audio_config") or {}
+    tc = cfg.get("text_config") or {}
+    d = ac.get("d_model")
+    layers = ac.get("n_layers")
+    heads = ac.get("n_heads")
+    feat = ac.get("feat_in")
+    ch = ac.get("subsampling_conv_channels")
+    ff_exp = ac.get("ff_expansion_factor")
+    kernel = ac.get("conv_kernel_size")
+    res_w = ac.get("residual_width")
+    text_h = tc.get("hidden_size")
+    if not all(_pos_int(x) for x in (d, layers, heads, feat, ch, kernel, res_w, text_h)):
+        return None
+    if feat != 128 or ff_exp != 4 or kernel % 2 == 0 or d % heads:
+        return None
+    ff = d * ff_exp
+    # Conv2d / Linear biases are on. Depthwise conv is groups=channels. BatchNorm affine is
+    # stored; running stats are buffers and are not parameters.
+    sub = (ch * 9 + ch) + 2 * (ch * 9 + ch) + 2 * (ch * ch + ch)
+    freq = feat
+    for _ in range(3):
+        freq = _d1_conv_len(freq)
+    sub += _lin(ch * freq, d, True)
+    attn = 4 * _lin(d, d) + d * d + 2 * heads * (d // heads)
+    conv = _lin(d, 2 * d) + (d * kernel + d) + 2 * d + _lin(d, d)
+    norms = 5 * 2 * d
+    block = 2 * ( _lin(d, ff) + _lin(ff, d)) + attn + conv + norms
+    adapter = 2 * d + _lin(d, text_h) + _lin(text_h, text_h)
+    residual = 2 * text_h + _lin(text_h, res_w) + _lin(res_w, text_h)
+    params = sub + layers * block + adapter + residual
+    return AudioSpec(_D1_RATE, (_D1_HOP,), (d,), (layers,), kernel, float(ff_exp), text_h, params,
+                     kind="d1fc", heads=heads, n_mels=feat, ch=ch, gs_ff=ff, gs_inner=res_w,
+                     w_bits=32.0, w_fmt="fp32")
+
+
+def _d1_trunk_params(tc: dict) -> tuple[int, int, int, tuple[str, ...]] | None:
+    """(trunk params, ffn width, head dim, layer types). None when the encoder is not this class."""
+    h = tc.get("hidden_size")
+    vocab = tc.get("vocab_size")
+    n = tc.get("num_hidden_layers")
+    nq = tc.get("num_attention_heads")
+    nkv = tc.get("num_key_value_heads")
+    types = tc.get("layer_types")
+    cache = tc.get("conv_L_cache")
+    mult = tc.get("block_ffn_dim_multiplier")
+    multiple = tc.get("block_multiple_of")
+    inter = tc.get("intermediate_size")
+    if not all(_pos_int(x) for x in (h, vocab, n, nq, nkv, cache, multiple, inter)):
+        return None
+    if isinstance(mult, bool) or not isinstance(mult, (int, float)) or mult <= 0:
+        return None
+    if cache != 3 or h % nq or nkv > nq or nq % nkv or not isinstance(types, list) or len(types) != n:
+        return None
+    if any(k not in ("conv", "full_attention") for k in types):
+        return None
+    hd = h // nq
+    ff = _d1_ff_width(inter, float(mult), multiple)
+    # No biases. q / k RMSNorm is head_dim. Two RMSNorms per block. embedding_norm is one more.
+    conv = h * 3 * h + h * 3 + h * h + 2 * h * ff + ff * h + 2 * h
+    attn = h * h + 2 * (nkv * hd) * h + h * h + 2 * hd + 2 * h * ff + ff * h + 2 * h
+    n_conv = sum(k == "conv" for k in types)
+    n_attn = n - n_conv
+    params = vocab * h + h + n_conv * conv + n_attn * attn
+    return params, ff, hd, tuple(types)
+
+
 def audio_spec(cfg: dict) -> AudioSpec | None:
     ac = cfg.get("audio_config") or {}
     mt = cfg.get("model_type")
+    if mt == "d1_omni":
+        return _d1_audio_spec(cfg)
     if mt == "ming_v3_asr" and ac.get("n_audio_state"):
         return _whisper_audio_spec(cfg, ac)
     if mt == "whisper":
@@ -1351,6 +1475,71 @@ def _gsctc_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
     return ops
 
 
+def _d1_audio_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
+    """FastConformer prefix. Activations stay fp32: the released class does not autocast.
+
+    linear_pos reads the 2T-1 sinusoid once per batch, not once per clip. The relative
+    matmul is T by 2T-1 and is then sliced; QK, PV, and softmax see the T by T slice.
+    Depthwise convs are vector taps. GLU, the 0.5 residual, and BatchNorm are not GEMMs.
+    """
+    mel, t = _d1_audio_lens(seconds)
+    if t <= 0 or clips <= 0:
+        return []
+    from .dtypes import fmt as _fmt
+    af = "fp32"
+    ab = _fmt(af).bytes
+    d = a.dims[0]
+    hds = a.heads
+    hd = d // hds
+    ch = a.ch
+    ff = a.gs_ff
+    ker = a.kernel
+
+    def gemm(name: str, m: int, k: int, n: int, layer: int = 0) -> Op:
+        return Op(name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=32.0, w_fmt="fp32",
+                  a_fmt=af, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+
+    freq = a.n_mels
+    length = mel
+    ops: list[Op] = []
+    length, freq = _d1_conv_len(length), _d1_conv_len(freq)
+    ops.append(gemm("aud.sub.0", length * freq * clips, 9, ch))
+    length, freq = _d1_conv_len(length), _d1_conv_len(freq)
+    ops.append(Op("aud.sub.dw0", "vector", 0, vec=length * freq * clips * ch * 9,
+                  act_bytes=2 * length * freq * clips * ch * ab))
+    ops.append(gemm("aud.sub.pw0", length * freq * clips, ch, ch))
+    length, freq = _d1_conv_len(length), _d1_conv_len(freq)
+    ops.append(Op("aud.sub.dw1", "vector", 0, vec=length * freq * clips * ch * 9,
+                  act_bytes=2 * length * freq * clips * ch * ab))
+    ops.append(gemm("aud.sub.pw1", length * freq * clips, ch, ch))
+    ops.append(gemm("aud.sub.out", length * clips, ch * freq, d))
+    pos = 2 * t - 1
+    for li in range(a.depths[0]):
+        tm = t * clips
+        ops += [gemm(f"aud.{li}.ff1_up", tm, d, ff, li), gemm(f"aud.{li}.ff1_down", tm, ff, d, li)]
+        ops += [gemm(f"aud.{li}.q", tm, d, d, li), gemm(f"aud.{li}.k", tm, d, d, li),
+                gemm(f"aud.{li}.v", tm, d, d, li), gemm(f"aud.{li}.o", tm, d, d, li)]
+        # One position row per batch, shared by every clip of this length.
+        ops.append(gemm(f"aud.{li}.pos", pos, d, d, li))
+        cnt = hds * clips
+        ops += [Op(f"aud.{li}.ac", "attn", li, m=t, k=hd, n=t, count=cnt, causal=1.0,
+                   act_bytes=cnt * t * hd * ab, stream=True, orient=True),
+                Op(f"aud.{li}.bd", "attn", li, m=t, k=hd, n=pos, count=cnt, causal=1.0,
+                   act_bytes=cnt * t * hd * ab, stream=True, orient=True),
+                Op(f"aud.{li}.pv", "attn", li, m=t, k=t, n=hd, count=cnt, causal=1.0,
+                   act_bytes=cnt * t * hd * ab, orient=True),
+                Op(f"aud.{li}.softmax", "vector", li, vec=cnt * t * t * 5.0)]
+        ops += [gemm(f"aud.{li}.pw1", tm, d, 2 * d, li),
+                Op(f"aud.{li}.dw", "vector", li, vec=tm * d * ker, act_bytes=2 * tm * d * ab),
+                gemm(f"aud.{li}.pw2", tm, d, d, li)]
+        ops += [gemm(f"aud.{li}.ff2_up", tm, d, ff, li), gemm(f"aud.{li}.ff2_down", tm, ff, d, li)]
+    ops += [gemm("aud.adapter.1", t * clips, d, a.out),
+            gemm("aud.adapter.2", t * clips, a.out, a.out)]
+    ops += [gemm("aud.residual.down", t * clips, a.out, a.gs_inner),
+            gemm("aud.residual.up", t * clips, a.gs_inner, a.out)]
+    return ops
+
+
 def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> list[Op]:
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
@@ -1358,6 +1547,8 @@ def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> lis
         return _gspeech_ops(a, seconds, clips, af)
     if a.kind == "gsctc":
         return _gsctc_ops(a, seconds, clips, af)
+    if a.kind == "d1fc":
+        return _d1_audio_ops(a, seconds, clips)
     if a.kind == "g4conf":
         return _g4conf_ops(a, seconds, clips, af)
     if a.kind == "g4lin":
@@ -1916,6 +2107,279 @@ def _lfm2_vl_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> li
     return ops
 
 
+def _d1_tile_ratios() -> tuple[tuple[int, int], ...]:
+    """Insertion order of vision.layout's ratio set, then a stable sort by area.
+
+    The released set comprehension iterates in hash order before sorted(), so an equal-area
+    tie follows PYTHONHASHSEED. Sizes this bill locks have a unique strict diff, so the
+    winner does not depend on that order. Generator order keeps the grid deterministic.
+    """
+    seen: list[tuple[int, int]] = []
+    got: set[tuple[int, int]] = set()
+    for n in range(2, 11):
+        for x in range(1, n + 1):
+            for y in range(1, n + 1):
+                if 2 <= x * y <= 10 and (x, y) not in got:
+                    got.add((x, y))
+                    seen.append((x, y))
+    return tuple(sorted(seen, key=lambda r: r[0] * r[1]))
+
+
+def _d1_vision_spec(cfg: dict) -> VisionSpec | None:
+    """SigLIP2 NaFlex, 2x2 pixel-unshuffle, FastConformer, bidirectional trunk, decision head.
+
+    The trunk is not an lfm2 decoder: there is no causal mask and no lm_head. VisionSpec.params
+    is the vision role (tower + projector + audio). The trunk and the head stay on the caller.
+    """
+    if (cfg.get("dtype") or cfg.get("torch_dtype")) != "float32":
+        return None
+    vc = cfg.get("vision_config") or {}
+    if vc.get("model_type") != "siglip2_vision_model" or vc.get("vision_use_head") is not False:
+        return None
+    tc = cfg.get("text_config") or {}
+    trunk = _d1_trunk_params(tc)
+    au = _d1_audio_spec(cfg)
+    if trunk is None or au is None:
+        return None
+    trunk_params, ff, hd, types = trunk
+    h = vc.get("hidden_size")
+    inter = vc.get("intermediate_size")
+    depth = vc.get("num_hidden_layers")
+    heads = vc.get("num_attention_heads")
+    patch = vc.get("patch_size")
+    channels = vc.get("num_channels")
+    npos = vc.get("num_patches")
+    text_h = tc.get("hidden_size")
+    proj_h = cfg.get("projector_hidden_size")
+    head_layers = cfg.get("head_layers")
+    max_len = cfg.get("max_length")
+    image_text = cfg.get("image_text_length")
+    audio_text = cfg.get("audio_text_length")
+    if not all(_pos_int(x) for x in (
+            h, inter, depth, heads, patch, channels, npos, text_h, proj_h, head_layers, max_len,
+            image_text, audio_text)):
+        return None
+    if patch != 16 or channels != 3 or h % heads or text_h % 64:
+        return None
+    if text_h != au.out or au.out != tc.get("hidden_size"):
+        return None
+    block = (4 * h + 4 * _lin(h, h, True) + _lin(h, inter, True) + _lin(inter, h, True))
+    tower = _lin(channels * patch * patch, h, True) + npos * h + depth * block + 2 * h
+    in_ch = h * 2 * 2
+    proj = _lin(in_ch, proj_h, True) + _lin(proj_h, text_h, True)
+    head_params = _d1_head_params(text_h, head_layers)
+    # 17 BatchNorms: running_mean / running_var are fp32, num_batches_tracked is one I64 each.
+    buf = au.depths[0] * au.dims[0] * 2 * 4 + au.depths[0] * 8
+    pre = {
+        "pad": _D1_PAD, "tile": _D1_TILE, "px": _D1_PX,
+        "min_px": 64 * 1024, "max_px": 256 * 1024,
+        "max_len": max_len, "image_text": image_text, "audio_text": audio_text,
+        "text_floor": _D1_TEXT_FLOOR,
+        "trunk": text_h, "ff": ff, "nq": tc["num_attention_heads"], "nkv": tc["num_key_value_heads"],
+        "hd": hd, "ck": 3, "types": ",".join(types),
+        "hl": head_layers, "hff": 4 * text_h, "hh": text_h // 64, "vocab": tc["vocab_size"],
+        "trunk_params": trunk_params, "head_params": head_params, "buf": buf,
+    }
+    wfmt = tuple((k, "fp32", 32.0, "fp32") for k in ("patch", "attn", "mlp", "merger"))
+    return VisionSpec(
+        "d1omni", "SigLIP2 NaFlex + pixel-unshuffle + FastConformer (bidirectional trunk)",
+        patch, 1, h, inter, depth, heads, h, False, 2, ((in_ch, proj_h), (proj_h, text_h)),
+        tower + proj + au.params, tuple(sorted(pre.items())), audio=au, wfmt=wfmt, w_Bpp=4.0)
+
+
+def _d1_image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
+    """vision.layout: smart-resize, then up to ten 512 px tiles plus a thumbnail.
+
+    Prefix tokens are the unshuffled crops. The tower still pads every crop to 1024.
+    There are no special image tokens.
+    """
+    pr = v.rz
+    factor = int(pr["px"])
+    tile = int(pr["tile"])
+    maximum = int(pr["max_px"])
+    minimum = int(pr["min_px"])
+    patch = v.patch
+    if width < 1 or height < 1:
+        raise ValueError("d1 image size must be positive")
+    h = max(factor, round(height / factor) * factor)
+    w = max(factor, round(width / factor) * factor)
+    if h * w > maximum:
+        beta = math.sqrt(height * width / maximum)
+        h = max(factor, math.floor(height / beta / factor) * factor)
+        w = max(factor, math.floor(width / beta / factor) * factor)
+    elif h * w < minimum:
+        beta = math.sqrt(minimum / (height * width))
+        h = math.ceil(height * beta / factor) * factor
+        w = math.ceil(width * beta / factor) * factor
+    large = (max(16, round(height / factor) * factor) * max(16, round(width / factor) * factor)
+             > maximum * 2)
+    views: list[tuple[int, int, int]] = []
+    feat = 0
+    if large:
+        best = float("inf")
+        grid = (1, 1)
+        for ratio in _d1_tile_ratios():
+            diff = abs(width / height - ratio[0] / ratio[1])
+            if diff < best or (diff == best and width * height > 0.5 * tile * tile * ratio[0] * ratio[1]):
+                grid, best = ratio, diff
+        gw, gh = grid
+        side = tile // patch
+        views.append((side, side, gw * gh))
+        feat += gw * gh * (side * side // 4)
+    ph, pw = h // patch, w // patch
+    if ph < 1 or pw < 1 or ph % v.merge or pw % v.merge:
+        raise ValueError("d1 thumbnail grid is not divisible by the unshuffle")
+    thumb = ph * pw // 4
+    if views and (ph, pw) == (views[0][0], views[0][1]):
+        a, b, c = views[0]
+        views[0] = (a, b, c + 1)
+    else:
+        views.append((ph, pw, 1))
+    feat += thumb
+    px = (tile * grid[0], tile * grid[1]) if large else (w, h)
+    return ImageGrid(views[0][0], views[0][1], feat, feat, px, tuple(views))
+
+
+def _d1_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> list[Op]:
+    """Padded SigLIP2 square, then the projector on the valid unshuffled rows. Weights and activations are fp32."""
+    del af
+    from .dtypes import fmt as _fmt
+    ab = _fmt("fp32").bytes
+    pad = int(v.rz["pad"])
+    factor = v.merge
+    groups = g.views or ((g.ph, g.pw, 1),)
+    qf = {k: (f, b, a) for k, f, b, a in v.wfmt}
+    h = v.hidden
+    dh = v.head_dim
+    ops: list[Op] = []
+
+    def gemm(pfx: str, name: str, m: int, k: int, n: int, layer: int, kind: str) -> Op:
+        f, b, a = qf[kind]
+        return Op(pfx + name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=b, w_fmt=f,
+                  a_fmt=a, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+
+    for gi, (ph, pw, cnt) in enumerate(groups):
+        if ph % factor or pw % factor or ph < 1 or pw < 1:
+            raise ValueError("d1 patch grid is not divisible by downsample_factor")
+        pfx = "vis." if gi == 0 else f"vis.v{gi}."
+        rows = images * cnt * pad
+        heads = images * cnt * v.heads
+        ops.append(gemm(pfx, "patch_embed", rows, 3 * v.patch * v.patch, h, 0, "patch"))
+        for li in range(v.depth):
+            ops += [gemm(pfx, f"{li}.q", rows, h, h, li, "attn"),
+                    gemm(pfx, f"{li}.k", rows, h, h, li, "attn"),
+                    gemm(pfx, f"{li}.v", rows, h, h, li, "attn"),
+                    gemm(pfx, f"{li}.o", rows, h, h, li, "attn"),
+                    gemm(pfx, f"{li}.fc1", rows, h, v.inter, li, "mlp"),
+                    gemm(pfx, f"{li}.fc2", rows, v.inter, h, li, "mlp")]
+            ops += [Op(f"{pfx}{li}.qk", "attn", li, m=pad, k=dh, n=pad, count=heads, causal=1.0,
+                       act_bytes=heads * pad * dh * ab, stream=True, orient=True),
+                    Op(f"{pfx}{li}.pv", "attn", li, m=pad, k=pad, n=dh, count=heads, causal=1.0,
+                       act_bytes=heads * pad * dh * ab, orient=True),
+                    Op(f"{pfx}{li}.softmax", "vector", li, vec=heads * pad * pad * 5.0)]
+        m_proj = images * cnt * (ph // factor) * (pw // factor)
+        for i, kn in enumerate(v.post):
+            k, n = kn[:2]
+            ops.append(gemm(pfx, f"merger.{i}", m_proj, k, n, v.depth, "merger"))
+    return ops
+
+
+def d1_text_len(v: VisionSpec, prompt: int, prefix: int, images: int, audio_s: float) -> int:
+    """Text tokens after the class cap. Prefix embeddings are not text. Images and audio are exclusive."""
+    if images and audio_s:
+        raise ValueError("d1 一次请求只能带图像或音频")
+    pr = v.rz
+    if images:
+        cap = int(pr["image_text"])
+    elif audio_s:
+        cap = int(pr["audio_text"])
+    else:
+        cap = int(pr["max_len"])
+    max_len = min(cap, int(pr["max_len"]) - prefix)
+    if max_len < int(pr["text_floor"]):
+        raise ValueError(f"d1 媒体前缀占了 {prefix} 个位置，剩下的文本不足 {int(pr['text_floor'])}")
+    return min(prompt, max_len)
+
+
+def d1_trunk_ops(v: VisionSpec, sequences: int, text: int, prefix: int, labels: int,
+                 af: str = "fp32") -> list[Op]:
+    """One bidirectional trunk pass per question, then the decision head on text positions only.
+
+    Attention is the full square (the additive mask is still scored). The centered 3-tap is a
+    vector op, not a recurrent state. The scorer gathers marker rows only. Type embedding is a
+    lookup, not a GEMM.
+    """
+    del af
+    if sequences <= 0 or text < 0 or prefix < 0:
+        return []
+    if labels > text:
+        raise ValueError("d1 的选项标记不能多于文本长度")
+    from .dtypes import fmt as _fmt
+    ab = _fmt("fp32").bytes
+    pr = v.rz
+    h = int(pr["trunk"])
+    ff = int(pr["ff"])
+    nq = int(pr["nq"])
+    nkv = int(pr["nkv"])
+    hd = int(pr["hd"])
+    length = prefix + text
+    m_trunk = sequences * length
+    m_text = sequences * text
+    types = str(pr["types"]).split(",")
+
+    def gemm(name: str, m: int, k: int, n: int, layer: int) -> Op:
+        return Op(name, "gemm", layer, m=m, k=k, n=n, role="attn", w_params=k * n, w_bits=32.0, w_fmt="fp32",
+                  a_fmt="fp32", act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+
+    ops: list[Op] = []
+    if text:
+        ops.append(Op("trunk.embed", "lookup", -1, kv_read=m_text * h * ab, vec=m_text * h))
+    for i, kind in enumerate(types):
+        if kind == "conv":
+            ops.append(gemm(f"trunk.{i}.in", m_trunk, h, 3 * h, i))
+            # Three taps at 2 flops each, plus the B*x and C*y gates.
+            ops.append(Op(f"trunk.{i}.conv", "vector", i, vec=m_trunk * h * 8,
+                          act_bytes=2 * m_trunk * h * ab))
+            ops.append(gemm(f"trunk.{i}.out", m_trunk, h, h, i))
+        else:
+            ops += [gemm(f"trunk.{i}.q", m_trunk, h, nq * hd, i),
+                    gemm(f"trunk.{i}.k", m_trunk, h, nkv * hd, i),
+                    gemm(f"trunk.{i}.v", m_trunk, h, nkv * hd, i),
+                    gemm(f"trunk.{i}.o", m_trunk, h, h, i)]
+            cnt = sequences * nq
+            if length:
+                ops += [Op(f"trunk.{i}.qk", "attn", i, m=length, k=hd, n=length, count=cnt, causal=1.0,
+                           act_bytes=cnt * length * hd * ab, stream=True, orient=True),
+                        Op(f"trunk.{i}.pv", "attn", i, m=length, k=length, n=hd, count=cnt, causal=1.0,
+                           act_bytes=cnt * length * hd * ab, orient=True),
+                        Op(f"trunk.{i}.softmax", "vector", i, vec=cnt * length * length * 5.0)]
+        ops += [gemm(f"trunk.{i}.w1", m_trunk, h, ff, i),
+                gemm(f"trunk.{i}.w3", m_trunk, h, ff, i),
+                gemm(f"trunk.{i}.w2", m_trunk, ff, h, i)]
+    hl = int(pr["hl"])
+    hh = int(pr["hh"])
+    hff = int(pr["hff"])
+    hhd = h // hh
+    if text:
+        ops.append(Op("head.type_emb", "lookup", -1, kv_read=sequences * h * ab, vec=sequences * h))
+        for j in range(hl):
+            ops += [gemm(f"head.{j}.in", m_text, h, 3 * h, j),
+                    gemm(f"head.{j}.o", m_text, h, h, j)]
+            cnt = sequences * hh
+            ops += [Op(f"head.{j}.qk", "attn", j, m=text, k=hhd, n=text, count=cnt, causal=1.0,
+                       act_bytes=cnt * text * hhd * ab, stream=True, orient=True),
+                    Op(f"head.{j}.pv", "attn", j, m=text, k=text, n=hhd, count=cnt, causal=1.0,
+                       act_bytes=cnt * text * hhd * ab, orient=True),
+                    Op(f"head.{j}.softmax", "vector", j, vec=cnt * text * text * 5.0)]
+            ops += [gemm(f"head.{j}.fc1", m_text, h, hff, j),
+                    gemm(f"head.{j}.fc2", m_text, hff, h, j)]
+    if labels > 0 and text:
+        m_score = sequences * labels
+        ops += [gemm("head.scorer.1", m_score, h, h, hl),
+                gemm("head.scorer.3", m_score, h, 1, hl)]
+    return ops
+
+
 def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
     """VisionSpec from the release's full config (``vision_config`` + text hidden size), or None."""
     vc = cfg.get("vision_config")
@@ -1970,6 +2434,8 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                               approx=("输入离散语义 token：GLM-4-Voice tokenizer（THUDM/glm-4-voice-tokenizer，Whisper-v3 "
                                       "前 16 层 + 4× 池化 + VQ 16384，另一仓库）未计入音频编码耗时" if au.stack else ""))
         return None
+    if cfg.get("model_type") == "d1_omni":
+        return _d1_vision_spec(cfg)
     if cfg.get("model_type") == "lfm2_vl" and vc.get("model_type") == "siglip2_vision_model":
         return _lfm2_vl_vision_spec(cfg, vc)
     if vc.get("model_type") in ("gemma4_vision", "gemma4_unified_vision"):
@@ -2393,6 +2859,8 @@ def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
         return ImageGrid(hp, wp, m, m + 2, (wp * pr["patch"], hp * pr["patch"]))
     if v.family == "lfm2vl":
         return _lfm2_vl_image_grid(v, width, height)
+    if v.family == "d1omni":
+        return _d1_image_grid(v, width, height)
     if v.family == "pixtral":
         # PixtralProcessor.replace_image_token: one break/end token per merged row.
         factor = pr["factor"]
@@ -2451,6 +2919,8 @@ def vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str = "bf16") -> li
         return _gemma4_vision_ops(v, g, images, af)
     if v.family == "lfm2vl":
         return _lfm2_vl_vision_ops(v, g, images, af)
+    if v.family == "d1omni":
+        return _d1_vision_ops(v, g, images, af)
     if v.family == "ernievl" and g.tframes > 1:
         return _ernie_vl_video_ops(v, g, images, af)
     if g.tframes > 1:

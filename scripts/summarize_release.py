@@ -192,6 +192,16 @@ def _granite_speech_role(name: str, n_layers: int | None) -> str:
     return classify(name, n_layers)
 
 
+def _d1_omni_role(name: str, n_layers: int | None) -> str:
+    """0.394 d1-omni. vision.* and audio.* stay on the vision role (the ROLE table already
+    matches those substrings). FastConformer BatchNorm running stats are buffers. The
+    conformer has one more layer index than the text trunk; the audio prefix keeps that
+    tensor out of the mtp bucket. The decision head has no lm_head."""
+    if name.endswith((".running_mean", ".running_var", ".num_batches_tracked")):
+        return "buffer"
+    return classify(name, n_layers)
+
+
 def _step_audio_role(name: str, n_layers: int | None) -> str:
     """0.272 Step-Audio-2-mini (modeling_step_audio_2.py StepAudio2ForCausalLM): Whisper-style audio encoder
     (encoder.*) and its Adaptor (adapter.*) → vision; Qwen2Model (model.*) + untied lm_head → the LLM."""
@@ -525,6 +535,7 @@ def summarize(repo: str, key: str | None = None) -> dict:
                 _step_audio_role(name, nl) if cfg.get("model_type") == "step_audio_2" else
                 _granite_speech_role(name, nl) if cfg.get("model_type") in (
                     "granite_speech", "granite_speech_plus", "granite_speech5_ctc") else
+                _d1_omni_role(name, nl) if cfg.get("model_type") == "d1_omni" else
                 _moshi_role(name, nl) if cfg.get("model_type") == "moshi" else
                 _firered_role(name, nl) if cfg.get("model_type") == "fireredtts3" else
                 _qwen3_tts_role(name, nl) if cfg.get("model_type") == "qwen3_tts" else

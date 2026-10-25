@@ -27,7 +27,8 @@ from .model import ModelSpec, with_formats
 from .parallel import Layout, plan_stages, plan_stages_balanced
 from .pipeline import TILING, has_encoder, pipeline_for, stored_bytes, te_layers, text_ops, vae_encode_ops, vae_ops
 from .scenario import Scenario
-from .vision import audio_ops, expand_images, image_grid, video_grid_of, vision_act_peak, vision_ops
+from .vision import (audio_ops, d1_text_len, d1_trunk_ops, expand_images, image_grid, video_grid_of,
+                    vision_act_peak, vision_ops)
 from .ir import dspark_ops, red_bytes, skew_from_load
 from .ir import _prefix as _ir_prefix
 from . import fabric
@@ -414,7 +415,10 @@ class Result:
         """0.191 decision readout: one forward per question (prefill of prompt + options), no decode loop."""
         sv = self.scenario.serving
         think_s, think_note = 0.0, ""
-        if sv.think:
+        if sv.think and getattr(self.model, "d1", False):
+            # The released class returns output_tokens = 0. A thought is not a second causal decode.
+            think_note = "d1 没有自回归 decode：output_tokens 为 0，思考不另计"
+        elif sv.think:
             # 0.192: the thought is a decode run after the prompt prefill — T steps at ctx growing prompt → prompt + T,
             # integrated at 4 segment midpoints; the closing readout is one more step on the label rows (≈ a decode
             # step, inside the thought's last segment within the 4-point error)
@@ -1863,15 +1867,17 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
             m = hp[scn.hyena_prefill]
             if scn.hyena_prefill == "fused":
                 warnings.append("hyena_prefill = fused（what-if）：MR / LR 的 FFT 卷积按单个片上内核计，频谱放不下时按四步 FFT 多遍")
-    if scn.serving.audio_s and not scn.serving.image_tokens and getattr(m.vision, "audio", None) is None:
-        warnings.append("serving.audio_s 已忽略：该模型没有音频编码器")
-    if (scn.serving.images or scn.serving.videos or scn.serving.audio_s) and not scn.serving.image_tokens:
-        if m.vision is None or m.vision.family == "audio":
-            if scn.serving.images or scn.serving.videos:
-                warnings.append(("serving.images 已忽略" if scn.serving.images else "serving.videos 已忽略")
-                            + "：该模型没有视觉编码器（只有 VLM 计图像 / 视频）")
-        if m.vision is not None:
-            scn = expand_images(scn, m)     # 0.62: image positions join prompt / ctx (KV, prefill length)
+    # d1 prefix embeddings are not text tokens. expand_images would add them to the prompt.
+    if not getattr(m, "d1", False):
+        if scn.serving.audio_s and not scn.serving.image_tokens and getattr(m.vision, "audio", None) is None:
+            warnings.append("serving.audio_s 已忽略：该模型没有音频编码器")
+        if (scn.serving.images or scn.serving.videos or scn.serving.audio_s) and not scn.serving.image_tokens:
+            if m.vision is None or m.vision.family == "audio":
+                if scn.serving.images or scn.serving.videos:
+                    warnings.append(("serving.images 已忽略" if scn.serving.images else "serving.videos 已忽略")
+                                + "：该模型没有视觉编码器（只有 VLM 计图像 / 视频）")
+            if m.vision is not None:
+                scn = expand_images(scn, m)     # 0.62: image positions join prompt / ctx (KV, prefill length)
     sv, lay = scn.serving, scn.layout
     if lay.cp > 1 and not m.kv_cache:     # 0.90: say why, not just "layout invalid"
         raise ValueError(f"layout.cp = {lay.cp}（上下文并行）只用于 LLM prefill；视频 / 蛋白模型的序列切分请用 sp"
@@ -1882,7 +1888,7 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
                             if m.is_pair else
                             "(video / protein models: ep = etp = 1)" if not m.kv_cache else
                             "(MoE needs ep·etp = tp·dp; dense needs dp=ep=etp=1; sp only for video / protein models)"))
-    if m.ctc_only:
+    if m.ctc_only or getattr(m, "d1", False):
         if lay.pp > 1:
             raise ValueError("pp exceeds layer count")
     elif lay.pp > m.n_layers:
@@ -1913,6 +1919,8 @@ def evaluate(scn: Scenario, model: ModelSpec | None = None) -> Result:
     if not m.kv_cache:
         if scn.pd.enabled:              # 0.90: was silently ignored
             warnings.append("PD 分离（pd.enabled）对视频 / 蛋白模型无效：没有 KV 缓存，也没有 decode 阶段——按单一部署评估，PD 设置被忽略")
+        if getattr(m, "d1", False):
+            return _evaluate_d1(scn, m, sys, warnings)
         if m.ctc_only:
             return _evaluate_ctc(scn, m, sys, warnings)
         return _evaluate_full(scn, m, sys, warnings)
@@ -2480,6 +2488,67 @@ def _cfg_chain(seqs: int, mb: int, per_req: int) -> int:
     for i in range(nmb):
         sizes[find(i)] = sizes.get(find(i), 0) + 1
     return max(sizes.values())
+
+
+def _evaluate_d1(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]) -> Result:
+    """One d1 forward. Images and audio are exclusive. Each question is its own sequence."""
+    sv, lay = scn.serving, scn.layout
+    if lay.tp != 1 or lay.sp != 1:
+        raise ValueError("d1 按整段前向计，tp / sp 只支持 1")
+    if sv.videos:
+        warnings.append("serving.videos 已忽略：d1 没有视频路径")
+    if sv.phase == "decode":
+        warnings.append("d1 没有自回归 decode：output_tokens 为 0，按一次前向计")
+    v = m.vision
+    au = v.audio
+    per = _cdiv(sv.batch, lay.dp)
+    g = None
+    if sv.images and sv.audio_s:
+        raise ValueError("d1 一次请求只能带图像或音频")
+    if sv.images:
+        g = image_grid(v, sv.image_w, sv.image_h)
+        prefix = sv.images * g.llm_tokens
+        vis_ops = vision_ops(v, g, per * sv.images, m.act_fmt) if per else []
+        aud_ops: list[Op] = []
+        audio_tokens = 0
+    elif sv.audio_s:
+        prefix = au.tokens(sv.audio_s)
+        vis_ops = []
+        aud_ops = audio_ops(au, sv.audio_s, per, m.act_fmt) if per else []
+        audio_tokens = prefix
+    else:
+        prefix = 0
+        vis_ops = []
+        aud_ops = []
+        audio_tokens = 0
+    budget = sv.prompt if sv.phase == "prefill" else sv.ctx
+    text = d1_text_len(v, budget, prefix, sv.images, sv.audio_s)
+    sequences = per * sv.questions
+    trunk = d1_trunk_ops(v, sequences, text, prefix, sv.labels, m.act_fmt) if per else []
+    ops = vis_ops + aud_ops + trunk
+    if ops:
+        stt, c = _component_bill([(ops, 1)], sys, scn.mapping, m.act_fmt)
+    else:
+        stt = StageTime(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        c = {"s": 0.0, "tflop": 0.0, "dram_GB": 0.0, "bound": stt.bound}
+    w = m.trunk_params * 4 + m.vision_params * v.w_Bpp + m.d1_buf
+    fits = w <= sys.dram_bytes
+    if not fits:
+        warnings.append("d1 权重放不进该卡的 DRAM")
+    mp = MemPlan(stored_w=w, kv_total=0.0, state_total=0.0, dram_need=w, dram_cap=sys.dram_bytes,
+                 fits=fits, sram=0.0, staging=0.0, pinned_hot=0.0, pinned_expert=0.0, kv_sram=0.0,
+                 residency=1.0 if w else 0.0)
+    stage = StageResult(0, (0, 0), stt, mp, {"total": c["dram_GB"] * 1e9, "weights": w}, 0.0,
+                        flops_u=c["tflop"] * 1e12)
+    step = c["s"]
+    thr = sv.batch * sv.questions / step if step > 0 else 0.0
+    r = Result(scn, m, [stage], step, step, float(sv.questions), 0.0, step, thr,
+               thr / lay.cards, fits, c["bound"], 0, warnings, 1, latency=step)
+    k_w = (sv.batch / per) if per else 0.0
+    r.vision = {"s": step, "tflop": c["tflop"] * k_w,
+                "image_tokens": prefix if sv.images else 0, "weights_GB": w / 1e9,
+                "audio": {"seconds": sv.audio_s, "tokens": audio_tokens, "params_M": au.params / 1e6}}
+    return r
 
 
 def _evaluate_ctc(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str]) -> Result:

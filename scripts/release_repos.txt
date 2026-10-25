@@ -299,3 +299,5 @@ ibm-granite/granite-speech-5.0-2b
 ibm-granite/granite-speech-4.1-2b-plus
 # 0.393 Granite Speech 5 CTC. Encoder only; the CTC head is tied to encoder.out.
 ibm-granite/granite-speech-5.0-470m-turboctc
+# 0.394 d1-omni-600M. Bidirectional LFM2.5 encoder + decision head + FastConformer + SigLIP2. fp32.
+LiquidAI/d1-omni-600M

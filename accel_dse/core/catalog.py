@@ -112,6 +112,9 @@ EXTRA_TAIL = [
     ("lfm2.5-vl-3b", "LiquidAI/LFM2.5-VL-3B"),
     ("lfm2.5-vl-450m", "LiquidAI/LFM2.5-VL-450M"),
     ("d1-3b", "LiquidAI/d1-3B"),
+    # 0.394: bidirectional LFM2.5 encoder + decision head + FastConformer + SigLIP2.
+    # Not an lfm2 / lfm2_vl decode stack.
+    ("d1-omni-600m", "LiquidAI/d1-omni-600M"),
     # 0.390: Magistral-Small-2509 and Mistral-Small-3.1 share tensor names, dtypes,
     # and shapes with Mistral-Small-3.2. Pixtral tower plus the Mistral3 projector.
     ("magistral-small-2509", "mistralai/Magistral-Small-2509"),

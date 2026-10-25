@@ -1,0 +1,143 @@
+{
+ "bytes_llm": 1522928644,
+ "bytes_mtp": 0,
+ "bytes_total": 2348644492,
+ "config": {
+  "architectures": [
+   "D1OmniModel"
+  ],
+  "audio_config": {
+   "conv_kernel_size": 9,
+   "d_model": 512,
+   "feat_in": 128,
+   "ff_expansion_factor": 4,
+   "n_heads": 8,
+   "n_layers": 17,
+   "residual_width": 512,
+   "subsampling_conv_channels": 256
+  },
+  "audio_text_length": 15360,
+  "auto_map": {
+   "AutoConfig": "modeling_d1.D1OmniConfig",
+   "AutoModel": "modeling_d1.D1OmniModel"
+  },
+  "bos_token_id": 1,
+  "dtype": "float32",
+  "head_layers": 2,
+  "image_text_length": 896,
+  "max_length": 16384,
+  "model_type": "d1_omni",
+  "pad_token_id": 0,
+  "projector_hidden_size": 2048,
+  "temperatures": {
+   "choice": 1.0,
+   "choice:11+": 1.372515082359314,
+   "choice:2": 1.7465145587921143,
+   "choice:3-5": 1.3998981714248657,
+   "choice:6-10": 1.1751071214675903,
+   "noul": 1.0,
+   "noul:2": 1.6663223505020142,
+   "score": 1.0,
+   "score:3-5": 1.7301132678985596,
+   "score:6-10": 1.0
+  },
+  "text_config": {
+   "block_ffn_dim_multiplier": 1.0,
+   "block_multiple_of": 256,
+   "conv_L_cache": 3,
+   "hidden_size": 1024,
+   "intermediate_size": 6656,
+   "layer_types": [
+    "conv",
+    "conv",
+    "full_attention",
+    "conv",
+    "conv",
+    "full_attention",
+    "conv",
+    "conv",
+    "full_attention",
+    "conv",
+    "full_attention",
+    "conv",
+    "full_attention",
+    "conv",
+    "full_attention",
+    "conv"
+   ],
+   "max_position_embeddings": 128000,
+   "norm_eps": 1e-05,
+   "num_attention_heads": 16,
+   "num_hidden_layers": 16,
+   "num_key_value_heads": 8,
+   "rope_theta": 1000000.0,
+   "vocab_size": 65536
+  },
+  "vision_config": {
+   "attention_dropout": 0.0,
+   "hidden_act": "gelu_pytorch_tanh",
+   "hidden_size": 768,
+   "intermediate_size": 3072,
+   "layer_norm_eps": 1e-06,
+   "model_type": "siglip2_vision_model",
+   "num_attention_heads": 12,
+   "num_channels": 3,
+   "num_hidden_layers": 12,
+   "num_patches": 256,
+   "patch_size": 16,
+   "vision_use_head": false
+  }
+ },
+ "fetched": "2026-10-25",
+ "n_tensors": 1084,
+ "params_llm": 380732161,
+ "params_mtp": 0,
+ "params_vision": 206411520,
+ "quantization_config": null,
+ "repo": "LiquidAI/d1-omni-600M",
+ "roles": {
+  "attn": {
+   "fp32": {
+    "bytes": 276979712,
+    "params": 69244928
+   }
+  },
+  "buffer": {
+   "int64": {
+    "bytes": 69768,
+    "params": 0
+   }
+  },
+  "embed": {
+   "fp32": {
+    "bytes": 268435456,
+    "params": 67108864
+   }
+  },
+  "mlp": {
+   "fp32": {
+    "bytes": 905969664,
+    "params": 226492416
+   }
+  },
+  "norm": {
+   "fp32": {
+    "bytes": 138240,
+    "params": 34560
+   }
+  },
+  "other": {
+   "fp32": {
+    "bytes": 71405572,
+    "params": 17851393
+   }
+  },
+  "vision": {
+   "fp32": {
+    "bytes": 825646080,
+    "params": 206411520
+   }
+  }
+ },
+ "torch_dtype": "float32"
+}
