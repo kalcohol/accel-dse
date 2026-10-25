@@ -240,7 +240,11 @@ for _g4 in (
 # get_smarted_resize. An odd sampled count copies the last frame so the resampler's pairs have equal rows.
 # fps / min_frames / max_frames only choose samples from a file. Timestamps are drawn into the pixels.
 _ERNIE_VL_VIDEO = {"ernie_temporal": 2, "min_px": 299 * 28 * 28, "max_px": 1196 * 28 * 28}
-for _ev in ("baidu/ERNIE-4.5-VL-28B-A3B-PT", "baidu/ERNIE-4.5-VL-424B-A47B-PT"):
+for _ev in (
+    "baidu/ERNIE-4.5-VL-28B-A3B-PT", "baidu/ERNIE-4.5-VL-424B-A47B-PT",
+    # 0.396 Thinking uses the same Ernie4_5_VLProcessor limits (temporal 2, video pixel caps).
+    "baidu/ERNIE-4.5-VL-28B-A3B-Thinking",
+):
     _VIDEO[_ev] = dict(_ERNIE_VL_VIDEO)
 # 「来源」 transformers qwen3_vl/video_processing_qwen3_vl.py: fps 2, min_frames 4, max_frames 768, max_video_tokens 768
 VIDEO_FPS, VIDEO_MIN_FRAMES, VIDEO_MAX_FRAMES, VIDEO_MAX_TOK = 2, 4, 768, 768

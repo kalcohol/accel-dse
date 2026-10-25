@@ -80,6 +80,10 @@ EXTRA_TAIL = [
     # 0.378: ERNIE-4.5-21B-A3B-Base-PT. Same language stack. Config omits num_nextn_predict_layers and the
     # headers have no mtp tensors, so this row does not invent an MTP module.
     ("ernie-4.5-21b-a3b-base-pt", "baidu/ERNIE-4.5-21B-A3B-Base-PT"),
+    # 0.396: ERNIE-4.5-21B-A3B-Thinking. Same tensor names, dtypes, and shapes as Base-PT.
+    # moe_gate is the string "top2_fused". PaddlePaddle/ERNIE modeling_moe.py maps that string
+    # and "topk" to TopKGate. Selected experts stay moe_k (6), not 2. No MTP tensors.
+    ("ernie-4.5-21b-a3b-thinking", "baidu/ERNIE-4.5-21B-A3B-Thinking"),
     # 0.379: ERNIE-4.5-300B-A47B-PT / Base-PT. Same public class. 54-layer GQA, no shared experts,
     # MoE from layer 3, untied lm_head. Full shard headers close rel_err. Base has no MTP tensors.
     ("ernie-4.5-300b-a47b-pt", "baidu/ERNIE-4.5-300B-A47B-PT"),
@@ -160,6 +164,10 @@ EXTRA_TAIL = [
     # 0.385: video frames are paired on a separate grid; temporal GEMMs see half the rows.
     ("ernie-4.5-vl-28b-a3b-pt", "baidu/ERNIE-4.5-VL-28B-A3B-PT"),
     ("ernie-4.5-vl-424b-a47b-pt", "baidu/ERNIE-4.5-VL-424B-A47B-PT"),
+    # 0.396: ERNIE-4.5-VL-28B-A3B-Thinking. Same dual-pool geometry as the 28B PT row.
+    # moe_gate is "topk" (VL TopKGate, k = moe_k). A stored tied lm_head is deducted.
+    # Vision tensors are bf16. Tower GEMMs stay the published bf16 label (2 bytes/param).
+    ("ernie-4.5-vl-28b-a3b-thinking", "baidu/ERNIE-4.5-VL-28B-A3B-Thinking"),
     # 0.388: WeVisOne-VL-4B / 2B. Qwen3VLForConditionalGeneration. Safetensors are fp32
     # (config dtype bfloat16). Untied lm_head, vocab 152680. Vision is the Qwen3-VL tower.
     ("wevisone-vl-4b", "tencent/WeVisOne-VL-4B"),
