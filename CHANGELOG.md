@@ -6,6 +6,30 @@
 
 
 
+## [0.397.0] — 2026-10-25
+
+### ERNIE-4.5-300B-A47B-Base 的 U16 按已发布的 bfloat16 运输计
+
+- **新增 4 个发布**（2026-10-25 读取 config 与 safetensors header）。每一份 `param_check().rel_err == 0`。覆盖 full。`params_mtp == 0`。
+  - **ernie-4.5-300b-a47b-base。** `Ernie4_5_MoeForCausalLM`，`model_type=ernie4_5_moe`。`dtype` 是 `bfloat16`。`moe_gate` 是 `topk`，`moe_k` 是 8。没有 `moe_layer_end_index`，没有 `num_nextn_predict_layers`，没有共享专家。6855 张量，参数 299,484,163,264，`bytes_total` 599,021,810,432。角色、参数和字节与 `ERNIE-4.5-300B-A47B-Base-PT` 相同。PT 是 10230 张量：3 层稠密的 gate+up、51×64 个专家的 gate+up、54 层的 q/k/v 各收成一张，10230−3−51×64−54×2 = 6855。router 仍是 fp32，26,741,952 参数、106,967,808 字节。其余角色是 bf16，每参数 2 字节。
+  - **ernie-4.5-vl-28b-a3b 与 ernie-4.5-vl-28b-a3b-base。** 张量名、dtype 和形状与 28B-A3B-PT 相同，没有融合投影，也没有 U16。语言 28,624,635,776，视觉 774,658,560，11105 张量，`bytes_total` 58,816,290,304。视觉是 fp16+bf16。`moe_gate` 是 `topk`，`moe_k` 是 6。嵌入与 lm_head 仍 tied。视频网格与 PT 相同（temporal 2，video 像素上下限不变）。
+  - **ernie-4.5-vl-424b-a47b。** 张量名、dtype 和形状与 424B-A47B-PT 相同。语言 422,722,779,520，视觉 803,505,664，20475 张量。header 的 `bytes_total` 是 847,159,538,176，与 PT 一致。index 的 `total_size` 847,161,324,032 比 header 多 1,785,856，正好是这份 norm 的字节数，不采用。`moe_k` 是 8。lm_head 不 tied。
+- **机制。** PaddlePaddle/Paddle `python/paddle/distributed/flex_checkpoint/dcp/utils.py` 的 `_SAFETENSORS_DTYPE_MAPPING` 把 safetensors dtype `U16` 运成 `bfloat16`（同一张表里的 `BF16` 也是 `bfloat16`）。numpy 没有 bfloat16，np saver 把 bf16 的比特写成 U16。header metadata 的 `format` 是 `np`。每个 U16 元素是 2 字节；宽度对不上就拒绝。不另写 U16 GEMM。`qkv_proj` 的最后一维是 `(num_attention_heads + 2·num_key_value_heads)·head_dim` = 10240，拆开就是现有的 q / k / v，发出的算子仍是 `attn.qkv`。`up_gate_proj` 的最后一维是 `2·intermediate`（稠密 57344）或 `2·moe_intermediate`（专家 7168），就是现有的 `mlp.gate_up` / `expert.gate_up`。`down_proj` 与 `o_proj` 已经是现有 GEMM。Paddle Linear 的布局是 `[in, out]`。router 与 `e_score_correction_bias` 仍是 fp32。不另写融合 QKV 算子。
+- **0.396 Thinking 复核。** 文本 `moe_gate` 的字符串 `top2_fused` 与 `topk` 都是 TopKGate，选中数是 `moe_k`，不是 2。把 `moe_k` 改成 3 时 `top_k` 是 3，`expert.gate_up` 的激活行数跟着变成 3，权重的 `(k, n)` 不变。`moe_capacity` 只改 dispatch，不改 `expert.gate_up`。VL Thinking 在同一步里有视觉 token 时，文本池和视觉池都按 `moe_k` 计。`top2` 与 `top2_fused` 在 VL 上仍拒绝。tied `lm_head` 仍只扣一份。视觉 GEMM 仍是 bf16。参数和 GEMM 形状不改。
+- **未纳入：**
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401（2026-10-25）。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 `config.json` 仍是 404。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **LongCat-Flash MTP。** 类仍把 `model.mtp.*` 列在忽略名单里。不另写递推。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 与 `tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。Diffusers 世界模型，不新写。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `config.json` 仍是 401。
+  - **nvidia Cosmos3。** 仍是扩散栈，不是已有的条件生成路径。
+  - **Gemma-4 assistant / QAT。** 没有新的可对上的 header。不单列。
+  - **2026-10-25 当天及之后的公开扫描**（120 个组织，`createdAt` ≥ 2026-10-25）。没有新行。没有能套上现有机制的新 safetensors 或 PT。GGUF / MLX / ONNX / tensorrt / DFlash 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.396.0] — 2026-10-25
 
 ### ERNIE-4.5 Thinking 按已发布的 TopKGate 读 `moe_gate`

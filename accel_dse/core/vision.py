@@ -244,6 +244,10 @@ for _ev in (
     "baidu/ERNIE-4.5-VL-28B-A3B-PT", "baidu/ERNIE-4.5-VL-424B-A47B-PT",
     # 0.396 Thinking uses the same Ernie4_5_VLProcessor limits (temporal 2, video pixel caps).
     "baidu/ERNIE-4.5-VL-28B-A3B-Thinking",
+    # 0.397: non-PT repos ship processing_ernie4_5_vl.py with the same defaults
+    # (video_min_pixels 299*28*28, video_max_pixels 1196*28*28, temporal_conv_size 2).
+    "baidu/ERNIE-4.5-VL-28B-A3B", "baidu/ERNIE-4.5-VL-28B-A3B-Base",
+    "baidu/ERNIE-4.5-VL-424B-A47B",
 ):
     _VIDEO[_ev] = dict(_ERNIE_VL_VIDEO)
 # 「来源」 transformers qwen3_vl/video_processing_qwen3_vl.py: fps 2, min_frames 4, max_frames 768, max_video_tokens 768

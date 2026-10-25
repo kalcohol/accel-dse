@@ -88,6 +88,10 @@ EXTRA_TAIL = [
     # MoE from layer 3, untied lm_head. Full shard headers close rel_err. Base has no MTP tensors.
     ("ernie-4.5-300b-a47b-pt", "baidu/ERNIE-4.5-300B-A47B-PT"),
     ("ernie-4.5-300b-a47b-base-pt", "baidu/ERNIE-4.5-300B-A47B-Base-PT"),
+    # 0.397: ERNIE-4.5-300B-A47B-Base (no PT). Paddle fused qkv_proj / up_gate_proj.
+    # Safetensors dtype U16 is the published bfloat16 transport (2 bytes). No MTP tensors.
+    # Element counts match Base-PT. GEMMs stay the existing q/k/v and gate_up shapes.
+    ("ernie-4.5-300b-a47b-base", "baidu/ERNIE-4.5-300B-A47B-Base"),
     # 0.380: Mistral-Small-3.2. Text is Mistral GQA (head_dim 128). Vision is the public Pixtral
     # tower plus the Mistral3 projector. Magistral-Small-2509 and Mistral-Small-3.1 match these headers.
     ("mistral-small-3.2-24b-instruct-2506", "mistralai/Mistral-Small-3.2-24B-Instruct-2506"),
@@ -168,6 +172,11 @@ EXTRA_TAIL = [
     # moe_gate is "topk" (VL TopKGate, k = moe_k). A stored tied lm_head is deducted.
     # Vision tensors are bf16. Tower GEMMs stay the published bf16 label (2 bytes/param).
     ("ernie-4.5-vl-28b-a3b-thinking", "baidu/ERNIE-4.5-VL-28B-A3B-Thinking"),
+    # 0.397: non-PT VL rows. Tensor names, dtypes, and shapes match the PT rows
+    # (unfused q/k/v and gate/up, bf16 language, fp32 routers, fp16+bf16 vision).
+    ("ernie-4.5-vl-28b-a3b", "baidu/ERNIE-4.5-VL-28B-A3B"),
+    ("ernie-4.5-vl-28b-a3b-base", "baidu/ERNIE-4.5-VL-28B-A3B-Base"),
+    ("ernie-4.5-vl-424b-a47b", "baidu/ERNIE-4.5-VL-424B-A47B"),
     # 0.388: WeVisOne-VL-4B / 2B. Qwen3VLForConditionalGeneration. Safetensors are fp32
     # (config dtype bfloat16). Untied lm_head, vocab 152680. Vision is the Qwen3-VL tower.
     ("wevisone-vl-4b", "tencent/WeVisOne-VL-4B"),

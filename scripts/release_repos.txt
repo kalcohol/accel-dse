@@ -310,3 +310,9 @@ LiquidAI/d1-omni-600M
 # VL moe_gate "topk" is the existing dual-pool bill. Tied lm_head is stored once.
 baidu/ERNIE-4.5-21B-A3B-Thinking
 baidu/ERNIE-4.5-VL-28B-A3B-Thinking
+# 0.397 ERNIE-4.5-300B-A47B-Base (no PT). Paddle fused qkv/up_gate, safetensors U16 = bf16.
+# Non-PT VL rows match the PT tensor names, dtypes, and shapes.
+baidu/ERNIE-4.5-300B-A47B-Base
+baidu/ERNIE-4.5-VL-28B-A3B
+baidu/ERNIE-4.5-VL-28B-A3B-Base
+baidu/ERNIE-4.5-VL-424B-A47B

@@ -3494,6 +3494,18 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
     c = _tc(cfg)
     build, arch = _builder(c)
     layers, mtp, notes, cov = build(c)
+    if rel and rel.get("storage_alias") == {"U16": "bf16"} and rel.get("fused_linears"):
+        notes = list(notes) + [
+            "Paddle safetensors 的 dtype U16 按 PaddlePaddle/Paddle "
+            "flex_checkpoint/dcp/utils.py 的 _SAFETENSORS_DTYPE_MAPPING 作为 bfloat16 运输"
+            "（每个元素 2 字节；numpy 没有 bfloat16）。"
+            "qkv_proj 的最后一维是 (num_attention_heads + 2·num_key_value_heads)·head_dim，"
+            "拆开就是现有的 q / k / v。"
+            "up_gate_proj 的最后一维是 2·intermediate（专家是 2·moe_intermediate），"
+            "就是现有的 gate_up。down_proj 与 o_proj 已经是现有 GEMM。"
+            "router 与 e_score_correction_bias 仍是 fp32。"
+            "不另写 U16 GEMM，也不另写融合 QKV 算子。",
+        ]
     gl = _moe_groups(c)
     if gl:
         layers = [replace(L, ffn=replace(L.ffn, groups=gl)) if L.ffn.kind == "moe" else L for L in layers]
