@@ -42,7 +42,9 @@ def test_act_fmt_for_default_and_override():
                                                 "act_mlp_bf16": "bf16"},
                  # 0.400: n-gram projections read the bf16 embedding row. Other GEMMs keep the global act format.
                  "longcat-flash-lite": {"act_ngram": "bf16"},
-                 "longcat-flash-lite-fp8": {"act_ngram": "bf16"}}
+                 "longcat-flash-lite-fp8": {"act_ngram": "bf16"},
+                 # 0.401: Thinking-2601-FP8 quantizes every expert and dense block. Attention stays bf16.
+                 "longcat-flash-thinking-2601-fp8": {"act_attn": "bf16"}}
         if e["id"] in mixed:
             assert acts == mixed[e["id"]], (e["id"], acts)
             continue
