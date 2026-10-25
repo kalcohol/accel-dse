@@ -1,4 +1,4 @@
-"""LongCat-Flash-Omni waveform decoder (0.403).
+"""LongCat-Flash-Omni waveform decoder (0.403, tanh billed in 0.404).
 
 The released post-processor loads ``LongCatAudioCodecDecoder`` (``decoder_type``
 ``24k``) and calls ``forward``. Sources:
@@ -16,7 +16,12 @@ The released post-processor loads ``LongCatAudioCodecDecoder`` (``decoder_type``
 ``out_proj`` only. ``in_proj`` stays in the file and is not a decode GEMM.
 The encoder checkpoint is not in the Omni root, so it is not billed.
 Weights are fp32 as stored. The 24k path sets ``is_final_causal=True``,
-``groups=1``, ``lstm_nums=1``, ``lookahead_frame=3``.
+``groups=1``, ``lstm_nums=1``, ``lookahead_frame=3``. That branch's
+``CausalDecoderBlock`` uses a transposed-convolution kernel equal to the
+stride (the non-causal ``DecoderBlock`` uses ``2 * stride`` and does not
+match this checkpoint). Residual units are dilated 1, 3, and 9 with kernel
+7; dilation does not change the GEMM shape. The Sequential ends with
+``nn.Tanh`` (0.404). Snake is DAC ``sin^2`` (``alpha`` only, no ``beta``).
 """
 from __future__ import annotations
 
@@ -229,7 +234,7 @@ def codec_ops(spec: LongcatCodecSpec, frames: int, batch: int = 1) -> list[Op]:
     ``frames`` is the length of the tensor the decoder receives.
 
     Decode reads semantic and acoustic codebooks, ``out_proj``, the GLSTM, and the
-    causal upsampler. ``in_proj`` is not in this list.
+    causal upsampler, then ``nn.Tanh`` on every sample. ``in_proj`` is not in this list.
     """
     if isinstance(frames, bool) or not isinstance(frames, int) or frames < 0:
         raise ValueError("longcat codec frames is not a non-negative int")
@@ -298,6 +303,8 @@ def codec_ops(spec: LongcatCodecSpec, frames: int, batch: int = 1) -> list[Op]:
                   sfu=float(b * length * last), a_fmt="fp32"))
     ops.append(_gemm("codec.out.conv", b * length, last * _FINAL_KERNEL, 1, _conv_w(1, last, _FINAL_KERNEL),
                      in_elems=b * length * last))
+    # MemDecoder appends nn.Tanh after the final conv. One tanh per sample, no parameters.
+    ops.append(Op("codec.out.tanh", "vector", 0, vec=float(b * length), sfu=float(b * length), a_fmt="fp32"))
     # Snake alpha parameters. Counted once per forward, not as extra MACs.
     ops.append(_gemm("codec.snake.alpha", 1, side, 1, side))
     gemm_w = sum(op.w_params for op in ops if op.kind == "gemm")
