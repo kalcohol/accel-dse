@@ -6,6 +6,26 @@
 
 
 
+## [0.404.0] — 2026-10-25
+
+### LongCat 24k 解码器补上已执行的 nn.Tanh；没有新的可入库发布
+
+- **修正。** `MemDecoder` 在 `is_final_causal=True` 时，Sequential 的最后一层是 `nn.Tanh()`（`networks/decoders/mem_decoders.py`）。`LongCatAudioCodecDecoder.forward` 会跑到这一层。0.403 的 `codec_ops` 停在最后一层卷积，少了每个输出采样一次的 tanh。现按 fp32 向量运算计入，`vec` 与 `sfu` 都等于 `batch * frames * 1440`，没有参数。`from_codes` 仍不读 `in_proj`。解码器仍不进 `params()`。Omni 与 Omni-FP8 的 `param_check().rel_err` 仍是 0。
+- **对抗核对（类与 `.pt` 头，没有新的账单错误）。** 4 个码本是 1 路语义 Embedding 加 3 路声学，每路 `codebook_a` / `codebook_b` 各查一次。上采样率 `[8, 6, 6, 5]`，每帧 1440 个采样，等于 `24000 // 1000 * 60`。24k 走 `CausalDecoderBlock`，转置卷积核等于 stride（头里是 8、6、6、5），不是非因果 `DecoderBlock` 的 `2 * stride`。残差膨胀是 1、3、9，卷积核仍是 7，GEMM 的 k 不随膨胀变大。Snake 只有 `alpha`，没有 `beta`。GLSTM 是 `groups=1`：`weight_ih` 是 `[4 * 2304, 2304]`，没有第二组 LSTM。`Codec2WavProcessor.codec2wav` 调的是 `decoder.forward`，不是 `forward_stream`。
+- **未纳入：**
+  - **2026-10-20 及之后的公开扫描**（catalog 组织加上 StepFun、MoonshotAI、Stability-AI、CohereForAI、THUDM、AI4Bharat、google-deepmind 等别名，共 127 个组织，`createdAt` ≥ 2026-10-20）。新行都是已入库模型，或 GGUF / MLX / tensorrt / 分类器 / 对不上现有机制的 diffusers。这几个别名的模型列表是空的。各组织最近一条：google embeddinggemma-2（2026-09-14），Qwen-Image-2.1-Turbo（2026-10-09），deepseek-ai DeepSeek-V4.1-Flash-1017（2026-10-17，已有别名），nvidia InternVideo2-CLIP tensorrt（2026-10-22）和 Cosmos3 机器人导出（2026-10-19），stepfun-ai Step-5-Preview-NVFP4（2026-10-14），ByteDance Bernini-Diffusers-v2（2026-08-13），meta-llama 停在 2025-04-28，mistralai Timestral（2026-10-14），OpenGVLab 停在 2025-10-11，meituan-longcat 停在 LongCat-Flash-Lite-Sparse（2026-07-31）。没有能套上现有机制的新 safetensors 或 PT。
+  - **LongCat-Flash-Lite-Sparse。** HF sha `35de83a18b5838ec1657edb3f885a59bbdd7888f`，`lastModified` 2026-08-04。根目录仍没有 modeling 文件，只有 `tokenization_llama.py`、`config.json` 和 `tech_report.pdf`。vLLM #48302 仍是 open（更新于 2026-09-09，未合并），写明复用 DeepSeek DSA。SGLang #32918 仍是 open（更新于 2026-08-17，未合并）。没有已合并的 LSA 前向。不套 MLA，也不套 DSA。
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401（2026-10-25）。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 `config.json` 仍是 404。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 与 `tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401。
+  - **nvidia Cosmos3。** `nvidia/Cosmos3` 与 `nvidia/Cosmos-3` 的 `config.json` 是 401。`nvidia/Cosmos3-Nano` 的 library 是 `cosmos`（2026-03-10），不是已有的条件生成路径。
+  - **Gemma-4 assistant / QAT。** `google/gemma-4-assistant` 与 `google/gemma-4-E4B-it-qat` 的 `config.json` 仍是 401。已公开的 Gemma-4 配置仍是现有的 `Gemma4ForConditionalGeneration`。不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.403.0] — 2026-10-25
 
 ### LongCat-Flash-Omni 的 24k 波形解码器按已发布的类和 `.pt` 头计

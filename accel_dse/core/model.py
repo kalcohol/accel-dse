@@ -4132,7 +4132,8 @@ def _attach_longcat_omni(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
         f"audio_codec/*.pt 有 {codec.n_tensors} 个 fp32 张量，decode 权重 {codec.params_decode}，"
         f"in_proj {codec.params_in_proj} 在文件里但 from_codes 不读。"
         "这部分不进 params()。编码器 .pt 不在这份 HF 根目录，不计入。"
-        "shift_codec_back 只改下标，不增加 GEMM。",
+        "shift_codec_back 只改下标，不增加 GEMM。"
+        "24k MemDecoder 的 Sequential 以 nn.Tanh 结束，每个输出采样一次，没有参数。",
         "视觉是 Conv3d（时间 2、空间 14）加 32 层双向注意力。SwiGLU 内宽是 int(5184*2/3)。"
         "投影器把宽度相邻两列拼成 2h，再走 LayerNorm 和三层 Linear。rope2d 的 inv_freq 不是 persistent。"
         "单张图的 post-squeeze 在 token 数不超过 max_tokens_video 时是恒等。视频多帧压缩不进默认图像网格。",
