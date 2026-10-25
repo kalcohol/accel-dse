@@ -6,6 +6,34 @@
 
 
 
+## [0.394.0] — 2026-10-25
+
+### d1-omni 按双向编码器加决策头计，不走因果 lfm2
+
+- **新增 1 个发布**（2026-10-25 读取 config 与 safetensors header）。`param_check().rel_err == 0`。覆盖 full。`params_mtp == 0`。
+  - **d1-omni-600m。** `D1OmniModel`，`model_type=d1_omni`，dtype float32。双向主干加 DecisionHead 是 380,732,161（`params()` / `params_llm`）。SigLIP2、2×2 pixel-unshuffle 投影和 17 层 FastConformer 是 206,411,520（`params_vision`）。合计 587,143,681。1084 张量，`bytes_total` 2,348,644,492。BatchNorm 的 running_mean / running_var / num_batches_tracked 是 buffer（69,768 字节），不进参数。没有 `lm_head`。权重就是 fp32，所以没有 `vision_fmt`。
+- **机制。** 不走 `lfm2` / `lfm2_vl` 的因果解码账单。一次请求只能带图像或音频。前缀是嵌入，不是文本 token，`expand_images` 不加进 prompt。
+  - 文本主干是双向 LFM2.5-Encoder。`conv_L_cache` 必须是 3，卷积是居中 3-tap 的向量运算，不是循环状态。注意力用稠密加性 mask，仍按整段 L×L 计（`causal=1`），不写 KV。FFN 宽按 Lfm2MLP 的 auto-adjust 收到 4608（`intermediate_size` 6656，没有 `block_auto_adjust_ff_dim` 开关）。16 层里 10 层 conv、6 层 full_attention。q / k RMSNorm 按 head 宽计。没有 lm_head。
+  - DecisionHead：题型嵌入是查表。两层 pre-norm `TransformerEncoderLayer`（ReLU，带 bias）只看文本位置。打分是 LayerNorm、Linear、GELU、Linear，只看标记位。`labels` 为 0 时打分的 m 是 0。温度是标量除法，不计 GEMM。每道题是独立序列，复用同一段前缀嵌入。
+  - 文本上限：有图像时 896，有音频时 15360，否则 `max_length` 16384，再减去前缀。剩下不足 64 就拒绝。`output_tokens` 为 0。decode 和 think 都仍是这一次前向，不另计自回归。
+  - 视觉是 SigLIP2 NaFlex，`vision_use_head` 为 false。每个 crop 补到 1024，注意力是 1024 的方阵。投影只看 pixel-unshuffle 之后的有效行。没有投影 LayerNorm，没有图像特殊 token。权重和激活都是 fp32。大图按最多 10 块 512 的 tile 加一张缩略图切。平局按面积排序后的稳定顺序；本轮锁住的尺寸都有唯一的严格更优网格。
+  - 音频是 16 kHz。不足 0.5 秒补到 8000 个样本，超过 30 秒截断。`n_fft` 是偶数，mel 帧数是 `samples // hop`。三次 stride-2 卷积之后，1 秒是 100 个 mel 帧、13 个前缀 token。FastConformer 的相对位置表长是 2T−1，整批只建一次，不按 clip 重复。相对 matmul 是 T×(2T−1)，QK / PV / softmax 看切出来的 T×T。深度卷积是向量运算。BN 仿射进参数，running stats 是 buffer。adapter 是 512→1024，residual 是 1024→512→1024。STFT 和 mel 不是已学习的 GEMM。GLU、0.5 残差、LayerNorm、RMSNorm、GELU、SiLU、ReLU 不另计 GEMM。`conv_L_cache` 不是 3、`feat_in` 不是 128、`vision_use_head` 不是 false、dtype 不是 float32、FFN 扩展不是 4、或者卷积核是偶数时，不建这条塔。
+- **0.393 CTC 复核。** 共享的 `ctc_head` 与 `encoder.out` 仍只存一次，两次 GEMM 各读一份。`subsample_layers=[0, 1]` 仍是 1 秒 50→25→12。BN 仿射仍是 fp32 存储（65,536 参数），GEMM 仍是 bf16。StageTime 仍留在 StageResult 上，summary / vision / asr 可以 `json.dumps`。参数和 GEMM 形状不改。
+- **未纳入：**
+  - **omniasr-ctc。** `model_type=omniasr_ctc`，音频是 `omniasr_audio`（Wav2Vec2），没有文本 hidden。现有塔在 CTC 配置上不建 CTC 头（`lin` 为空）。目录测试要求 `omniasr-ctc` 不出现在 `list_models()` 里。不把 wav2vec 套进 Granite Speech 的 Shaw CTC。继续延期。
+  - **2026-10-24 之后的公开扫描**（google、Qwen、baidu、mistralai、ibm-granite、LiquidAI、nvidia、internlm、OpenGVLab、meituan-longcat、Meta、microsoft）。这个窗口里没有能套上现有机制的新 safetensors 或 PT。各组织最近一条仍早于窗口：google embeddinggemma-2（2026-09-14），Qwen-Image-2.1-Turbo（2026-10-09，diffusers），baidu Unlimited-OCR（2026-06-19），mistralai Timestral（2026-10-14），ibm-granite 的新行是 GGUF 或已入库的 granite-switch / granite-speech，LiquidAI 的新行是 GGUF / MLX / DSpark，nvidia 是 InternVideo2-CLIP 的 tensorrt 和 Cosmos3，internlm 的 Atria-Dawn 已在 0.389 入库，OpenGVLab 停在 2025-10-11，meituan-longcat 停在 2026-07-31，meta-llama 停在 2025-04-28，facebook 的 meta-encoder 是 2026-09-30，microsoft 的 Sentiment-Analysis-7B / UserRepGen-4B 已并进 startlux。GGUF / MLX / ONNX / tensorrt / DFlash 不单列。
+  - **LongCat-Flash MTP。** `LongcatFlashModel._keys_to_ignore_on_load_unexpected` 仍是 `[r"model\.mtp.*"]`。不另写递推。
+  - **ERNIE-4.5-21B-A3B-Thinking。** config 公开，`model_type=ernie4_5_moe`，仓库没有 modeling 文件，config 里没有 `top2_fused`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** `config.json` 仍是 401。带 PT 后缀的行已经入库。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **Gemma-4 assistant / QAT。** 与已入库的发布同系列。不单列。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 `config.json` 是 404。仓库里是权重和 README，没有 config，也没有 modeling 文件。不新写扩散栈。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **nvidia Cosmos3。** 扩散专家栈，不是已有的条件生成路径。
+  - **LFM2.5-d1。** `config.json` 仍是 401。
+  - **softcap / scalar-gate。** 不把标量门或 softcap 写成新的 GEMM。
+
 ## [0.393.0] — 2026-10-25
 
 ### Granite Speech 5 CTC 只计编码器

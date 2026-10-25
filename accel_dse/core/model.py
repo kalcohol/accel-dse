@@ -545,6 +545,11 @@ class ModelSpec:
     # 0.393 Granite Speech 5 CTC: the catalog model is the encoder. params() is vision_params
     # only (no embedding table). kv_cache stays false; evaluate costs one encoder forward.
     ctc_only: bool = False
+    # 0.394 d1-omni: one bidirectional forward. trunk_params is the encoder plus the
+    # decision head (params_llm). d1_buf is FastConformer BatchNorm state, not a parameter.
+    d1: bool = False
+    trunk_params: int = 0
+    d1_buf: int = 0
 
     # ----- derived
     @property
@@ -589,6 +594,10 @@ class ModelSpec:
         # final norm, or untied LM head to add on top of vision_params.
         if self.ctc_only:
             return self.vision_params
+        # 0.394 d1-omni: params() is the bidirectional trunk plus the decision head.
+        # The SigLIP2 tower and the FastConformer stay in vision_params.
+        if self.d1:
+            return self.trunk_params
         p = sum(l.params(self.hidden) for l in self.layers) + self.embed_params + self.head_params + self.lookup_params
         p += self.hidden if self.final_norm_params is None else self.final_norm_params
         p += sum(l.params for l in self.io_pre + self.io_post) + self.io_misc_params
@@ -3377,6 +3386,37 @@ def _from_granite_speech5_ctc(model_id: str, hf_id: str, cfg: dict, rel: dict) -
         domain="asr", kv_cache=False, ctc_only=True, final_norm_params=0)
 
 
+def _from_d1_omni(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelSpec:
+    """Bidirectional LFM2.5 encoder plus a decision head. Not an lfm2 decode stack."""
+    from .vision import vision_spec
+    vs = vision_spec(hf_id, cfg)
+    if vs is None or vs.family != "d1omni" or vs.audio is None:
+        raise ValueError(f"{hf_id}: d1_omni does not match the released class")
+    pr = vs.rz
+    trunk = int(pr["trunk_params"]) + int(pr["head_params"])
+    llm = int(rel.get("params_llm") or 0)
+    vis = int(rel.get("params_vision") or 0)
+    if trunk != llm or vs.params != vis:
+        raise ValueError(f"{hf_id}: d1 trunk {trunk} / vision {vs.params} != release {llm} / {vis}")
+    buf = int(pr["buf"])
+    got = int(((rel.get("roles") or {}).get("buffer") or {}).get("int64", {}).get("bytes") or 0)
+    if got != buf:
+        raise ValueError(f"{hf_id}: d1 buffer bytes {buf} != release {got}")
+    if rel.get("vision_fmt"):
+        raise ValueError(f"{hf_id}: d1 vision weights are fp32; vision_fmt must stay unset")
+    note = ("d1-omni：双向 LFM2.5 编码器（居中 3-tap，稠密加性 mask，没有因果 KV，没有 lm_head）。"
+            "DecisionHead 只在文本位置上跑，打分只看标记位。FastConformer 的相对位置是 2T-1，"
+            "深度卷积是向量运算。SigLIP2 把每个 crop 补到 1024，投影只看 pixel-unshuffle 之后的有效行。"
+            "权重和激活都是 fp32。BatchNorm running stats 是 buffer。")
+    return ModelSpec(
+        id=model_id, hf_id=hf_id, arch="D1OmniModel", hidden=int(pr["trunk"]), vocab=int(pr["vocab"]),
+        layers=(), tie_embeddings=True, coverage="full", notes=(note,),
+        formats=(("attn", RoleFormat("fp32", 32.0)),), act_fmt="fp32", kv_fmt="fp32",
+        release_params=llm, release_bytes=int(rel.get("bytes_llm") or 0) or None,
+        vision=vs, vision_params=vis, domain="vlm", kv_cache=False, final_norm_params=0,
+        d1=True, trunk_params=trunk, d1_buf=buf)
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -3387,6 +3427,10 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         if rel is None:
             raise ValueError(f"no release metadata for {hf_id}; run scripts/fetch_hf_release.py")
         return _from_granite_speech5_ctc(model_id, hf_id, cfg, rel)
+    if (cfg.get("model_type") or "") == "d1_omni":
+        if rel is None:
+            raise ValueError(f"no release metadata for {hf_id}; run scripts/fetch_hf_release.py")
+        return _from_d1_omni(model_id, hf_id, cfg, rel)
     c = _tc(cfg)
     build, arch = _builder(c)
     layers, mtp, notes, cov = build(c)
