@@ -1,0 +1,80 @@
+{
+ "bytes_llm": 0,
+ "bytes_mtp": 0,
+ "bytes_total": 1303931072,
+ "config": {
+  "architectures": [
+   "OmniASRForCTC"
+  ],
+  "audio_config": {
+   "activation_dropout": 0.1,
+   "attention_dropout": 0.0,
+   "conv_bias": true,
+   "conv_dim": [
+    512,
+    512,
+    512,
+    512,
+    512,
+    512,
+    512
+   ],
+   "conv_kernel": [
+    10,
+    3,
+    3,
+    3,
+    3,
+    2,
+    2
+   ],
+   "conv_stride": [
+    5,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+   ],
+   "hidden_act": "gelu",
+   "hidden_dropout": 0.1,
+   "hidden_size": 1024,
+   "initializer_range": 0.02,
+   "intermediate_size": 4096,
+   "layer_norm_eps": 1e-05,
+   "layerdrop": 0.1,
+   "model_type": "omniasr_audio",
+   "num_attention_heads": 16,
+   "num_conv_pos_embedding_groups": 16,
+   "num_conv_pos_embeddings": 128,
+   "num_hidden_layers": 24
+  },
+  "bos_token_id": 0,
+  "ctc_loss_reduction": "mean",
+  "ctc_zero_infinity": false,
+  "dtype": "float32",
+  "eos_token_id": 2,
+  "initializer_range": 0.02,
+  "model_type": "omniasr_ctc",
+  "pad_token_id": 1,
+  "transformers_version": "5.21.0.dev0",
+  "vocab_size": 10288
+ },
+ "fetched": "2026-10-25",
+ "n_tensors": 422,
+ "params_llm": 0,
+ "params_mtp": 0,
+ "params_vision": 325982768,
+ "quantization_config": null,
+ "repo": "bezzam/omniasr-ctc-300m-v2",
+ "roles": {
+  "vision": {
+   "fp32": {
+    "bytes": 1303931072,
+    "params": 325982768
+   }
+  }
+ },
+ "torch_dtype": "float32"
+}

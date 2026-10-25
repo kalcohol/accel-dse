@@ -178,6 +178,14 @@ def _whisper_role(name: str) -> str:
     return "other"
 
 
+def _omniasr_ctc_role(name: str, n_layers: int | None) -> str:
+    """0.395 OmniASR CTC. The audio tower already matches the vision role. ctc_head is
+    Linear(hidden, vocab) on encoder frames (OmniASRForCTC), not a text lm_head."""
+    if name.startswith("ctc_head."):
+        return "vision"
+    return classify(name, n_layers)
+
+
 def _granite_speech_role(name: str, n_layers: int | None) -> str:
     """0.392 Granite Speech / Speech Plus. encoder.* and projector.* are the audio tower.
     BatchNorm running_mean / running_var are buffers (num_batches_tracked is I64 and is
@@ -533,6 +541,7 @@ def summarize(repo: str, key: str | None = None) -> dict:
                 _moss_tts_role(name, nl) if cfg.get("model_type") == "moss_tts_delay" else
                 _qwen3_omni_role(name, nl) if cfg.get("model_type") == "qwen3_omni_moe" else
                 _step_audio_role(name, nl) if cfg.get("model_type") == "step_audio_2" else
+                _omniasr_ctc_role(name, nl) if cfg.get("model_type") == "omniasr_ctc" else
                 _granite_speech_role(name, nl) if cfg.get("model_type") in (
                     "granite_speech", "granite_speech_plus", "granite_speech5_ctc") else
                 _d1_omni_role(name, nl) if cfg.get("model_type") == "d1_omni" else

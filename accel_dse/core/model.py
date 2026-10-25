@@ -3358,6 +3358,36 @@ def _moe_groups(c: dict) -> tuple[int, ...]:
     return (int(G), int(g))
 
 
+def _from_omniasr_ctc(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelSpec:
+    """Encoder-only OmniASRForCTC. The head is a biased linear, not a Shaw conformer."""
+    from .vision import audio_spec, vision_spec
+    au = audio_spec(cfg)
+    vs = vision_spec(hf_id, cfg)
+    if au is None or vs is None or au.kind != "w2v" or not au.ctc:
+        raise ValueError(f"{hf_id}: omniasr_ctc does not match OmniASRForCTC")
+    vr = (rel.get("roles") or {}).get("vision") or {}
+    p = sum(int(x["params"]) for x in vr.values())
+    b = sum(int(x["bytes"]) for x in vr.values())
+    if p != au.params or (rel.get("params_llm") or 0) or (rel.get("params_vision") or 0) != p:
+        raise ValueError(f"{hf_id}: CTC params {au.params} != release vision {p}")
+    if rel.get("params_mtp") or set(vr) != {"fp32"}:
+        raise ValueError(f"{hf_id}: omniasr_ctc weights are fp32 and have no MTP")
+    fp = vr["fp32"]
+    if int(fp["bytes"]) != 4 * int(fp["params"]) or b != 4 * p:
+        raise ValueError(f"{hf_id}: omniasr_ctc byte count is not fp32")
+    vs = replace(vs, w_Bpp=4.0)
+    note = ("OmniASR CTC：只有 Wav2Vec2 编码器，没有 Llama 解码器，也没有 Shaw。"
+            "ctc_head 是 Linear(hidden, vocab)，带 bias，每个编码器帧读一次。"
+            "注意力是双向的整段方阵，不写 KV。权重和激活都是 fp32。"
+            "dropout、GELU 和最终 argmax 不另计 GEMM。")
+    return ModelSpec(
+        id=model_id, hf_id=hf_id, arch="OmniASRForCTC", hidden=au.dims[0], vocab=au.out,
+        layers=(), tie_embeddings=True, coverage="full", notes=(note,),
+        formats=(("attn", RoleFormat("fp32", 32.0)),), act_fmt="fp32", kv_fmt="fp32",
+        release_params=p, release_bytes=b or None, vision=vs, vision_params=au.params,
+        domain="asr", kv_cache=False, ctc_only=True, final_norm_params=0)
+
+
 def _from_granite_speech5_ctc(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelSpec:
     """Encoder-only GraniteSpeech5ForCTC. No granite stack is invented."""
     from .vision import audio_spec, vision_spec
@@ -3423,6 +3453,10 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
         if rel is None:
             raise ValueError(f"no release metadata for {hf_id}; run scripts/fetch_hf_release.py")
         cfg = rel["config"]
+    if (cfg.get("model_type") or "") == "omniasr_ctc":
+        if rel is None:
+            raise ValueError(f"no release metadata for {hf_id}; run scripts/fetch_hf_release.py")
+        return _from_omniasr_ctc(model_id, hf_id, cfg, rel)
     if (cfg.get("model_type") or "") == "granite_speech5_ctc":
         if rel is None:
             raise ValueError(f"no release metadata for {hf_id}; run scripts/fetch_hf_release.py")

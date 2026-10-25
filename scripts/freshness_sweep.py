@@ -35,6 +35,10 @@ EXTRA_ORGS = (
     # 0.319: still gated (HTTP 401 on config.json, checked 2026-10-22 08:29 JST)
     # 0.320: public (config.json 200, API gated False, checked 2026-10-22 JST) → added as raon-1-mini-preview
     "KRAFTON",
+    # 0.395: orgs whose canonical name is not the catalog prefix (ByteDance-Seed, stepfun-ai,
+    # moonshotai, stabilityai, CohereLabs). The sweep still only lists; it does not catalog.
+    "Alibaba-NLP", "bigscience", "CohereForAI", "ByteDance", "StepFun", "MoonshotAI",
+    "TencentARC", "Stability-AI",
     # 0.314: ATH-MaaS (Ovis series; OvisOCR3 merged into StartLux-Decision-v1-0.8B, no listed family)
     "ATH-MaaS",
 )
