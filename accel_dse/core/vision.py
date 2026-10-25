@@ -174,7 +174,11 @@ _PREPROC = {
         f"startlux-models/StartLux-Decision-{v}" for v in (
             "v1-27B", "v1-9B", "v1-4B", "v1-2B", "v1-0.8B", "v1-35B-A3B", "v1.1-27B-Instant", "v1.1-27B-AutoThink",
             "v1.1-9B-Instant", "v1.1-9B-AutoThink", "v1.1-4B-Instant", "v1.1-4B-AutoThink", "v1.1-2B-Instant",
-            "v1.1-0.8B-Instant"))},
+            "v1.1-0.8B-Instant")) + (
+        # 0.390 Intern-Decision: preprocessor_config.json matches StartLux-Decision-v1-4B
+        # (Qwen2VLImageProcessorFast, shortest 65536, longest 16777216, patch 16, merge 2).
+        "internlm/Intern-Decision-4B", "internlm/Intern-Decision-2B", "internlm/Intern-Decision-0.8B",
+    )},
     # 0.366 Qwen3-VL: same image processor bounds as Qwen3.5 (checked per repo, see QWEN3_VL_REPOS)
     **{k: {"min_px": 65536, "max_px": 16777216} for k in QWEN3_VL_REPOS},
     # 0.388 WeVisOne: same pixel bounds (processor_config.json, both sizes)
@@ -185,6 +189,9 @@ _PREPROC = {
 # 4096 / longest_edge 25165824 (a pixel budget over t_bar·h·w of the whole clip), patch 16, temporal_patch 2, merge 2.
 _VIDEO = {k: {"min_px": 4096, "max_px": 25165824} for k in (
     "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-27B-FP8", "Qwen/Qwen3.8-Flash-Next", "internlm/Intern-S2-397B",
+    # 0.390 Intern-Decision: video_preprocessor_config.json is Qwen3VLVideoProcessor
+    # (shortest 4096, longest 25165824, patch 16, temporal 2, merge 2). Each size checked.
+    "internlm/Intern-Decision-4B", "internlm/Intern-Decision-2B", "internlm/Intern-Decision-0.8B",
     "nvidia/Qwen3.8-Flash-Next-FP4-Local",
     "ornith-ai/Ornith-1.5-122B") + tuple(f"ornith-ai/Ornith-{v}" for v in ORNITH_REPOS)
     + QWEN3_VL_REPOS   # 0.287 Ornith; 0.366 Qwen3-VL: video_preprocessor_config.json (Qwen3VLVideoProcessor, same size / patch / merge)
@@ -1283,6 +1290,275 @@ def _ernie_vl_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
                       merge, post, tower + res, pre)
 
 
+def _lfm2_vl_round_by_factor(number: float, factor: int) -> int:
+    """Lfm2VlImageProcessor.round_by_factor. Python round is half-to-even."""
+    return round(number / factor) * factor
+
+
+def _lfm2_vl_target_ratios(min_tiles: int, max_tiles: int) -> list[tuple[int, int]]:
+    """Tile grids whose area is in [min_tiles, max_tiles]. Equal areas keep (width, height) ascending.
+
+    The processor sorts by area only. Set order would otherwise decide equal-area ties.
+    """
+    ratios = {
+        (w, h)
+        for n in range(min_tiles, max_tiles + 1)
+        for w in range(1, n + 1)
+        for h in range(1, n + 1)
+        if min_tiles <= w * h <= max_tiles
+    }
+    return sorted(ratios, key=lambda x: (x[0] * x[1], x[0], x[1]))
+
+
+def _lfm2_vl_closest_ratio(aspect: float, ratios: list[tuple[int, int]], width: int, height: int,
+                           tile: int) -> tuple[int, int]:
+    """Lfm2VlImageProcessor.find_closest_aspect_ratio."""
+    best_diff = float("inf")
+    best = (1, 1)
+    area = width * height
+    for rw, rh in ratios:
+        diff = abs(aspect - (rw / rh))
+        if diff < best_diff:
+            best_diff = diff
+            best = (rw, rh)
+        elif diff == best_diff and area > 0.5 * tile * tile * rw * rh:
+            best = (rw, rh)
+    return best
+
+
+def _lfm2_vl_smart_resize(height: int, width: int, factor: int, min_tokens: int, max_tokens: int,
+                          patch: int) -> tuple[int, int]:
+    """Lfm2VlImageProcessor.smart_resize. Returns (width, height)."""
+    total = patch * factor
+    min_px = min_tokens * patch * patch * factor * factor
+    max_px = max_tokens * patch * patch * factor * factor
+    h_bar = max(total, _lfm2_vl_round_by_factor(height, total))
+    w_bar = max(total, _lfm2_vl_round_by_factor(width, total))
+    if h_bar * w_bar > max_px:
+        beta = math.sqrt((height * width) / max_px)
+        h_bar = max(total, int(math.floor(height / beta / total)) * total)
+        w_bar = max(total, int(math.floor(width / beta / total)) * total)
+    elif h_bar * w_bar < min_px:
+        beta = math.sqrt(min_px / (height * width))
+        h_bar = int(math.ceil(height * beta / total)) * total
+        w_bar = int(math.ceil(width * beta / total)) * total
+    return w_bar, h_bar
+
+
+def _lfm2_vl_too_large(height: int, width: int, max_tokens: int, patch: int, factor: int, tol: float) -> bool:
+    """Lfm2VlImageProcessor._is_image_too_large."""
+    total = patch * factor
+    h_bar = max(patch, _lfm2_vl_round_by_factor(height, total))
+    w_bar = max(patch, _lfm2_vl_round_by_factor(width, total))
+    return h_bar * w_bar > max_tokens * patch * patch * factor * factor * tol
+
+
+def _lfm2_vl_down_tokens(height: int, width: int, patch: int, factor: int) -> int:
+    """Lfm2VlProcessor._compute_tokens_for_image."""
+    ph = math.ceil((height // patch) / factor)
+    pw = math.ceil((width // patch) / factor)
+    return ph * pw
+
+
+def _lfm2_vl_tile_tokens(tile: int, patch: int, factor: int) -> int:
+    """Lfm2VlProcessor._compute_tokens_per_tile."""
+    n = tile // patch
+    d = math.ceil(n / factor)
+    return d * d
+
+
+def _pos_int(x: object) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool) and x > 0
+
+
+def _lfm2_vl_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
+    """Siglip2VisionModel (vision_use_head false) plus Lfm2VlMultiModalProjector.
+
+    The tower is a linear patch embed (3 * patch * patch, bias), a learned position table of
+    ``num_patches`` rows, pre-LN blocks (separate q / k / v / o, GELU fc1 / fc2, all with bias),
+    and a post LayerNorm. The projector pixel-unshuffles by ``downsample_factor`` and runs two
+    linears. ``projector_use_layernorm`` adds a LayerNorm on the unshuffled width. The pooling
+    head is absent only when ``vision_use_head`` is false; any other value is not this module.
+    """
+    if vc.get("vision_use_head") is not False:
+        return None
+    if (cfg.get("text_config") or {}).get("model_type") != "lfm2":
+        return None
+    h = vc.get("hidden_size")
+    inter = vc.get("intermediate_size")
+    depth = vc.get("num_hidden_layers")
+    heads = vc.get("num_attention_heads")
+    patch = vc.get("patch_size")
+    channels = vc.get("num_channels")
+    npos = vc.get("num_patches")
+    text_h = (cfg.get("text_config") or {}).get("hidden_size")
+    factor = cfg.get("downsample_factor")
+    proj_h = cfg.get("projector_hidden_size")
+    enc_patch = cfg.get("encoder_patch_size")
+    tile = cfg.get("tile_size")
+    min_tok = cfg.get("min_image_tokens")
+    max_tok = cfg.get("max_image_tokens")
+    min_tiles = cfg.get("min_tiles")
+    max_tiles = cfg.get("max_tiles")
+    if not all(_pos_int(x) for x in (
+            h, inter, depth, heads, patch, channels, npos, text_h, factor, proj_h, enc_patch, tile,
+            min_tok, max_tok, min_tiles, max_tiles)):
+        return None
+    if h % heads or enc_patch != patch or tile % (patch * factor) or min_tiles > max_tiles:
+        return None
+    side = int(math.isqrt(npos))
+    if side * side != npos:
+        return None
+    if not isinstance(cfg.get("projector_bias"), bool):
+        return None
+    if not isinstance(cfg.get("projector_use_layernorm"), bool):
+        return None
+    if not isinstance(cfg.get("do_image_splitting"), bool):
+        return None
+    if not isinstance(cfg.get("use_thumbnail"), bool):
+        return None
+    if not isinstance(cfg.get("use_image_special_tokens"), bool):
+        return None
+    tol = cfg.get("max_pixels_tolerance")
+    if isinstance(tol, bool) or not isinstance(tol, (int, float)) or tol <= 0:
+        return None
+    bias = cfg["projector_bias"]
+    in_ch = h * factor * factor
+    block = (4 * h + 4 * _lin(h, h, True) + _lin(h, inter, True) + _lin(inter, h, True))
+    params = (_lin(channels * patch * patch, h, True) + npos * h + depth * block + 2 * h)
+    if cfg["projector_use_layernorm"]:
+        params += 2 * in_ch
+    params += _lin(in_ch, proj_h, bias) + _lin(proj_h, text_h, bias)
+    split = cfg["do_image_splitting"]
+    pad = max(max_tok * factor * factor, (tile // patch) ** 2 if split else 0)
+    pre = {
+        "factor": factor, "tile": tile, "min_tok": min_tok, "max_tok": max_tok,
+        "min_tiles": min_tiles, "max_tiles": max_tiles,
+        "thumb": 1 if cfg["use_thumbnail"] else 0,
+        "special": 1 if cfg["use_image_special_tokens"] else 0,
+        "split": 1 if split else 0, "tol": float(tol), "pad": pad,
+    }
+    return VisionSpec("lfm2vl", "SigLIP2 NaFlex + pixel-unshuffle projector", patch, 1, h, inter, depth, heads, h,
+                      False, factor, ((in_ch, proj_h), (proj_h, text_h)), params, tuple(sorted(pre.items())))
+
+
+def _lfm2_vl_image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
+    """One image under Lfm2VlImageProcessor plus Lfm2VlProcessor._build_image_tokens.
+
+    A tile or a resized image is padded to ``max_num_patches`` before the tower. The projector
+    and the LLM feature tokens see only the valid grid after the unshuffle. Special tokens are
+    extra LLM positions and are not tower rows.
+    """
+    pr = v.rz
+    patch = v.patch
+    factor = int(pr["factor"])
+    tile = int(pr["tile"])
+    min_tok = int(pr["min_tok"])
+    max_tok = int(pr["max_tok"])
+    min_tiles = int(pr["min_tiles"])
+    max_tiles = int(pr["max_tiles"])
+    thumb = bool(pr["thumb"])
+    special = bool(pr["special"])
+    split = bool(pr["split"])
+    tol = float(pr["tol"])
+    if width < 1 or height < 1:
+        raise ValueError("lfm2_vl image size must be positive")
+    if not split:
+        min_tiles, max_tiles = 1, 1
+    new_w, new_h = _lfm2_vl_smart_resize(height, width, factor, min_tok, max_tok, patch)
+    too = _lfm2_vl_too_large(height, width, max_tok, patch, factor, tol)
+    do_split = not (min_tiles == max_tiles == 1)
+    if too and do_split:
+        cols, rows = _lfm2_vl_closest_ratio(width / height, _lfm2_vl_target_ratios(min_tiles, max_tiles),
+                                            width, height, tile)
+        multi = rows > 1 or cols > 1
+        tile_side = tile // patch
+        if tile_side % factor:
+            raise ValueError("lfm2_vl tile is not divisible by downsample_factor")
+        if not multi:
+            # crop_image_to_patches still resizes to one tile, but _build_image_tokens takes the
+            # single-image branch and counts the smart_resize grid. Refuse when those disagree.
+            feat_tile = _lfm2_vl_tile_tokens(tile, patch, factor)
+            feat_img = _lfm2_vl_down_tokens(new_h, new_w, patch, factor)
+            if feat_tile != feat_img:
+                raise ValueError("lfm2_vl 1x1 tile tokens do not match the encoder output")
+            ph = pw = tile_side
+            specs = 2 if special else 0
+            return ImageGrid(ph, pw, feat_tile, feat_tile + specs, (tile, tile), ((ph, pw, 1),))
+        views: list[tuple[int, int, int]] = [(tile_side, tile_side, rows * cols)]
+        feat = rows * cols * _lfm2_vl_tile_tokens(tile, patch, factor)
+        specs = (1 + rows * cols) if special else 0
+        if thumb:
+            th_ph, th_pw = new_h // patch, new_w // patch
+            if th_ph < 1 or th_pw < 1 or th_ph % factor or th_pw % factor:
+                raise ValueError("lfm2_vl thumbnail grid is not divisible by downsample_factor")
+            if (th_ph, th_pw) == (tile_side, tile_side):
+                views[0] = (tile_side, tile_side, rows * cols + 1)
+            else:
+                views.append((th_ph, th_pw, 1))
+            feat += _lfm2_vl_down_tokens(new_h, new_w, patch, factor)
+            if special:
+                specs += 1
+        if special:
+            specs += 1
+        return ImageGrid(tile_side, tile_side, feat, feat + specs, (tile * cols, tile * rows), tuple(views))
+    ph, pw = new_h // patch, new_w // patch
+    if ph < 1 or pw < 1 or ph % factor or pw % factor:
+        raise ValueError("lfm2_vl resized grid is not divisible by downsample_factor")
+    feat = _lfm2_vl_down_tokens(new_h, new_w, patch, factor)
+    specs = 2 if special else 0
+    return ImageGrid(ph, pw, feat, feat + specs, (new_w, new_h), ((ph, pw, 1),))
+
+
+def _lfm2_vl_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> list[Op]:
+    """Padded SigLIP2 tower, then the projector on the unshuffled valid rows.
+
+    pixel_values are padded to max_num_patches and the encoder attention is the full square
+    (an additive mask, not a shorter sequence). get_image_features drops the pad before the
+    projector.
+    """
+    from .dtypes import fmt as _fmt
+    ab = _fmt(af).bytes
+    pad = int(v.rz["pad"])
+    factor = v.merge
+    groups = g.views or ((g.ph, g.pw, 1),)
+    qf = {k: (f, b, a) for k, f, b, a in v.wfmt}
+    h = v.hidden
+    dh = v.head_dim
+    ops: list[Op] = []
+
+    def gemm(pfx: str, name: str, m: int, k: int, n: int, layer: int, kind: str) -> Op:
+        f, b, a = qf.get(kind, ("bf16", 16.0, af)) if qf else ("bf16", 16.0, af)
+        return Op(pfx + name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=b, w_fmt=f,
+                  a_fmt=a, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
+
+    for gi, (ph, pw, cnt) in enumerate(groups):
+        if ph % factor or pw % factor or ph < 1 or pw < 1:
+            raise ValueError("lfm2_vl patch grid is not divisible by downsample_factor")
+        pfx = "vis." if gi == 0 else f"vis.v{gi}."
+        rows = images * cnt * pad
+        heads = images * cnt * v.heads
+        ops.append(gemm(pfx, "patch_embed", rows, 3 * v.patch * v.patch, h, 0, "patch"))
+        for li in range(v.depth):
+            ops += [gemm(pfx, f"{li}.q", rows, h, h, li, "attn"),
+                    gemm(pfx, f"{li}.k", rows, h, h, li, "attn"),
+                    gemm(pfx, f"{li}.v", rows, h, h, li, "attn"),
+                    gemm(pfx, f"{li}.o", rows, h, h, li, "attn"),
+                    gemm(pfx, f"{li}.fc1", rows, h, v.inter, li, "mlp"),
+                    gemm(pfx, f"{li}.fc2", rows, v.inter, h, li, "mlp")]
+            keys = pad * pad
+            ops += [Op(f"{pfx}{li}.qk", "attn", li, m=pad, k=dh, n=pad, count=heads, causal=1.0,
+                       act_bytes=heads * pad * dh * ab, stream=True, orient=True),
+                    Op(f"{pfx}{li}.pv", "attn", li, m=pad, k=pad, n=dh, count=heads, causal=1.0,
+                       act_bytes=heads * pad * dh * ab, orient=True),
+                    Op(f"{pfx}{li}.softmax", "vector", li, vec=heads * keys * 5.0)]
+        m_proj = images * cnt * (ph // factor) * (pw // factor)
+        for i, kn in enumerate(v.post):
+            k, n = kn[:2]
+            ops.append(gemm(pfx, f"merger.{i}", m_proj, k, n, v.depth, "merger"))
+    return ops
+
+
 def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
     """VisionSpec from the release's full config (``vision_config`` + text hidden size), or None."""
     vc = cfg.get("vision_config")
@@ -1327,6 +1603,8 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                               approx=("输入离散语义 token：GLM-4-Voice tokenizer（THUDM/glm-4-voice-tokenizer，Whisper-v3 "
                                       "前 16 层 + 4× 池化 + VQ 16384，另一仓库）未计入音频编码耗时" if au.stack else ""))
         return None
+    if cfg.get("model_type") == "lfm2_vl" and vc.get("model_type") == "siglip2_vision_model":
+        return _lfm2_vl_vision_spec(cfg, vc)
     if vc.get("model_type") in ("gemma4_vision", "gemma4_unified_vision"):
         return _gemma4_vision_spec(cfg, vc)
     if cfg.get("model_type") == "mistral3" and vc.get("model_type") == "pixtral":
@@ -1746,6 +2024,8 @@ def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
         wp, hp = radio_patches(width, height, pr["patch"], pr["ratio"], pr["min_patches"], pr["max_patches"], pr["max_len"])
         m = hp * wp // (pr["ratio"] ** 2)
         return ImageGrid(hp, wp, m, m + 2, (wp * pr["patch"], hp * pr["patch"]))
+    if v.family == "lfm2vl":
+        return _lfm2_vl_image_grid(v, width, height)
     if v.family == "pixtral":
         # PixtralProcessor.replace_image_token: one break/end token per merged row.
         factor = pr["factor"]
@@ -1802,6 +2082,8 @@ def vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str = "bf16") -> li
         return []
     if v.family in ("gemma4", "gemma4u"):
         return _gemma4_vision_ops(v, g, images, af)
+    if v.family == "lfm2vl":
+        return _lfm2_vl_vision_ops(v, g, images, af)
     if v.family == "ernievl" and g.tframes > 1:
         return _ernie_vl_video_ops(v, g, images, af)
     if g.tframes > 1:
