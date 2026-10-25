@@ -3003,12 +3003,57 @@ def _vision_formats(rel: dict, vs) -> dict:
     return {"wfmt": tuple(out), "w_Bpp": b / p if p else 2.0}
 
 
+def _compressed_tensors_w4a4(qc: dict, fm: dict) -> dict:
+    """0.391: compressed-tensors MXFP4 / NVFP4 pack (Granite-4.2).
+
+    One group, targets Linear, ignore lm_head, no KV scheme. MX is float 4-bit,
+    group 32, uint8 e8m0 scales, dynamic inputs. NVFP4 is float 4-bit, group 16,
+    e4m3 scales, strategy tensor_group, dynamic "local". Those are the existing
+    mxfp4 (4.25 bit) and nvfp4 (4.5 bit) formats. gemm_exec already selects the
+    native rate or the bf16 upcast. output_activations is null, so attention
+    stays on the model activation format. Any other scheme keeps bf16 inputs.
+    """
+    if qc.get("quant_method") != "compressed-tensors":
+        return {}
+    if qc.get("ignore") != ["lm_head"] or qc.get("kv_cache_scheme") not in (None, {}):
+        return {}
+    groups = [g for g in (qc.get("config_groups") or {}).values() if isinstance(g, dict)]
+    if len(groups) != 1:
+        return {}
+    g = groups[0]
+    fmt = qc.get("format")
+    if g.get("format") != fmt or g.get("targets") != ["Linear"] or g.get("output_activations") is not None:
+        return {}
+    w = g.get("weights") if isinstance(g.get("weights"), dict) else {}
+    a = g.get("input_activations") if isinstance(g.get("input_activations"), dict) else {}
+
+    def side(block: dict, group: int, scale: str, strategy: str, dynamic: object) -> bool:
+        return (block.get("num_bits") == 4 and block.get("type") == "float"
+                and block.get("group_size") == group and block.get("scale_dtype") == scale
+                and block.get("strategy") == strategy and block.get("symmetric") is True
+                and block.get("dynamic") == dynamic and block.get("zp_dtype") is None)
+
+    if (fmt == "mxfp4-pack-quantized" and side(w, 32, "torch.uint8", "group", False)
+            and side(a, 32, "torch.uint8", "group", True)):
+        name, bits = "mxfp4", 4.25
+    elif (fmt == "nvfp4-pack-quantized" and side(w, 16, "torch.float8_e4m3fn", "tensor_group", False)
+            and side(a, 16, "torch.float8_e4m3fn", "tensor_group", "local")):
+        name, bits = "nvfp4", 4.5
+    else:
+        return {}
+    return {"act_" + r: RoleFormat(name, bits) for r, f in fm.items()
+            if f.fmt == name and r in ("attn", "mlp", "expert", "shared_expert")}
+
+
 def _w4a4_roles(rel: dict, fm: dict) -> dict:
     """0.254: ModelOpt NVFP4 (hf_quant_config quant_algo "NVFP4"; config_groups input_activations num_bits 4) is W4A4 —
     vLLM ModelOptNvFp4 / SGLang modelopt_fp4 quantise each NVFP4 GEMM's input to NVFP4 (global input_scale, e4m3 per 16)
     「来源」; "W4A16_NVFP4" (Dory) stays weight-only.  The activation format applies only to the roles stored in NVFP4
     (excluded modules — attention, dense layers, router, lm_head — keep bf16 inputs).  Was bf16 for all roles ≤ 0.253."""
     qc = rel.get("quantization_config") or {}
+    ct = _compressed_tensors_w4a4(qc, fm) if isinstance(qc, dict) else {}
+    if ct:
+        return ct
     abr = qc.get("algo_by_role") if isinstance(qc, dict) else None
     if isinstance(abr, dict) and qc.get("quant_algo") == "MIXED_PRECISION":
         # 0.280 ModelOpt MIXED_PRECISION (modelopt / modelopt_mixed): the activation format follows each role's per-layer

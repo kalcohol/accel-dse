@@ -130,14 +130,22 @@ EXTRA_TAIL = [
     # 0.386: granite-4.2-30b. Same GEMM shapes as 4.1-30b, untied lm_head.
     # embedding / residual / logits scalars do not change shapes.
     # 0.389: fp8 twins are compressed-tensors W8A8 (per-channel fp8 weights, dynamic
-    # per-token fp8 activations). mxfp4 / nvfp4 groups are 4-bit dynamic inputs; that
-    # activation path is not the existing compressed-tensors W8A8 bill, so they stay out.
+    # per-token fp8 activations).
+    # 0.391: mxfp4 / nvfp4 twins are the same Granite linears. Packed weights are the
+    # existing mxfp4 (group 32, e8m0) and nvfp4 (group 16, e4m3) formats. Dynamic
+    # 4-bit inputs use those formats. lm_head stays bf16.
     ("granite-4.2-8b", "ibm-granite/granite-4.2-8b"),
     ("granite-4.2-3b", "ibm-granite/granite-4.2-3b"),
     ("granite-4.2-30b", "ibm-granite/granite-4.2-30b"),
     ("granite-4.2-8b-fp8", "ibm-granite/granite-4.2-8b-fp8"),
     ("granite-4.2-3b-fp8", "ibm-granite/granite-4.2-3b-fp8"),
     ("granite-4.2-30b-fp8", "ibm-granite/granite-4.2-30b-fp8"),
+    ("granite-4.2-8b-mxfp4", "ibm-granite/granite-4.2-8b-mxfp4"),
+    ("granite-4.2-8b-nvfp4", "ibm-granite/granite-4.2-8b-nvfp4"),
+    ("granite-4.2-3b-mxfp4", "ibm-granite/granite-4.2-3b-mxfp4"),
+    ("granite-4.2-3b-nvfp4", "ibm-granite/granite-4.2-3b-nvfp4"),
+    ("granite-4.2-30b-mxfp4", "ibm-granite/granite-4.2-30b-mxfp4"),
+    ("granite-4.2-30b-nvfp4", "ibm-granite/granite-4.2-30b-nvfp4"),
     # 0.384: ERNIE-4.5-VL dual-pool MoE. Text experts and vision experts have different widths.
     # Image tokens (merged patches plus start / end) use the vision pool.
     # 0.385: video frames are paired on a separate grid; temporal GEMMs see half the rows.
