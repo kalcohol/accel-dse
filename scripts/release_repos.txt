@@ -324,3 +324,8 @@ meituan-longcat/LongCat-Flash-Thinking-FP8
 # 0.400 LongCat-Flash-Lite and Lite-FP8. N-gram tables plus bf16 projections. MTP is stored, not run.
 meituan-longcat/LongCat-Flash-Lite
 meituan-longcat/LongCat-Flash-Lite-FP8
+# 0.401 LongCat-Flash-Thinking-2601, Prover, and Thinking-2601-FP8.
+# LongcatForCausalLM MLA. Yarn does not change GEMM width. Prover has no MTP tensors.
+meituan-longcat/LongCat-Flash-Thinking-2601
+meituan-longcat/LongCat-Flash-Prover
+meituan-longcat/LongCat-Flash-Thinking-2601-FP8

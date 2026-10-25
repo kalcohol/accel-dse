@@ -89,6 +89,17 @@ EXTRA_TAIL = [
     # Lite-FP8 quantizes experts, dense MLP, and attention (disable_quant_module is empty).
     # kv_a scale tiles are not the uniform 128 ratio. N-gram tables and projections stay bf16.
     ("longcat-flash-lite-fp8", "meituan-longcat/LongCat-Flash-Lite-FP8"),
+    # 0.401: LongCat-Flash-Thinking-2601. LongcatForCausalLM (architectures: LongcatCausalLM).
+    # Same tensor names, dtypes, and shapes as Chat, including model.mtp.*. Main stack is
+    # LongcatMLA (unpadded V). deepseek_yarn does not change GEMM or KV width. The official
+    # guide runs the checkpoint MTP with vLLM method longcat_flash_mtp (explicit; speculative
+    # rewrites only model_type longcat_flash). That draft pads V to qk_head_dim.
+    ("longcat-flash-thinking-2601", "meituan-longcat/LongCat-Flash-Thinking-2601"),
+    # Prover is the same class and geometry. Headers have no model.mtp.*, so there is no draft.
+    ("longcat-flash-prover", "meituan-longcat/LongCat-Flash-Prover"),
+    # Thinking-2601-FP8: same ignored_layers rule as Chat-FP8, but no expert or dense name is
+    # ignored, so every block is block-fp8. Attention stays bf16. MTP bytes match Chat-FP8.
+    ("longcat-flash-thinking-2601-fp8", "meituan-longcat/LongCat-Flash-Thinking-2601-FP8"),
     # 0.376: Hunyuan-A13B-Instruct. Text MoE only (vit fields are null). Mixed shared MLP + q/k RMSNorm.
     ("hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"),
     # 0.377: ERNIE-4.5-21B-A3B-PT. Text MoE. Repo has no modeling file; transformers class + headers close rel_err.

@@ -2596,6 +2596,81 @@ def _build_longcat_flash(c: dict, *, draft: bool = True) -> tuple[list[Layer], l
     return layers, mtp, notes, "full"
 
 
+_LONGCAT_CAUSAL_EXTRA = (
+    "index_n_heads", "index_head_dim", "index_topk", "indexer_rope_interleave",
+    "mtp_num_layers", "oe_vocab_size_ratio", "oe_neighbor_num", "oe_split_num",
+    "ngram_vocab_size_ratio", "emb_neighbor_num", "emb_split_num", "dsa_mtp_cli",
+    "cli_factor",
+)
+
+
+def _is_longcat_causal(c: dict) -> bool:
+    """Published ``LongcatForCausalLM`` (config architectures often say ``LongcatCausalLM``).
+
+    Not ``LongcatFlashForCausalLM`` and not the n-gram subclass. ``model_type`` on the class
+    is ``longcat``; the released JSON often omits it.
+    """
+    archs = c.get("architectures") or []
+    mt = c.get("model_type") or ""
+    return "LongcatCausalLM" in archs or "LongcatForCausalLM" in archs or mt == "longcat"
+
+
+def _build_longcat_causal(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
+    """LongCat-Flash-Thinking-2601 / Prover (modeling_longcat.py).
+
+    ``LongcatDecoderLayer`` and ``LongcatMLA`` are the Flash main stack: two attention
+    sub-layers per block, MoE shortcut after sublayer 1, ``kv_b`` expanded before the
+    cache write. The cache stores unpadded V. ``flash_attention_2`` pads V only after
+    that write, for the kernel, then slices it off before ``o_proj``.
+
+    ``LongcatRotaryEmbedding`` calls ``ROPE_INIT_FUNCTIONS['deepseek_yarn']`` and
+    multiplies cos/sin by ``attention_scaling``. ``inv_freq`` is not persistent.
+    That does not change GEMM or KV width.
+
+    The HF class has no MTP module (``_keys_to_ignore_on_load_unexpected`` is None).
+    The official deployment guide runs the checkpoint MTP with vLLM method
+    ``longcat_flash_mtp``. ``speculative.py`` rewrites only ``model_type == longcat_flash``,
+    so this checkpoint must pass the method explicitly. That draft is the Flash MTP
+    already billed (V padded to ``qk_head_dim``). The layer is emitted here and
+    ``from_release`` drops it when the release has no ``model.mtp.*`` (Prover).
+
+    LSA, the indexer, over-encoding, and n-gram fields are rejected. They are not this stack.
+    """
+    if c.get("attention_method") != "MLA":
+        raise ValueError("longcat attention_method is not MLA")
+    for key in _LONGCAT_CAUSAL_EXTRA:
+        if c.get(key) not in (None, False, 0):
+            raise ValueError(f"longcat field {key} is not the published MLA stack")
+    rope = c.get("rope_scaling")
+    if not isinstance(rope, dict) or rope.get("rope_type") != "deepseek_yarn":
+        raise ValueError("longcat rope_scaling is not deepseek_yarn")
+    layers, mtp, _notes, cov = _build_longcat_flash(c, draft=True)
+    n_blocks = len(layers) // 2
+    notes = [
+        "类是 LongcatForCausalLM（config 的 architectures 写的是 LongcatCausalLM）。"
+        f"modeling_longcat.py 的 LongcatDecoderLayer 与 LongcatMLA 和 Flash 是同一条主栈："
+        f"{n_blocks} 个 block，每个 block 两套注意力加两套稠密 SwiGLU。"
+        "第 0 子层的 MoE 与该子层稠密 MLP 读同一条 post-attention 流，MoE 输出加在第 1 子层残差之后。",
+        "注意力在写入 cache 之前用 kv_b 展开成多头 K/V，不是 latent cache。"
+        "flash_attention_2 只在 cache 更新之后把 V 补到 qk_head_dim 交给 kernel，再在 o_proj 前切回。"
+        "eager 与 sdpa 不补。cache 里的 V 仍是未填充的 v_head_dim。",
+        "LongcatRotaryEmbedding 走 ROPE_INIT_FUNCTIONS 的 deepseek_yarn。"
+        f"factor {rope.get('factor')}，original_max_position_embeddings "
+        f"{rope.get('original_max_position_embeddings')}，rope_theta {c.get('rope_theta')}，"
+        f"max_position_embeddings {c.get('max_position_embeddings')}。"
+        "forward 把 cos/sin 乘上 attention_scaling。inv_freq 不是 persistent。"
+        "不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。",
+        "mla_scale_q_lora / mla_scale_kv_lora 与 routed_scaling_factor 是 Python 标量，不计额外周期。"
+        "hidden_act 缺省是 silu。zero-expert 是 identity，没有权重。",
+        "HF 类没有 MTP 模块，_keys_to_ignore_on_load_unexpected 是 None，forward 不跑 model.mtp.*。"
+        "官方部署文档用 vLLM speculative method longcat_flash_mtp 加载这份权重。"
+        "speculative.py 只在 model_type 为 longcat_flash 时自动改写，这里要显式传入 method。"
+        "传入之后的 draft 与 Flash 相同：kv_b 展开后把 V 补到 qk_head_dim 写入 cache，o_proj 前再切回。"
+        "只有 checkpoint 里有 model.mtp.layers.0 才建这一层。没有这些张量就不建，也不补 V。",
+    ]
+    return layers, mtp, notes, cov
+
+
 def _build_longcat_ngram(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
     """LongCat-Flash-Lite. Same dual-sublayer decoder as Flash. Block count is ``num_layers``.
 
@@ -2949,6 +3024,8 @@ def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
     if "LongcatFlashNgramForCausalLM" in (c.get("architectures") or []) or mt == "longcat_flash_ngram":
         return _build_longcat_ngram, "LongCat-Flash-Lite（n-gram 嵌入；不跑 MTP）"
+    if _is_longcat_causal(c):
+        return _build_longcat_causal, "LongCat（MLA 展开 KV；deepseek_yarn；MTP 按 vLLM longcat_flash_mtp）"
     if "LongcatFlashForCausalLM" in (c.get("architectures") or []) or mt == "longcat_flash":
         return _build_longcat_flash, "LongCat-Flash（主栈展开 KV；MTP 按 vLLM 把 V 补到 qk_head_dim）"
     if mt == "hunyuan_v1_moe":
@@ -3686,11 +3763,14 @@ def _apply_longcat_fp8(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
     with no quantization_config is unchanged. A fp8 config whose headers do not
     match this partition raises instead of smearing the two buckets.
     """
-    archs = c.get("architectures") or []
-    mt = c.get("model_type") or ""
     if _is_longcat_ngram(c):
         return spec
-    if "LongcatFlashForCausalLM" not in archs and mt != "longcat_flash":
+    archs = c.get("architectures") or []
+    mt = c.get("model_type") or ""
+    # 0.401: LongcatForCausalLM FP8 uses the same ignored_layers partition. Zero skipped
+    # blocks (Thinking-2601-FP8) is the all-fp8 expert and dense case, not a new rule.
+    if ("LongcatFlashForCausalLM" not in archs and mt != "longcat_flash"
+            and not _is_longcat_causal(c)):
         return spec
     qc = c.get("quantization_config")
     if not isinstance(qc, dict):
@@ -4195,17 +4275,23 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                                "按发布 safetensors 头计入存储；每 token 只读少量行",))
         # MTP modules: stored size as released (incl. embed/head copies some releases store)
         rmtp = rel.get("params_mtp") or 0
-        if rmtp and not spec.mtp_layers and not spec.ngram_dim:
+        if rmtp and not spec.mtp_layers and not spec.ngram_dim and not _is_longcat_causal(c):
             # weights ship an MTP module the config does not declare (e.g. Qwen3-Next) → infer one
             # 0.400 LongCat-Flash-Lite keeps the checkpoint MTP in params_mtp and does not run it.
+            # 0.401 LongcatForCausalLM emits the vLLM draft in the builder, or drops it below.
             last = spec.layers[-1]
             spec = replace(spec, mtp_layers=(replace(last, misc_params=last.misc_params + 2 * h),),
                            notes=spec.notes + ("MTP 模块由发布权重推断（config 中没有 MTP 字段）",))
         if spec.mtp_layers and not rmtp and rel.get("params_mtp") == 0:
             # 0.144: the config declares MTP (mtp_num_hidden_layers) but the release ships no MTP weights
-            # (MiniCPM-V-4.7 keeps the Qwen3.5 text config) → no draft module
+            # (MiniCPM-V-4.7 keeps the Qwen3.5 text config) → no draft module.
+            # 0.401 Prover: same LongcatForCausalLM geometry, headers have no model.mtp.*.
+            if _is_longcat_causal(c):
+                dropped = "checkpoint 没有 model.mtp.*。不建 draft，也不把 V 补到 qk_head_dim。"
+            else:
+                dropped = "config 声明 MTP，但发布权重中没有 MTP 模块 → 不建模 MTP"
             spec = replace(spec, mtp_layers=(), mtp_extra_params=0,
-                           notes=spec.notes + ("config 声明 MTP，但发布权重中没有 MTP 模块 → 不建模 MTP",))
+                           notes=spec.notes + (dropped,))
         head_copy = 0
         if tie and "lm_head" in rel.get("roles", {}) and not rel.get("decision"):   # 0.291: a readout is no tied copy
             head_copy = sum(v["params"] for v in rel["roles"]["lm_head"].values())

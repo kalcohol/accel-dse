@@ -6,6 +6,33 @@
 
 
 
+## [0.401.0] — 2026-10-25
+
+### LongCat-Flash-Thinking-2601 按已发布的 LongcatMLA 计，MTP 只在有权重且走 vLLM longcat_flash_mtp 时建层
+
+- **新增 3 个发布**（2026-10-25 读取 config、`modeling_longcat.py` 与 safetensors header）。每一份 `param_check().rel_err == 0`。覆盖 full。
+  - **longcat-flash-thinking-2601。** `LongcatForCausalLM`（config 的 architectures 是 `LongcatCausalLM`）。张量名、dtype、形状和角色与 `LongCat-Flash-Chat` 相同：43756 张量，语言参数 560,664,980,480，MTP 1,197,899,776，`bytes_total` 1,123,990,044,672。`max_position_embeddings` 是 983040，`rope_theta` 是 1000000，`rope_scaling` 是 deepseek_yarn，factor 120，original 8192。index 的 `total_size` 561,862,880,256 与 header 不符，不采用。
+  - **longcat-flash-prover。** 同一条语言栈。43739 张量，语言参数相同，`params_mtp` 是 0，`bytes_total` 1,121,594,245,120。没有 `model.mtp.*`。`mtp_params() == 0`。
+  - **longcat-flash-thinking-2601-fp8。** 同一几何。`quant_method=fp8`，`fmt=e4m3`，`activation_scheme=dynamic`，`weight_block_size=[128, 128]`，`disable_quant_module=['self_attn']`。86941 张量，语言参数与 MTP 参数和 bf16 相同。`bytes_llm` 567,880,007,680，`bytes_mtp` 2,003,334,848，`bytes_total` 569,883,342,528。`ignored_layers` 571 条，是 Chat-FP8 那份的子集，里面没有专家投影，也没有稠密 MLP 投影。
+- **机制。** `modeling_longcat.py` 的 `LongcatDecoderLayer` / `LongcatMLA` 和 Flash 是同一条主栈：每个 block 两套注意力加两套稠密 SwiGLU，第 0 子层的 MoE 加在第 1 子层残差之后。`kv_b` 在写入 cache 之前展开。cache 里的 V 是未填充的 128。`flash_attention_2` 只在 cache 更新之后把 V 补到 `qk_head_dim` 交给 kernel，再在 `o_proj` 前切回；eager 和 sdpa 不补。`LongcatRotaryEmbedding` 用 `ROPE_INIT_FUNCTIONS['deepseek_yarn']`，forward 把 cos/sin 乘上 `attention_scaling`。`inv_freq` 不是 persistent。factor、`mscale`、`rope_theta` 和 `max_position_embeddings` 都不改变 GEMM 形状，也不改变 KV 宽度，不计额外周期。改成别的 `rope_type`、把 `attention_method` 设成 LSA，或带上 `index_*` / `oe_*` / `mtp_num_layers`，都拒绝。
+- **MTP。** HF 类没有 MTP 模块，`_keys_to_ignore_on_load_unexpected` 是 None，forward 不跑 `model.mtp.*`。官方部署文档用 vLLM speculative method `longcat_flash_mtp` 加载这份权重。`speculative.py` 只在 `model_type` 为 `longcat_flash` 时自动改写，这里要显式传入 method。传入之后的 draft 与 0.398 相同：V 补到 `qk_head_dim` 192 再在 `o_proj` 前切回。checkpoint 有 `model.mtp.layers.0` 才建这一层。Prover 没有这些张量，不建层，也不补 V。不把最后一层克隆成 draft。
+- **Thinking-2601-FP8。** 仍按 `ignored_layers` 逐块计，不按角色平均。这份名单在每个 block 上忽略的专家投影是 0、稠密投影是 0，所以 28 个 block 的专家（541,165,879,296 参数，541,297,999,872 字节）和两套稠密 MLP（12,683,575,296 参数）整份是块 fp8，位宽 `8 × 16388/16384`。注意力仍是纯 bf16，激活改记 bf16。量化过的专家、稠密 MLP 和 MTP GEMM 的激活仍是全局动态 fp8。MTP 的 bf16 / fp8 桶与 Chat-FP8 相同：`eh_proj` 记 `mtp_fp8`，`kv_a` 的 scale 是 `[5, 48]`，单独记 `mtp_kv_a`。主栈 V 仍是 128。draft V 仍是 192。名单只点到一个专家投影、`weight_block_size` 不是 `[128, 128]`、`disable_quant_module` 不是 `['self_attn']`，或专家字节对不上，都拒绝。
+- **0.400 Lite 复核。** n-gram 仍是 12 张表加 12 个 `Linear(256→3072)`，HF 求和除以 13 与 vLLM 的 bmm 再均值相同，每 token 63 次标量哈希。Lite 的 checkpoint MTP 仍不建层。Lite-FP8 的 `disable_quant_module` 仍是空的，`kv_a` 仍单独记。这条 YaRN 路径不改那些账单。
+- **未纳入：**
+  - **LongCat-Flash-Omni / Omni-FP8。** 根 config 的架构是 `LongcatFlashOmniForCausalLM`，`auto_map` 指向 `LongcatFlashForCausalLM`。`modeling_longcat_flash.py` 只有文本 Flash 类，没有音频或视觉类。根 safetensors index 是 43739 个文本张量，没有音频或视觉名字；index `total_size` 560,664,980,480 与字节不符，不采用。`audio/config.json` 的类是 `LongCatAudioEncoder`（relu6，22 层，右侧 6 层，`proj_size` 1536，词表 5252，左右上下文 7，stride 8，dtype float32）。预处理是 80 维 fbank 再 splice，不是 Whisper、AuT 或 Wav2Vec2。权重是 `.pt`：4 张 `[8224, 6144]` 的 bf16 嵌入，投影是两层带 bias 的 `Linear(6144, 6144)`。`vision/config.json` 是 rope2d、patch 14、时间 patch 2、`spatial_merge_size` 1、32 层、hidden 1280、SwiGLU、RMSNorm、`qk_normalization`、`adaptor_dim` 7168。投影器是 `[2560]` 的仿射、`Linear(2560→7168)`、`Linear(7168→7168)`、`Linear(7168→6144)`，都带 bias。音频 codec 是另一份 yaml 解码器。对不上现有的 ASR 或视觉塔。不新写 any-to-any。
+  - **LongCat-Flash-Lite-Sparse。** 仓库根目录和子目录都没有 modeling 文件，只有 `tokenization_llama.py`、`config.json` 和 `tech_report.pdf`。类名是 `LongcatCausalLM`，`attention_method` 是 LSA，另有 `index_n_heads` 16、`index_head_dim` 128、`index_topk` 2048、`indexer_rope_interleave`、`mtp_num_layers=3`、`oe_vocab_size_ratio` 78。不套到这条 MLA，也不套到 DeepSeek DSA。
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401（2026-10-25）。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 `config.json` 仍是 404。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 与 `tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401。
+  - **nvidia Cosmos3。** 仍是扩散栈，不是已有的条件生成路径。
+  - **Gemma-4 assistant / QAT。** 没有新的可对上的 header。不单列。
+  - **2026-10-26 及之后的公开扫描**（120 个组织，`createdAt` ≥ 2026-10-26）。没有新行。没有能套上现有机制的新 safetensors 或 PT。GGUF / MLX / ONNX / tensorrt / DFlash 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.400.0] — 2026-10-25
 
 ### LongCat-Flash-Lite 的 n-gram 嵌入按查表和 bf16 投影计

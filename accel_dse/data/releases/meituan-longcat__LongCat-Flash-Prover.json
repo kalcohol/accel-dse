@@ -1,0 +1,103 @@
+{
+ "bytes_llm": 1121594245120,
+ "bytes_mtp": 0,
+ "bytes_total": 1121594245120,
+ "config": {
+  "architectures": [
+   "LongcatCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "attention_method": "MLA",
+  "auto_map": {
+   "AutoConfig": "configuration_longcat.LongcatConfig",
+   "AutoModel": "modeling_longcat.LongcatModel",
+   "AutoModelForCausalLM": "modeling_longcat.LongcatForCausalLM"
+  },
+  "bos_token_id": 1,
+  "eos_token_id": 2,
+  "expert_ffn_hidden_size": 2048,
+  "ffn_hidden_size": 12288,
+  "hidden_size": 6144,
+  "kv_lora_rank": 512,
+  "max_position_embeddings": 983040,
+  "mla_scale_kv_lora": true,
+  "mla_scale_q_lora": true,
+  "moe_topk": 12,
+  "n_routed_experts": 512,
+  "num_attention_heads": 64,
+  "num_layers": 28,
+  "q_lora_rank": 1536,
+  "qk_nope_head_dim": 128,
+  "qk_rope_head_dim": 64,
+  "rms_norm_eps": 1e-05,
+  "rope_scaling": {
+   "beta_fast": 32,
+   "beta_slow": 1,
+   "factor": 120,
+   "mscale": 1,
+   "mscale_all_dim": 1,
+   "original_max_position_embeddings": 8192,
+   "rope_type": "deepseek_yarn"
+  },
+  "rope_theta": 1000000.0,
+  "routed_scaling_factor": 6.0,
+  "use_cache": true,
+  "v_head_dim": 128,
+  "vocab_size": 131072,
+  "zero_expert_num": 256,
+  "zero_expert_type": "identity"
+ },
+ "fetched": "2026-10-25",
+ "n_tensors": 43739,
+ "params_llm": 560664980480,
+ "params_mtp": 0,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "meituan-longcat/LongCat-Flash-Prover",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 10143924224,
+    "params": 5071962112
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1610612736,
+    "params": 805306368
+   }
+  },
+  "expert": {
+   "bf16": {
+    "bytes": 1082331758592,
+    "params": 541165879296
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 1610612736,
+    "params": 805306368
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 25367150592,
+    "params": 12683575296
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 1617920,
+    "params": 808960
+   }
+  },
+  "router": {
+   "fp32": {
+    "bytes": 528568320,
+    "params": 132142080
+   }
+  }
+ },
+ "torch_dtype": null
+}
