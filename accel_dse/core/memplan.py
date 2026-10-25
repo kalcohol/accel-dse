@@ -106,6 +106,9 @@ def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]
             bpp = model.fmt("lin_ba").bits / 8
         elif l.role == "o_proj":
             bpp = model.fmt("o_proj").bits / 8
+        elif l.role.startswith("mtp_"):
+            # 0.399: LongCat-Flash FP8 draft GEMMs (mtp_fp8 / mtp_kv_a) are not the attn role.
+            bpp = model.fmt(l.role).bits / 8
         else:
             bpp = a
         hot += k * n * (groups_local(l, sh.tp)[0] if l.groups > 1 else 1) * bpp
@@ -114,6 +117,10 @@ def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]
         k, n = _lin_local(l, sh.tp)
         role = "router" if l.name.startswith(("router", "shared_expert_gate")) else (
             "shared_expert" if l.name.startswith("shared") else "mlp")
+        # 0.399: unquantized dense SwiGLU (mlp_bf16) and MTP fp8 GEMMs. Other role tags stay
+        # on the name-based role, including role "other".
+        if l.role == "mlp_bf16" or l.role.startswith("mtp_"):
+            role = l.role
         hot += k * n * model.fmt(role).bits / 8
     # norms / gates / conv / hc vectors (bf16 「假设」; non-LLM releases: as released)
     for l in L.pair_linears:        # structure-model blocks (single rank)
@@ -123,7 +130,7 @@ def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]
     exp = 0.0
     if f.kind == "moe":
         n_loc = _cdiv(f.n_experts, sh.ep)
-        bpp = model.fmt("expert").bits / 8
+        bpp = model.fmt(f.expert_role or "expert").bits / 8
         ein = f.expert_in(model.hidden)
         exp = n_loc * f.mats * ein * _cdiv(f.d_expert, sh.etp) * bpp
         if f.n_experts_b and f.d_expert_b:
@@ -298,7 +305,13 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         elif not has_embed:
             hot += table          # tied head on a different stage keeps its own copy
         if n_mtp:
-            hot += n_mtp * model.mtp_extra_params * model.fmt("mtp").bits / 8 / sh.tp
+            # 0.399: eh_proj can be fp8 while the private embedding and mtp.norm stay on fmt("mtp").
+            if model.mtp_eh_params and model.mtp_eh_role:
+                rest = model.mtp_extra_params - model.mtp_eh_params
+                hot += n_mtp * (rest * model.fmt("mtp").bits
+                                + model.mtp_eh_params * model.fmt(model.mtp_eh_role).bits) / 8 / sh.tp
+            else:
+                hot += n_mtp * model.mtp_extra_params * model.fmt("mtp").bits / 8 / sh.tp
             # 0.252 DSpine: codebook (only anchor rows read) + the serial tables built at load — resident, not streamed
             store_extra += model.draft_cold_params * model.fmt("mtp").bits / 8 + model.draft_table_bytes
     rr = 0.0
