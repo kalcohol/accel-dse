@@ -2495,10 +2495,12 @@ def _evaluate_ctc(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str])
         warnings.append("serving.audio_s 为 0：CTC 编码器没有输入帧")
     ops = audio_ops(au, sv.audio_s, clips, m.act_fmt) if clips else []
     if ops:
-        c = _component_time([(ops, 1)], sys, scn.mapping, m.act_fmt)
+        # Real stage clock stays on the StageResult. The shared bill is numbers only:
+        # a StageTime in that dict is not JSON-serialisable (pipeline / vision routes).
+        stt, c = _component_bill([(ops, 1)], sys, scn.mapping, m.act_fmt)
     else:
         stt = StageTime(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-        c = {"s": 0.0, "tflop": 0.0, "dram_GB": 0.0, "bound": stt.bound, "time": stt}
+        c = {"s": 0.0, "tflop": 0.0, "dram_GB": 0.0, "bound": stt.bound}
     w = m.vision.params * m.vision.w_Bpp
     fits = w <= sys.dram_bytes
     if not fits:
@@ -2506,7 +2508,7 @@ def _evaluate_ctc(scn: Scenario, m: ModelSpec, sys: System, warnings: list[str])
     mp = MemPlan(stored_w=w, kv_total=0.0, state_total=0.0, dram_need=w, dram_cap=sys.dram_bytes,
                  fits=fits, sram=0.0, staging=0.0, pinned_hot=0.0, pinned_expert=0.0, kv_sram=0.0,
                  residency=1.0 if w else 0.0)
-    stage = StageResult(0, (0, 0), c["time"], mp, {"total": c["dram_GB"] * 1e9, "weights": w}, 0.0,
+    stage = StageResult(0, (0, 0), stt, mp, {"total": c["dram_GB"] * 1e9, "weights": w}, 0.0,
                         flops_u=c["tflop"] * 1e12)
     step = c["s"]
     frames = au.tokens(sv.audio_s) if sv.audio_s > 0 else 0
@@ -2968,8 +2970,8 @@ def _prefix_cache_bytes(m: ModelSpec, T: int, lay, ab: float) -> float:
 _COMP_KEYS = ("hot", "exp", "w_extra", "act", "kv_read", "kv_write", "state", "lookup")
 
 
-def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, af: str,
-                    extra_dram: float = 0.0) -> dict:
+def _component_bill(groups: list[tuple[list[Op], int]], sys: System, org: str, af: str,
+                    extra_dram: float = 0.0) -> tuple[StageTime, dict]:
     """One pipeline component on one card: same op → mapping → streaming path as a stage; its weights are larger
     than SRAM, so every weight is read from DRAM once per op execution (tiles / chunks re-read).
     ``groups``: [(ops, executions)] (a tiled VAE decode runs one op list per tile).
@@ -2977,7 +2979,8 @@ def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, a
     K/V cache, recurrent-state and lookup bytes too, in the same roofline as the rest (``extra_dram``: bytes the
     caller knows the op list does not carry, e.g. the Kimi-Audio DiT's cached-frame K/V).  ≤ 0.287 only weights +
     activations were counted: lookup bytes went to no tier, and the speech callers added their K/V seconds serially
-    after the roofline.  ``dram_GB`` = every touched byte (the ledger: SRAM = SLC = 0 for a component)."""
+    after the roofline.  ``dram_GB`` = every touched byte (the ledger: SRAM = SLC = 0 for a component).
+    The returned dict is JSON-safe. The StageTime stays with the caller that owns a stage clock."""
     d = dict.fromkeys(_SUM_KEYS, 0.0)
     shim = SimpleNamespace(act_fmt=af, kv_fmt=af)
     for ops, n in groups:
@@ -2997,12 +3000,18 @@ def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, a
                     0.0, d["flops"], d["t_ideal"], t_dram_kv=kv_b / (sys.dram_GBps * 1e9), t_kern=d["kern"], t_disp=disp)
     ch = sys.chip
     extra = {"sync_s": sync, "dispatch_s": disp} if sync else {}     # only when a knob is set (summaries unchanged)
-    return {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound,
-            "time": stt, **extra,
+    info = {"s": stt.total, "tflop": d["flops"] / 1e12, "dram_GB": dram / 1e9, "bound": stt.bound, **extra,
             # action counts (0.47.1, core/energy.py): bf16-equivalent MAC slots, vector element-ops, SRAM-port bytes
             "acts": {"mac": d["t_ideal"] * ch.macs * ch.freq_ghz * 1e9, "vec": d["t_vec"] * ch.lanes * ch.freq_ghz * 1e9,
                      "sram": d["sram"], "dram": dram, "link": 0.0, "d2d": 0.0, "net": 0.0,
                      "noc": d["noc_h"], "noc_wire": d["noc_p"]}}
+    return stt, info
+
+
+def _component_time(groups: list[tuple[list[Op], int]], sys: System, org: str, af: str,
+                    extra_dram: float = 0.0) -> dict:
+    """JSON-safe half of ``_component_bill`` (seconds, bytes, bound, action counts)."""
+    return _component_bill(groups, sys, org, af, extra_dram)[1]
 
 
 def _pipeline_cost(scn: Scenario, m: ModelSpec, wl: ResolvedWorkload, sys: System, warnings: list[str],
