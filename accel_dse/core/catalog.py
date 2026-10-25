@@ -100,6 +100,13 @@ EXTRA_TAIL = [
     # Thinking-2601-FP8: same ignored_layers rule as Chat-FP8, but no expert or dense name is
     # ignored, so every block is block-fp8. Attention stays bf16. MTP bytes match Chat-FP8.
     ("longcat-flash-thinking-2601-fp8", "meituan-longcat/LongCat-Flash-Thinking-2601-FP8"),
+    # 0.402: LongCat-Flash-Omni. Text stack is Flash without MTP. Vision is rope2d + SwiGLU
+    # with a width-pair projector. Audio is an FSMN encoder. Codebook embeddings and output
+    # heads sit beside the language safetensors. The waveform codec stays out.
+    ("longcat-flash-omni", "meituan-longcat/LongCat-Flash-Omni"),
+    # Omni-FP8 uses the same ignored_layers rule. Blocks 23-27 keep experts and dense MLP
+    # in bf16. There is no MTP. Towers are the bf16 .pt files.
+    ("longcat-flash-omni-fp8", "meituan-longcat/LongCat-Flash-Omni-FP8"),
     # 0.376: Hunyuan-A13B-Instruct. Text MoE only (vit fields are null). Mixed shared MLP + q/k RMSNorm.
     ("hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"),
     # 0.377: ERNIE-4.5-21B-A3B-PT. Text MoE. Repo has no modeling file; transformers class + headers close rel_err.
@@ -927,7 +934,7 @@ def entries() -> list[dict]:
             # 0.270: any release with a modelled audio encoder and no vision tower (Whisper keeps it outside audio_config)
             from .vision import audio_spec
             # 0.271: Qwen2.5-Omni (speech in + speech out) → omni; 0.273: Step-Audio-2-mini with its token2wav too
-            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3", "fireredtts3", "fish_omni", "qwen3_tts", "moss_tts_delay") or (cf.get("model_type") == "dense" and cf.get("ditar_config")) else "omni" if cf.get("model_type") in ("qwen2_5_omni", "qwen3_omni_moe") or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") in ("moshi", "index_echo_s2st") else \
+            e["domain"] = "tts" if cf.get("model_type") in ("lingv3_tts", "cosyvoice2", "cosyvoice3", "fireredtts3", "fish_omni", "qwen3_tts", "moss_tts_delay") or (cf.get("model_type") == "dense" and cf.get("ditar_config")) else "omni" if cf.get("model_type") in ("qwen2_5_omni", "qwen3_omni_moe") or (cf.get("model_type") == "step_audio_2" and rel.get("token2wav")) or rel.get("kimi_audio") or cf.get("model_type") in ("moshi", "index_echo_s2st") or "LongcatFlashOmniForCausalLM" in (cf.get("architectures") or []) else \
                 ("asr" if (cf.get("audio_config") or audio_spec(cf) is not None) and not cf.get("vision_config")
                  else "vlm") if (rel.get("params_vision") or 0) > 0 else "llm"
         e["merged_into"] = MERGED.get(e["id"])

@@ -1,0 +1,140 @@
+{
+ "bytes_llm": 1121594245120,
+ "bytes_mtp": 0,
+ "bytes_total": 1121594245120,
+ "config": {
+  "architectures": [
+   "LongcatFlashOmniForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "attention_method": "MLA",
+  "auto_map": {
+   "AutoConfig": "configuration_longcat_flash.LongcatFlashConfig",
+   "AutoModel": "modeling_longcat_flash.LongcatFlashModel",
+   "AutoModelForCausalLM": "modeling_longcat_flash.LongcatFlashForCausalLM"
+  },
+  "bos_token_id": 1,
+  "eos_token_id": 2,
+  "expert_ffn_hidden_size": 2048,
+  "ffn_hidden_size": 12288,
+  "hidden_size": 6144,
+  "kv_lora_rank": 512,
+  "max_position_embeddings": 131072,
+  "mla_scale_kv_lora": true,
+  "mla_scale_q_lora": true,
+  "moe_topk": 12,
+  "n_routed_experts": 512,
+  "num_attention_heads": 64,
+  "num_layers": 28,
+  "q_lora_rank": 1536,
+  "qk_nope_head_dim": 128,
+  "qk_rope_head_dim": 64,
+  "rms_norm_eps": 1e-05,
+  "rope_theta": 10000000.0,
+  "routed_scaling_factor": 6.0,
+  "use_cache": true,
+  "v_head_dim": 128,
+  "vocab_size": 131072,
+  "zero_expert_num": 256,
+  "zero_expert_type": "identity"
+ },
+ "fetched": "2026-10-25",
+ "longcat_omni": {
+  "adaptor_dim": 7168,
+  "audio_frame_ms": 25,
+  "audio_hidden": 6144,
+  "audio_input": 1200,
+  "audio_layers": 22,
+  "audio_left_order": 10,
+  "audio_ndnn": 2,
+  "audio_proj": 1536,
+  "audio_rate": 16000,
+  "audio_right_layers": 6,
+  "audio_right_order": 1,
+  "audio_shift_ms": 10,
+  "audio_stride": 8,
+  "audio_vocab": 5252,
+  "bytes_audio_emb": 404226048,
+  "bytes_audio_encoder": 1024418056,
+  "bytes_audio_out": 707395584,
+  "bytes_audio_projector": 151019520,
+  "bytes_vision_model": 1273108992,
+  "bytes_vision_projector": 227592192,
+  "code_vocab": 8224,
+  "codebooks": 4,
+  "has_proj": false,
+  "hidden_act": "SwiGLU",
+  "max_tokens": 5832,
+  "min_tokens": 576,
+  "params_audio_emb": 202113024,
+  "params_audio_encoder": 512209028,
+  "params_audio_out": 353697792,
+  "params_audio_projector": 75509760,
+  "params_vision_model": 636554496,
+  "params_vision_projector": 113796096,
+  "patch": 14,
+  "qkv_bias": false,
+  "residual_codebooks": 3,
+  "resize_factor": 8,
+  "spatial_merge": 1,
+  "text_hidden": 6144,
+  "tpatch": 2,
+  "vision_heads": 16,
+  "vision_hidden": 1280,
+  "vision_intermediate": 5184,
+  "vision_layers": 32
+ },
+ "n_tensors": 43739,
+ "params_audio_io": 555810816,
+ "params_llm": 560664980480,
+ "params_mtp": 0,
+ "params_vision": 1338069380,
+ "quantization_config": null,
+ "repo": "meituan-longcat/LongCat-Flash-Omni",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 10143924224,
+    "params": 5071962112
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 1610612736,
+    "params": 805306368
+   }
+  },
+  "expert": {
+   "bf16": {
+    "bytes": 1082331758592,
+    "params": 541165879296
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 1610612736,
+    "params": 805306368
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 25367150592,
+    "params": 12683575296
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 1617920,
+    "params": 808960
+   }
+  },
+  "router": {
+   "fp32": {
+    "bytes": 528568320,
+    "params": 132142080
+   }
+  }
+ },
+ "torch_dtype": null
+}

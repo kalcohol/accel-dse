@@ -6,6 +6,31 @@
 
 
 
+## [0.402.0] — 2026-10-25
+
+### LongCat-Flash-Omni 按已发布的文本栈、视听塔和音频码本头计
+
+- **新增 2 个发布**（2026-10-25 读取根 config、官方 `encoders/vision_adaptor.py`、`encoders/audio_adaptor.py`、`data/audio_data.py`，以及 SGLang `LongcatFlashOmniForCausalLM` 的码本头；视觉、音频、码本的 `.pt` header 与公式逐项相等）。每一份 `param_check().rel_err == 0`。覆盖 full。`mtp_params() == 0`。
+  - **longcat-flash-omni。** 根架构是 `LongcatFlashOmniForCausalLM`，文本栈是 `LongcatFlashForCausalLM`。语言 safetensors 43739 张量，`params_llm` 560,664,980,480，`params_mtp` 0，`bytes_llm` 1,121,594,245,120。没有 `model.mtp.*`，不建 draft，V 保持 128。视听塔参数 1,338,069,380：视觉 636,554,496，视觉投影 113,796,096，音频编码器 512,209,028，音频投影 75,509,760，全部 bf16。音频码本不在 safetensors 里：4 张输入 Embedding(8224, 6144) 加 3 张残差 Embedding，再加 4 个无 bias 的 Linear(6144, 8224)，合计 `params_audio_io` 555,810,816。`params()` 在语言参数上加上这部分，所以 `release_params` 一并加上，`rel_err` 仍是 0。`params_llm` 仍只计语言文件。
+  - **longcat-flash-omni-fp8。** 同一几何。`quant_method=fp8`，`fmt=e4m3`，`activation_scheme=dynamic`，`weight_block_size=[128, 128]`，`disable_quant_module=['self_attn']`。79205 张量，`bytes_llm` 666,757,550,080，`params_mtp` 0。`ignored_layers` 8273 条。专家和稠密 MLP 只在 block 23–27 保持 bf16，block 0–22 是块 fp8。注意力仍是 bf16。没有 MTP 桶。视听 `.pt` 与 bf16 仓库的字节和 ETag 相同，不进这份名单，权重和激活仍是 bf16。
+- **机制。** 每个 block 仍是两套展开后的注意力加两套稠密 SwiGLU，第 0 子层的 MoE 加在第 1 子层残差之后。视觉是 Conv3d（时间 2、空间 14，带 bias）、32 层双向注意力（qkv 无 bias，proj 有 bias，q/k RMSNorm）、SwiGLU 内宽 `int(5184*2/3)=3456`。`spatial_merge_size` 是 1，投影器仍把宽度相邻两列拼成 2560，再走 LayerNorm 和三层带 bias 的 Linear。`smart_resize` 的因子是 112，并额外要求高是 14 的倍数、宽是 28 的倍数。单张图在 token 数不超过 `max_tokens_video` 时 post-squeeze 是恒等，默认图像网格不计视频压缩。音频长度按 `AudioFrameLengthCalculator`：Kaldi snip_edges（25 ms / 10 ms）再按 splice stride 8 向上取整。22 层 FSMN 里前 16 层深度卷积核是 11，后 6 层是 12。`output` 线性层会执行，再乘 0 加回，按 GEMM 计。输入码本只在 decode 的下一拍查表。4 个输出头和 3 次残差查表发生在 sample 的行上。`has_proj` 为 false。`language_model_embedding.pt` 与 `embed_tokens` 同形，不重复计入。
+- **0.401 复核。** Thinking-2601 的 YaRN factor 120 仍只缩放注意力，不改 GEMM 或 KV 宽度。MTP 仍只在 `model.mtp.layers.0` 存在时按 `longcat_flash_mtp` 把 V 补到 192。Prover 仍不建 MTP、不补 V。Thinking-2601-FP8 的忽略名单仍没有专家或稠密投影，28 个 block 仍全是 fp8，注意力仍是 bf16。这几条没有新的账单错误。
+- **未纳入：**
+  - **LongCat-Flash-Lite-Sparse。** 仓库根目录仍没有 modeling 文件。类名是 `LongcatCausalLM`，`attention_method` 是 LSA，另有 indexer、`mtp_num_layers=3` 和 over-encoding。公开 vLLM 里没有已合并的本类实现；未合并的讨论复用 DeepSeek DSA。不套到 MLA，也不套到 DSA。
+  - **Omni 波形 codec。** `audio_codec/` 只有 yaml 和解码器 `.pt`。类在子模块 `meituan-longcat/LongCat-Audio-Codec`（`c8743bf`），不在 HF 根目录。不计入。
+  - **Omni 视频多帧 post-squeeze。** 单张图的默认路径已按 `get_ar_token_num` 计。多帧压缩不进默认图像网格。
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401（2026-10-25）。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 `config.json` 仍是 404。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 与 `tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401。
+  - **nvidia Cosmos3。** 仍是扩散栈，不是已有的条件生成路径。
+  - **Gemma-4 assistant / QAT。** 没有新的可对上的 header。不单列。
+  - **2026-10-25 及之后的公开扫描**（120 个组织，`createdAt` ≥ 2026-10-25）。没有新行。没有能套上现有机制的新 safetensors 或 PT。GGUF / MLX / ONNX / tensorrt / DFlash 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.401.0] — 2026-10-25
 
 ### LongCat-Flash-Thinking-2601 按已发布的 LongcatMLA 计，MTP 只在有权重且走 vLLM longcat_flash_mtp 时建层
