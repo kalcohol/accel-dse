@@ -3293,6 +3293,15 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             N, rows = N // 4, rows // 4
         ops += [gemm(f"{li}.qkv", rows, h, qkv_n, li), gemm(f"{li}.o", rows, q, h, li)]
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
+        if v.family == "longcatvit" and v.gated:
+            # SwiGLU.forward is fc2(RMSNorm(silu(fc1(x)) * fc3(x))). The norm upcasts
+            # to fp32, reduces the inner width, and applies one rsqrt per token
+            # (same 4-elem + 1 rsqrt recipe as attn_norm). Rows are patch tokens,
+            # before the width-pair projector. The weight is already in the tower
+            # parameter total. q/k and residual RMSNorm stay in the shared ViT
+            # epilogue, the same as the other towers.
+            ops.append(Op(pfx + f"{li}.mlp_norm", "vector", li, vec=rows * v.inter * 4,
+                          sfu=float(rows), a_fmt="fp32"))
         ops.append(gemm(f"{li}.mlp_out", rows, v.inter, h, li))
         if v.tile and grid is not None and li not in v.full_idx:
             ops += attn(str(li), li, N, tile_keys(grid[0], grid[1], v.tile), False)
