@@ -331,5 +331,7 @@ meituan-longcat/LongCat-Flash-Prover
 meituan-longcat/LongCat-Flash-Thinking-2601-FP8
 # 0.402 LongCat-Flash-Omni and Omni-FP8. Text stack has no MTP.
 # Vision and audio towers are .pt headers. Codebook heads are outside the language file.
+# 0.403 bills audio_codec/LongCatAudioCodec_decoder_24k_4codebooks_aug_sft.pt (same ETag on both).
+# The encoder checkpoint is only on meituan-longcat/LongCat-Audio-Codec, not in these roots.
 meituan-longcat/LongCat-Flash-Omni
 meituan-longcat/LongCat-Flash-Omni-FP8

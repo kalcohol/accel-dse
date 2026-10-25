@@ -551,6 +551,7 @@ class ModelSpec:
     kimi: object = None                      # 0.273 core.kimi_audio.KimiSpec: Kimi-Audio detokenizer DiT + BigVGAN
     omni: object = None                      # 0.271 core.omni.OmniSpec: Qwen2.5-Omni Talker + token2wav (speech output)
     fish: object = None                      # 0.276 core.drama3.FishSpec: Drama 3 codebook-MTP tower (in layers) + frame timing
+    longcat_codec: object = None             # 0.403 core.longcat_codec.LongcatCodecSpec: Omni 24k waveform decoder (fp32, not in params())
     tts: object = None                       # 0.269 core.tts.TtsSpec: speech-synthesis decode head (replaces the LM head)
     qwen3_tts: object = None                 # 0.338 core.qwen3_tts.Qwen3TtsSpec: code predictor + tokenizer decode
     qwen3_omni: object = None                # 0.345 core.qwen3_omni.Qwen3OmniSpec: Talker MoE + code predictor + code2wav
@@ -3052,7 +3053,7 @@ def _build_ernie4_5_moe_vl(c: dict) -> tuple[list[Layer], list[Layer], list[str]
 def _builder(c: dict):
     mt = (c.get("model_type") or "").lower()
     if _is_longcat_omni(c):
-        return _build_longcat_omni, "LongCat-Flash-Omni（主栈展开 KV；无 MTP；视听塔与音频码本另计）"
+        return _build_longcat_omni, "LongCat-Flash-Omni（主栈展开 KV；无 MTP；视听塔、音频码本和 24k 波形解码器另计）"
     if "LongcatFlashNgramForCausalLM" in (c.get("architectures") or []) or mt == "longcat_flash_ngram":
         return _build_longcat_ngram, "LongCat-Flash-Lite（n-gram 嵌入；不跑 MTP）"
     if _is_longcat_causal(c):
@@ -4118,6 +4119,8 @@ def _attach_longcat_omni(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
     io = int(rel.get("params_audio_io") or 0)
     if io != lookup + linear:
         raise ValueError("longcat omni params_audio_io does not match the codebook files")
+    from .longcat_codec import codec_spec
+    codec = codec_spec(rel.get("longcat_codec"))
     note = (
         f"音频输入码本 {n_in} 张 Embedding({vocab}, {h}) 在 decode 的下一拍查表并加到词嵌入。"
         "prefill 不读这几张表。",
@@ -4125,7 +4128,11 @@ def _attach_longcat_omni(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
         f"head_idx > 0 时先查 {n_res} 张残差 Embedding({vocab}, {h}) 再加到隐状态。"
         "has_proj 为 false，没有额外投影。重复惩罚不改变 GEMM 形状，不计额外周期。",
         "language_model_embedding.pt 的 word_embeddings 与 safetensors 的 embed_tokens 同形，不重复计入。",
-        "波形 codec 的类在 LongCat-Audio-Codec 子模块里，不在这份 HF 根目录，不计入。",
+        "波形解码器是 LongCat-Audio-Codec 的 LongCatAudioCodecDecoder（24k，causal）。"
+        f"audio_codec/*.pt 有 {codec.n_tensors} 个 fp32 张量，decode 权重 {codec.params_decode}，"
+        f"in_proj {codec.params_in_proj} 在文件里但 from_codes 不读。"
+        "这部分不进 params()。编码器 .pt 不在这份 HF 根目录，不计入。"
+        "shift_codec_back 只改下标，不增加 GEMM。",
         "视觉是 Conv3d（时间 2、空间 14）加 32 层双向注意力。SwiGLU 内宽是 int(5184*2/3)。"
         "投影器把宽度相邻两列拼成 2h，再走 LayerNorm 和三层 Linear。rope2d 的 inv_freq 不是 persistent。"
         "单张图的 post-squeeze 在 token 数不超过 max_tokens_video 时是恒等。视频多帧压缩不进默认图像网格。",
@@ -4137,7 +4144,7 @@ def _attach_longcat_omni(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
         spec, lookup_params=lookup, lookup_bits=16.0, audio_codebooks=(n_in, n_res, vocab),
         io_post=spec.io_post + heads, formats=tuple(sorted(fm.items())),
         release_params=(spec.release_params or 0) + lookup + linear,
-        notes=spec.notes + note)
+        longcat_codec=codec, notes=spec.notes + note)
 
 
 def _tag_layer(layer: Layer, tag) -> Layer:
