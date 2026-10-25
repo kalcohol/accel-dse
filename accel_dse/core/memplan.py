@@ -109,6 +109,9 @@ def _layer_storage(model: ModelSpec, L: Layer, sh: Shard) -> tuple[float, float]
         elif l.role.startswith("mtp_"):
             # 0.399: LongCat-Flash FP8 draft GEMMs (mtp_fp8 / mtp_kv_a) are not the attn role.
             bpp = model.fmt(l.role).bits / 8
+        elif l.role == "kv_a":
+            # 0.400: LongCat-Flash-Lite FP8 kv_a scale tiles are not the uniform 128 ratio.
+            bpp = model.fmt("kv_a").bits / 8
         else:
             bpp = a
         hot += k * n * (groups_local(l, sh.tp)[0] if l.groups > 1 else 1) * bpp
@@ -282,6 +285,9 @@ def stage_storage(model: ModelSpec, first: int, last: int, has_embed: bool, has_
         else:
             store_extra += table
         store_extra += model.lookup_params * ((model.lookup_bits / 8) if model.lookup_bits else emb_b) / sh.tp
+        if model.ngram_dim and model.domain == "llm":
+            # vLLM stores oe_projection as one full Parameter, not a vocab-parallel shard.
+            hot += sum(l.params for l in model.io_pre if l.role == "ngram") * model.fmt("ngram").bits / 8
     if has_head:
         # 0.347/0.348 same-card speech extras outside params_llm 「来源」: head stage like tts.stored_params
         # (not TP-split; not in Model.params()). Prefer sidecar_bytes (mixed dtypes); else params*bits.

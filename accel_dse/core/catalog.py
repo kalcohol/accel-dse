@@ -83,6 +83,12 @@ EXTRA_TAIL = [
     # are billed on their own role. No role-average bit width.
     ("longcat-flash-chat-fp8", "meituan-longcat/LongCat-Flash-Chat-FP8"),
     ("longcat-flash-thinking-fp8", "meituan-longcat/LongCat-Flash-Thinking-FP8"),
+    # 0.400: LongCat-Flash-Lite. LongcatFlashNgramForCausalLM. Same dual-sublayer decoder.
+    # N-gram tables are lookups. Projections are bf16 GEMMs. HF and vLLM drop model.mtp.*.
+    ("longcat-flash-lite", "meituan-longcat/LongCat-Flash-Lite"),
+    # Lite-FP8 quantizes experts, dense MLP, and attention (disable_quant_module is empty).
+    # kv_a scale tiles are not the uniform 128 ratio. N-gram tables and projections stay bf16.
+    ("longcat-flash-lite-fp8", "meituan-longcat/LongCat-Flash-Lite-FP8"),
     # 0.376: Hunyuan-A13B-Instruct. Text MoE only (vit fields are null). Mixed shared MLP + q/k RMSNorm.
     ("hunyuan-a13b-instruct", "tencent/Hunyuan-A13B-Instruct"),
     # 0.377: ERNIE-4.5-21B-A3B-PT. Text MoE. Repo has no modeling file; transformers class + headers close rel_err.

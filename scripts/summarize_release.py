@@ -63,7 +63,10 @@ ROLE = [
     # 0.377: ERNIE-4.5 stores the ignored MTP block as model.mtp_block / mtp_linear_proj /
     # mtp_emb_norm / mtp_hidden_norm (no ".mtp." dot). The published class does not run it.
     ("mtp", r"(^mtp\.|\.mtp\.|\.mtp_|nextn|shared_head|\.eh_proj|\.enorm|\.hnorm)"),
-    ("embed", r"(embed_tokens|\bwte\b|tok_embeddings|word_embeddings|^embed\.|\.embed\.weight|ple_embedding|^rwkv7\.emb\.weight$|^backbone\.embeddings\.)"),
+    # 0.400: LongCat-Flash-Lite n-gram tables are embeddings. The projections are their own role
+    # so they are not dumped into the lookup surplus.
+    ("embed", r"(embed_tokens|\bwte\b|tok_embeddings|word_embeddings|^embed\.|\.embed\.weight|ple_embedding|^rwkv7\.emb\.weight$|^backbone\.embeddings\.|ngram_embeddings\.embedders\.)"),
+    ("ngram", r"ngram_embeddings\.post_projs\."),
     ("lm_head", r"(lm_head|^output\.weight$|embed_out|^head\.weight$|^readout\.weight$)"),   # 0.291 decision readout
     ("norm", r"(norm\.|norm$|_norm|ln_|layernorm|\.ln\d)"),
     ("other", r"_hyper_connection\."),   # 0.280 Qwen4Exp gated-residual mixers (attn_ / mlp_; bf16, outside quantization)

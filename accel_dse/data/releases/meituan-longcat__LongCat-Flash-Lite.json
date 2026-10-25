@@ -1,0 +1,119 @@
+{
+ "bytes_llm": 137157970944,
+ "bytes_mtp": 1021741056,
+ "bytes_total": 138179712000,
+ "config": {
+  "architectures": [
+   "LongcatFlashNgramForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "auto_map": {
+   "AutoConfig": "configuration_longcat_ngram.LongcatFlashNgramConfig",
+   "AutoModel": "modeling_longcat_ngram.LongcatFlashNgramModel",
+   "AutoModelForCausalLM": "modeling_longcat_ngram.LongcatFlashNgramForCausalLM"
+  },
+  "bos_token_id": 1,
+  "emb_neighbor_num": 4,
+  "emb_split_num": 4,
+  "eos_token_id": 2,
+  "expert_ffn_hidden_size": 1024,
+  "ffn_hidden_size": 6144,
+  "hidden_size": 3072,
+  "kv_lora_rank": 512,
+  "max_position_embeddings": 327680,
+  "mla_scale_kv_lora": true,
+  "mla_scale_q_lora": true,
+  "moe_topk": 12,
+  "n_routed_experts": 256,
+  "ngram_vocab_size_ratio": 78,
+  "num_attention_heads": 32,
+  "num_layers": 14,
+  "q_lora_rank": 1536,
+  "qk_nope_head_dim": 128,
+  "qk_rope_head_dim": 64,
+  "rms_norm_eps": 1e-05,
+  "rope_scaling": {
+   "beta_fast": 32,
+   "beta_slow": 1,
+   "factor": 10,
+   "mscale": 1,
+   "mscale_all_dim": 1,
+   "original_max_position_embeddings": 32768,
+   "rope_type": "yarn"
+  },
+  "rope_theta": 5000000.0,
+  "routed_scaling_factor": 6.0,
+  "torch_dtype": "bfloat16",
+  "transformers_version": "4.57.6",
+  "use_cache": true,
+  "v_head_dim": 128,
+  "vocab_size": 131072,
+  "zero_expert_num": 128,
+  "zero_expert_type": "identity"
+ },
+ "fetched": "2026-10-25",
+ "n_tensors": 11160,
+ "params_llm": 68562465024,
+ "params_mtp": 510870528,
+ "params_vision": 0,
+ "quantization_config": null,
+ "repo": "meituan-longcat/LongCat-Flash-Lite",
+ "roles": {
+  "attn": {
+   "bf16": {
+    "bytes": 1831337984,
+    "params": 915668992
+   }
+  },
+  "embed": {
+   "bf16": {
+    "bytes": 63619276800,
+    "params": 31809638400
+   }
+  },
+  "expert": {
+   "bf16": {
+    "bytes": 67645734912,
+    "params": 33822867456
+   }
+  },
+  "lm_head": {
+   "bf16": {
+    "bytes": 805306368,
+    "params": 402653184
+   }
+  },
+  "mlp": {
+   "bf16": {
+    "bytes": 3170893824,
+    "params": 1585446912
+   }
+  },
+  "mtp": {
+   "bf16": {
+    "bytes": 1021741056,
+    "params": 510870528
+   }
+  },
+  "ngram": {
+   "bf16": {
+    "bytes": 18874368,
+    "params": 9437184
+   }
+  },
+  "norm": {
+   "bf16": {
+    "bytes": 464896,
+    "params": 232448
+   }
+  },
+  "router": {
+   "fp32": {
+    "bytes": 66081792,
+    "params": 16520448
+   }
+  }
+ },
+ "torch_dtype": "bfloat16"
+}

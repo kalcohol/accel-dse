@@ -6,6 +6,33 @@
 
 
 
+## [0.400.0] — 2026-10-25
+
+### LongCat-Flash-Lite 的 n-gram 嵌入按查表和 bf16 投影计
+
+- **新增 2 个发布**（2026-10-25 读取 config 与 safetensors header）。每一份 `param_check().rel_err == 0`。覆盖 full。`mtp_params() == 0`。
+  - **longcat-flash-lite。** `LongcatFlashNgramForCausalLM`。hidden 3072，`num_layers` 14（28 个子层），32 头，256 个专家 top-12，另有 128 个恒等 zero-expert。11160 张量，语言参数 68,562,465,024，checkpoint MTP 510,870,528，`bytes_llm` 137,157,970,944，`bytes_mtp` 1,021,741,056，`bytes_total` 138,179,712,000。没有量化配置。router 是 fp32。其余角色是 bf16，每参数 2 字节。
+  - **longcat-flash-lite-fp8。** 同一几何。`quant_method=fp8`，`fmt=e4m3`，`activation_scheme=dynamic`，`weight_block_size=[128, 128]`，`disable_quant_module=[]`。22145 张量，语言参数与 MTP 参数和 bf16 相同。`bytes_llm` 100,842,857,088，`bytes_mtp` 913,567,584，`bytes_total` 101,756,424,672。
+- **机制。** 解码器仍是 Flash 的双层 block：每层两套注意力，写入 cache 前把 KV 展开成多头（K 192，V 128），第 0 子层的 MoE 加在第 1 子层残差之后。`NgramEmbedding` 另有 `k*(n-1)=12` 张表。`ngram_vocab_size_ratio` 是 78，`emb_neighbor_num` 是 4，`emb_split_num` 是 4，行宽是 `hidden // 12 = 256`。第 i 张是 `Embedding(int(ratio*vocab + 2*i + 1), 256)`，合计 31,406,985,216 参数，记查表，`lookup_bits` 是 16。每张表一个 `Linear(256→3072, bias=False)`，合计 9,437,184 参数，角色 `ngram`，权重和激活都是 bf16。HF forward 把词嵌入与各投影相加再除以 13。公开 vLLM 把表拼成一张 `VocabParallelEmbedding`，投影做成一次 `bmm`，再对词嵌入和投影求均值，算术相同。投影在每个 TP rank 上是完整参数，表按词表切分。哈希按 HF `_get_ngram_ids`：每个 order 一次右移，k 路多项式乘加再取模，每 token 63 次标量操作。词表模数在加载时算好。不把 n-1 个历史 token 记成常驻状态。
+- **MTP。** HF 把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`。公开 vLLM 的 `hf_to_vllm_mapper` 把 `model.mtp.` 映射成空，注释写明 MTP 权重不属于这个模型。`speculative.py` 只把 `longcat_flash` 改成 `longcat_flash_mtp`，不改 `longcat_flash_ngram`。checkpoint 仍有 17 个 `model.mtp.layers.0.*`，留在 `params_mtp`。不建层，不跑 draft，也不把 V 补到 `qk_head_dim`。
+- **Lite-FP8。** `ignored_layers` 不包含主栈专家、稠密 MLP 或注意力 GEMM。专家（33,822,867,456 参数，33,831,124,992 字节）和两套稠密 MLP（1,585,446,912 参数）整份是块 fp8，位宽 `8 × 4097/4096`。融合 `gate_up` 的 scale 字节与分开的 gate、up 相等。注意力 GEMM 也量化，因为 `disable_quant_module` 是空的，不是 Chat-FP8 的 `['self_attn']`。`kv_a` 是 `[576, 3072]`，scale 是 `[5, 24]`，比均匀的 128 分块多出的字节单独记 `kv_a`（位宽 `8 × 1769952/1769472`）。其余注意力投影留在 `attn`，仍是 `8 × 4097/4096`。n-gram 表、投影、embedding、lm_head、norm 在忽略名单里，仍是 bf16。投影的激活是 bf16 嵌入行，不是全局 fp8。router 权重是 fp32，激活仍是全局 fp8。checkpoint MTP 仍不建层。表字节、比例、块大小或忽略名单对不上就拒绝，不把两个桶平均。
+- **0.399 FP8 复核。** 专家或稠密 MLP 的忽略名单必须是一整块（专家 0 或 512×3，稠密 0 或 6 个名字）。稠密名单少一个名字，或稠密 MLP 的 bf16 字节被改过，都拒绝。`weight_block_size` 不是 `[128, 128]` 仍拒绝。bf16 的 Chat 与 Thinking 没有量化配置，不走这条拆分：没有 `expert_bf16` / `mlp_bf16` / `mtp_fp8`，主栈 V 仍是 128，draft V 仍是 192。
+- **未纳入：**
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401（2026-10-25）。
+  - **LongCat-Flash-Lite-Sparse。** 类是 `LongcatCausalLM`。`attention_method` 是 LSA，另有 `index_n_heads` 16、`index_head_dim` 128、`index_topk` 2048、`indexer_rope_interleave`、`mtp_num_layers=3`、`oe_vocab_size_ratio` 78。仓库根目录没有 modeling 文件。不套到 Flash，也不套到 DeepSeek DSA。
+  - **LongCat-Flash-Thinking-2601 / Prover。** 类是 `LongcatCausalLM`（`modeling_longcat.py`），不是 `LongcatFlashForCausalLM`。`max_position_embeddings` 是 983040，`rope_theta` 是 1000000，`rope_scaling` 是 deepseek_yarn，factor 120。几何与 Flash 相近，类不同。不记成 Flash。Thinking-2601-FP8 也是这个类。
+  - **LongCat-Flash-Omni。** 根 config 的架构是 `LongcatFlashOmniForCausalLM`，`auto_map` 指向 `LongcatFlashForCausalLM`。仓库根目录有 `audio/` 和 `vision/`。pipeline 是 any-to-any。不新写多模态塔。Omni-FP8 同样不单列。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 `config.json` 仍是 404。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 与 `tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401。
+  - **nvidia Cosmos3。** 仍是扩散栈，不是已有的条件生成路径。
+  - **Gemma-4 assistant / QAT。** 没有新的可对上的 header。不单列。
+  - **2026-10-26 及之后的公开扫描**（120 个组织，`createdAt` ≥ 2026-10-26）。没有新行。没有能套上现有机制的新 safetensors 或 PT。GGUF / MLX / ONNX / tensorrt / DFlash 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.399.0] — 2026-10-25
 
 ### LongCat-Flash FP8 按 ignored_layers 逐块计，不按角色平均位宽
