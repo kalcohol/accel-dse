@@ -533,6 +533,14 @@ def summarize(repo: str, key: str | None = None) -> dict:
         elif dt == "F8_E8M0":   # stray scale without recognisable suffix
             scale_bytes[_base(name)] = scale_bytes.get(_base(name), 0) + nb
             continue
+        elif dt == "U16":
+            # 0.397: PaddlePaddle/Paddle python/paddle/distributed/flex_checkpoint/dcp/utils.py
+            # _SAFETENSORS_DTYPE_MAPPING transports safetensors dtype U16 as bfloat16.
+            # Numpy has no bfloat16, so the np saver writes the bf16 bits as U16
+            # (2 bytes per element). A different width is not that alias.
+            if nb != 2 * n:
+                raise ValueError(f"U16 tensor {name} is {nb} bytes for {n} elements")
+            fmt, params = "bf16", n
         else:
             fmt, params = {"BF16": "bf16", "F16": "fp16", "F32": "fp32", "U8": "uint8", "I32": "int32"}.get(dt, dt.lower()), n
         b = _base(name) if is_blocks else re.sub(r"\.(weight_packed|qweight)$", ".weight", name)
@@ -597,6 +605,13 @@ def summarize(repo: str, key: str | None = None) -> dict:
     llm_roles = [r for r in roles if r not in ("vision", "mtp", "buffer", "scale", "talker", "token2wav", "code2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge", "spk")]
     tot = lambda rs, k: sum(v[k] for r in rs for v in roles.get(r, {}).values())
     extra = {"vision_fmt": vfmt} if vfmt else {}
+    # 0.397: record the published U16 alias and fused Paddle projection names.
+    # Roles above already count U16 elements as bf16. Absent on every earlier release.
+    if any(dt == "U16" for dt, _shape, _n, _nb in tensors.values()):
+        extra["storage_alias"] = {"U16": "bf16"}
+    fused = [k for k in ("qkv_proj", "up_gate_proj") if any(k in n for n in tensors)]
+    if fused:
+        extra["fused_linears"] = fused
     for r in ("talker", "token2wav", "code2wav", "flow", "vocoder", "depth", "codec", "tts", "bridge", "spk"):   # 0.271 speech; 0.338 +spk; 0.345 +code2wav
         if r in roles:
             extra[f"params_{r}"] = tot([r], "params")
