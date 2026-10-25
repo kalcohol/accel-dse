@@ -6,6 +6,30 @@
 
 
 
+## [0.403.0] — 2026-10-25
+
+### LongCat-Flash-Omni 的 24k 波形解码器按已发布的类和 `.pt` 头计
+
+- **同一发布，补上解码器**（2026-10-25 读取 `audio_codec/config.yaml`、`LongCatAudioCodec_decoder_24k_4codebooks_aug_sft.pt` 的 legacy pickle 头，以及 `meituan-longcat/LongCat-Audio-Codec` 的 `LongCatAudioCodecDecoder` / `MemDecoder` / `AutoGroupResidualVectorQuantize`）。Omni 与 Omni-FP8 的这份 `.pt` ETag 相同（`fae2277bbf714fcb`，603,637,648 字节），codec 仓库里的同名文件也是这一份。174 个张量全是 F32，参数 150,902,178，与类公式逐项同名同形。`param_check().rel_err` 仍是 0。解码器不进 `params()`。
+  - **decode 路径。** `Codec2WavProcessor.codec2wav` 把 4 码本拆成 1 路语义和 3 路声学，减 32 后调用 `decoder.forward`。语义 Embedding(8192, 1280) 和每路声学的两张码本（90×8）是查表。`from_codes` 只跑 `out_proj`。GLSTM 是两组 LSTM(2304) 加两个 LayerNorm。上采样率 `[8,6,6,5]`，每帧 1440 个 24 kHz 采样。因果残差块的转置卷积核等于 stride。Snake 是 DAC 的 `sin^2`，按 5 次元素运算加 1 次 sin 计，不是抗混叠 SnakeBeta。
+  - **in_proj。** `load_decoder(..., strict=True)` 会装上 49,248 个 `in_proj` 参数。`from_codes` 不读它们，decode 权重是 150,852,930。编码器 `.pt` 只在 `LongCat-Audio-Codec` 仓库，不在 Omni 根目录，不计入。`shift_codec_back` 丢掉最后一帧并错开声学码，不增加 GEMM。
+- **0.402 对抗复核。** 视觉 / 音频 / 码本公式、宽度拼接、单图 post-squeeze 恒等、decode 才查输入码本、FP8 的 block 0–22 fp8 / 23–27 bf16、注意力 bf16、无 MTP、视听塔保持 bf16，都和类、SGLang 头一致。没有新的语言栈或塔账单错误。`language_model_embedding.pt` 仍不重复计入。
+- **未纳入：**
+  - **LongCat-Flash-Lite-Sparse。** HF 根目录仍没有 modeling 文件（`35de83a`，文件列表未变）。`attention_method` 是 LSA，另有 indexer、`mtp_num_layers=3` 和 over-encoding。vLLM #48302 仍未合并，目标是 LongCat-2.0，并且写明复用 DeepSeek DSA indexer。SGLang #32918 仍未合并，只做 n-gram 改名和 DSA kernel 补丁。没有已合并的、与 DSA 不同的 LSA 前向。不套 MLA，也不套 DSA。
+  - **Omni 编码器。** `LongCatAudioCodec_encoder.pt` 不在 Omni / Omni-FP8 根目录。已发布的后处理只加载解码器。
+  - **Omni 视频多帧 post-squeeze。** 单张图仍是恒等。多帧压缩不进默认图像网格。
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401（2026-10-25）。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 `config.json` 仍是 404。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 与 `tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401。
+  - **nvidia Cosmos3。** 仍是扩散栈，不是已有的条件生成路径。
+  - **Gemma-4 assistant / QAT。** 没有新的可对上的 header。不单列。
+  - **2026-10-25 及之后的公开扫描**（120 个组织，`createdAt` ≥ 2026-10-25）。没有新行。没有能套上现有机制的新 safetensors 或 PT。GGUF / MLX / ONNX / tensorrt / DFlash 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.402.0] — 2026-10-25
 
 ### LongCat-Flash-Omni 按已发布的文本栈、视听塔和音频码本头计

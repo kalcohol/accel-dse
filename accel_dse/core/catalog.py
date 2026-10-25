@@ -102,7 +102,8 @@ EXTRA_TAIL = [
     ("longcat-flash-thinking-2601-fp8", "meituan-longcat/LongCat-Flash-Thinking-2601-FP8"),
     # 0.402: LongCat-Flash-Omni. Text stack is Flash without MTP. Vision is rope2d + SwiGLU
     # with a width-pair projector. Audio is an FSMN encoder. Codebook embeddings and output
-    # heads sit beside the language safetensors. The waveform codec stays out.
+    # heads sit beside the language safetensors. 0.403 bills the 24k waveform
+    # decoder in audio_codec/*.pt (fp32, core/longcat_codec.py). It is outside params().
     ("longcat-flash-omni", "meituan-longcat/LongCat-Flash-Omni"),
     # Omni-FP8 uses the same ignored_layers rule. Blocks 23-27 keep experts and dense MLP
     # in bf16. There is no MTP. Towers are the bf16 .pt files.

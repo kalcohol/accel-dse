@@ -8327,6 +8327,790 @@
   "zero_expert_type": "identity"
  },
  "fetched": "2026-10-25",
+ "longcat_codec": {
+  "codec_codebook_search_dim": 8,
+  "codec_codebook_size": 90,
+  "codec_codebooks": 3,
+  "codec_dec_ratios": [
+   8,
+   6,
+   6,
+   5
+  ],
+  "codec_dimension": 1024,
+  "decoder_dim": 1536,
+  "decoder_type": "24k",
+  "dtype": "F32",
+  "file_bytes": 603637648,
+  "n_tensors": 174,
+  "params": 150902178,
+  "params_decode": 150852930,
+  "params_in_proj": 49248,
+  "params_lookup": 10490080,
+  "semantic_dim": 1280,
+  "semantic_token_nums": 8192,
+  "tensors": {
+   "acoustic_quantizer.quantizers.0.codebook_a.weight": [
+    90,
+    8
+   ],
+   "acoustic_quantizer.quantizers.0.codebook_b.weight": [
+    90,
+    8
+   ],
+   "acoustic_quantizer.quantizers.0.in_proj_a.bias": [
+    8
+   ],
+   "acoustic_quantizer.quantizers.0.in_proj_a.weight_g": [
+    8,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.0.in_proj_a.weight_v": [
+    8,
+    1024,
+    1
+   ],
+   "acoustic_quantizer.quantizers.0.in_proj_b.bias": [
+    8
+   ],
+   "acoustic_quantizer.quantizers.0.in_proj_b.weight_g": [
+    8,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.0.in_proj_b.weight_v": [
+    8,
+    1024,
+    1
+   ],
+   "acoustic_quantizer.quantizers.0.out_proj_a.bias": [
+    512
+   ],
+   "acoustic_quantizer.quantizers.0.out_proj_a.weight_g": [
+    512,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.0.out_proj_a.weight_v": [
+    512,
+    8,
+    1
+   ],
+   "acoustic_quantizer.quantizers.0.out_proj_b.bias": [
+    512
+   ],
+   "acoustic_quantizer.quantizers.0.out_proj_b.weight_g": [
+    512,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.0.out_proj_b.weight_v": [
+    512,
+    8,
+    1
+   ],
+   "acoustic_quantizer.quantizers.1.codebook_a.weight": [
+    90,
+    8
+   ],
+   "acoustic_quantizer.quantizers.1.codebook_b.weight": [
+    90,
+    8
+   ],
+   "acoustic_quantizer.quantizers.1.in_proj_a.bias": [
+    8
+   ],
+   "acoustic_quantizer.quantizers.1.in_proj_a.weight_g": [
+    8,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.1.in_proj_a.weight_v": [
+    8,
+    1024,
+    1
+   ],
+   "acoustic_quantizer.quantizers.1.in_proj_b.bias": [
+    8
+   ],
+   "acoustic_quantizer.quantizers.1.in_proj_b.weight_g": [
+    8,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.1.in_proj_b.weight_v": [
+    8,
+    1024,
+    1
+   ],
+   "acoustic_quantizer.quantizers.1.out_proj_a.bias": [
+    512
+   ],
+   "acoustic_quantizer.quantizers.1.out_proj_a.weight_g": [
+    512,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.1.out_proj_a.weight_v": [
+    512,
+    8,
+    1
+   ],
+   "acoustic_quantizer.quantizers.1.out_proj_b.bias": [
+    512
+   ],
+   "acoustic_quantizer.quantizers.1.out_proj_b.weight_g": [
+    512,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.1.out_proj_b.weight_v": [
+    512,
+    8,
+    1
+   ],
+   "acoustic_quantizer.quantizers.2.codebook_a.weight": [
+    90,
+    8
+   ],
+   "acoustic_quantizer.quantizers.2.codebook_b.weight": [
+    90,
+    8
+   ],
+   "acoustic_quantizer.quantizers.2.in_proj_a.bias": [
+    8
+   ],
+   "acoustic_quantizer.quantizers.2.in_proj_a.weight_g": [
+    8,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.2.in_proj_a.weight_v": [
+    8,
+    1024,
+    1
+   ],
+   "acoustic_quantizer.quantizers.2.in_proj_b.bias": [
+    8
+   ],
+   "acoustic_quantizer.quantizers.2.in_proj_b.weight_g": [
+    8,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.2.in_proj_b.weight_v": [
+    8,
+    1024,
+    1
+   ],
+   "acoustic_quantizer.quantizers.2.out_proj_a.bias": [
+    512
+   ],
+   "acoustic_quantizer.quantizers.2.out_proj_a.weight_g": [
+    512,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.2.out_proj_a.weight_v": [
+    512,
+    8,
+    1
+   ],
+   "acoustic_quantizer.quantizers.2.out_proj_b.bias": [
+    512
+   ],
+   "acoustic_quantizer.quantizers.2.out_proj_b.weight_g": [
+    512,
+    1,
+    1
+   ],
+   "acoustic_quantizer.quantizers.2.out_proj_b.weight_v": [
+    512,
+    8,
+    1
+   ],
+   "decoder.mem_layers.0.ln1.bias": [
+    2304
+   ],
+   "decoder.mem_layers.0.ln1.weight": [
+    2304
+   ],
+   "decoder.mem_layers.0.ln2.bias": [
+    2304
+   ],
+   "decoder.mem_layers.0.ln2.weight": [
+    2304
+   ],
+   "decoder.mem_layers.0.lstm_list1.0.bias_hh_l0": [
+    9216
+   ],
+   "decoder.mem_layers.0.lstm_list1.0.bias_ih_l0": [
+    9216
+   ],
+   "decoder.mem_layers.0.lstm_list1.0.weight_hh_l0": [
+    9216,
+    2304
+   ],
+   "decoder.mem_layers.0.lstm_list1.0.weight_ih_l0": [
+    9216,
+    2304
+   ],
+   "decoder.mem_layers.0.lstm_list2.0.bias_hh_l0": [
+    9216
+   ],
+   "decoder.mem_layers.0.lstm_list2.0.bias_ih_l0": [
+    9216
+   ],
+   "decoder.mem_layers.0.lstm_list2.0.weight_hh_l0": [
+    9216,
+    2304
+   ],
+   "decoder.mem_layers.0.lstm_list2.0.weight_ih_l0": [
+    9216,
+    2304
+   ],
+   "decoder.model.0.bias": [
+    1536
+   ],
+   "decoder.model.0.weight_g": [
+    1536,
+    1,
+    1
+   ],
+   "decoder.model.0.weight_v": [
+    1536,
+    2304,
+    7
+   ],
+   "decoder.model.1.block.0.alpha": [
+    1,
+    1536,
+    1
+   ],
+   "decoder.model.1.block.1.bias": [
+    768
+   ],
+   "decoder.model.1.block.1.weight_g": [
+    1536,
+    1,
+    1
+   ],
+   "decoder.model.1.block.1.weight_v": [
+    1536,
+    768,
+    8
+   ],
+   "decoder.model.1.block.2.block.0.alpha": [
+    1,
+    768,
+    1
+   ],
+   "decoder.model.1.block.2.block.2.bias": [
+    768
+   ],
+   "decoder.model.1.block.2.block.2.weight_g": [
+    768,
+    1,
+    1
+   ],
+   "decoder.model.1.block.2.block.2.weight_v": [
+    768,
+    768,
+    7
+   ],
+   "decoder.model.1.block.2.block.3.alpha": [
+    1,
+    768,
+    1
+   ],
+   "decoder.model.1.block.2.block.4.bias": [
+    768
+   ],
+   "decoder.model.1.block.2.block.4.weight_g": [
+    768,
+    1,
+    1
+   ],
+   "decoder.model.1.block.2.block.4.weight_v": [
+    768,
+    768,
+    1
+   ],
+   "decoder.model.1.block.3.block.0.alpha": [
+    1,
+    768,
+    1
+   ],
+   "decoder.model.1.block.3.block.2.bias": [
+    768
+   ],
+   "decoder.model.1.block.3.block.2.weight_g": [
+    768,
+    1,
+    1
+   ],
+   "decoder.model.1.block.3.block.2.weight_v": [
+    768,
+    768,
+    7
+   ],
+   "decoder.model.1.block.3.block.3.alpha": [
+    1,
+    768,
+    1
+   ],
+   "decoder.model.1.block.3.block.4.bias": [
+    768
+   ],
+   "decoder.model.1.block.3.block.4.weight_g": [
+    768,
+    1,
+    1
+   ],
+   "decoder.model.1.block.3.block.4.weight_v": [
+    768,
+    768,
+    1
+   ],
+   "decoder.model.1.block.4.block.0.alpha": [
+    1,
+    768,
+    1
+   ],
+   "decoder.model.1.block.4.block.2.bias": [
+    768
+   ],
+   "decoder.model.1.block.4.block.2.weight_g": [
+    768,
+    1,
+    1
+   ],
+   "decoder.model.1.block.4.block.2.weight_v": [
+    768,
+    768,
+    7
+   ],
+   "decoder.model.1.block.4.block.3.alpha": [
+    1,
+    768,
+    1
+   ],
+   "decoder.model.1.block.4.block.4.bias": [
+    768
+   ],
+   "decoder.model.1.block.4.block.4.weight_g": [
+    768,
+    1,
+    1
+   ],
+   "decoder.model.1.block.4.block.4.weight_v": [
+    768,
+    768,
+    1
+   ],
+   "decoder.model.2.block.0.alpha": [
+    1,
+    768,
+    1
+   ],
+   "decoder.model.2.block.1.bias": [
+    384
+   ],
+   "decoder.model.2.block.1.weight_g": [
+    768,
+    1,
+    1
+   ],
+   "decoder.model.2.block.1.weight_v": [
+    768,
+    384,
+    6
+   ],
+   "decoder.model.2.block.2.block.0.alpha": [
+    1,
+    384,
+    1
+   ],
+   "decoder.model.2.block.2.block.2.bias": [
+    384
+   ],
+   "decoder.model.2.block.2.block.2.weight_g": [
+    384,
+    1,
+    1
+   ],
+   "decoder.model.2.block.2.block.2.weight_v": [
+    384,
+    384,
+    7
+   ],
+   "decoder.model.2.block.2.block.3.alpha": [
+    1,
+    384,
+    1
+   ],
+   "decoder.model.2.block.2.block.4.bias": [
+    384
+   ],
+   "decoder.model.2.block.2.block.4.weight_g": [
+    384,
+    1,
+    1
+   ],
+   "decoder.model.2.block.2.block.4.weight_v": [
+    384,
+    384,
+    1
+   ],
+   "decoder.model.2.block.3.block.0.alpha": [
+    1,
+    384,
+    1
+   ],
+   "decoder.model.2.block.3.block.2.bias": [
+    384
+   ],
+   "decoder.model.2.block.3.block.2.weight_g": [
+    384,
+    1,
+    1
+   ],
+   "decoder.model.2.block.3.block.2.weight_v": [
+    384,
+    384,
+    7
+   ],
+   "decoder.model.2.block.3.block.3.alpha": [
+    1,
+    384,
+    1
+   ],
+   "decoder.model.2.block.3.block.4.bias": [
+    384
+   ],
+   "decoder.model.2.block.3.block.4.weight_g": [
+    384,
+    1,
+    1
+   ],
+   "decoder.model.2.block.3.block.4.weight_v": [
+    384,
+    384,
+    1
+   ],
+   "decoder.model.2.block.4.block.0.alpha": [
+    1,
+    384,
+    1
+   ],
+   "decoder.model.2.block.4.block.2.bias": [
+    384
+   ],
+   "decoder.model.2.block.4.block.2.weight_g": [
+    384,
+    1,
+    1
+   ],
+   "decoder.model.2.block.4.block.2.weight_v": [
+    384,
+    384,
+    7
+   ],
+   "decoder.model.2.block.4.block.3.alpha": [
+    1,
+    384,
+    1
+   ],
+   "decoder.model.2.block.4.block.4.bias": [
+    384
+   ],
+   "decoder.model.2.block.4.block.4.weight_g": [
+    384,
+    1,
+    1
+   ],
+   "decoder.model.2.block.4.block.4.weight_v": [
+    384,
+    384,
+    1
+   ],
+   "decoder.model.3.block.0.alpha": [
+    1,
+    384,
+    1
+   ],
+   "decoder.model.3.block.1.bias": [
+    192
+   ],
+   "decoder.model.3.block.1.weight_g": [
+    384,
+    1,
+    1
+   ],
+   "decoder.model.3.block.1.weight_v": [
+    384,
+    192,
+    6
+   ],
+   "decoder.model.3.block.2.block.0.alpha": [
+    1,
+    192,
+    1
+   ],
+   "decoder.model.3.block.2.block.2.bias": [
+    192
+   ],
+   "decoder.model.3.block.2.block.2.weight_g": [
+    192,
+    1,
+    1
+   ],
+   "decoder.model.3.block.2.block.2.weight_v": [
+    192,
+    192,
+    7
+   ],
+   "decoder.model.3.block.2.block.3.alpha": [
+    1,
+    192,
+    1
+   ],
+   "decoder.model.3.block.2.block.4.bias": [
+    192
+   ],
+   "decoder.model.3.block.2.block.4.weight_g": [
+    192,
+    1,
+    1
+   ],
+   "decoder.model.3.block.2.block.4.weight_v": [
+    192,
+    192,
+    1
+   ],
+   "decoder.model.3.block.3.block.0.alpha": [
+    1,
+    192,
+    1
+   ],
+   "decoder.model.3.block.3.block.2.bias": [
+    192
+   ],
+   "decoder.model.3.block.3.block.2.weight_g": [
+    192,
+    1,
+    1
+   ],
+   "decoder.model.3.block.3.block.2.weight_v": [
+    192,
+    192,
+    7
+   ],
+   "decoder.model.3.block.3.block.3.alpha": [
+    1,
+    192,
+    1
+   ],
+   "decoder.model.3.block.3.block.4.bias": [
+    192
+   ],
+   "decoder.model.3.block.3.block.4.weight_g": [
+    192,
+    1,
+    1
+   ],
+   "decoder.model.3.block.3.block.4.weight_v": [
+    192,
+    192,
+    1
+   ],
+   "decoder.model.3.block.4.block.0.alpha": [
+    1,
+    192,
+    1
+   ],
+   "decoder.model.3.block.4.block.2.bias": [
+    192
+   ],
+   "decoder.model.3.block.4.block.2.weight_g": [
+    192,
+    1,
+    1
+   ],
+   "decoder.model.3.block.4.block.2.weight_v": [
+    192,
+    192,
+    7
+   ],
+   "decoder.model.3.block.4.block.3.alpha": [
+    1,
+    192,
+    1
+   ],
+   "decoder.model.3.block.4.block.4.bias": [
+    192
+   ],
+   "decoder.model.3.block.4.block.4.weight_g": [
+    192,
+    1,
+    1
+   ],
+   "decoder.model.3.block.4.block.4.weight_v": [
+    192,
+    192,
+    1
+   ],
+   "decoder.model.4.block.0.alpha": [
+    1,
+    192,
+    1
+   ],
+   "decoder.model.4.block.1.bias": [
+    96
+   ],
+   "decoder.model.4.block.1.weight_g": [
+    192,
+    1,
+    1
+   ],
+   "decoder.model.4.block.1.weight_v": [
+    192,
+    96,
+    5
+   ],
+   "decoder.model.4.block.2.block.0.alpha": [
+    1,
+    96,
+    1
+   ],
+   "decoder.model.4.block.2.block.2.bias": [
+    96
+   ],
+   "decoder.model.4.block.2.block.2.weight_g": [
+    96,
+    1,
+    1
+   ],
+   "decoder.model.4.block.2.block.2.weight_v": [
+    96,
+    96,
+    7
+   ],
+   "decoder.model.4.block.2.block.3.alpha": [
+    1,
+    96,
+    1
+   ],
+   "decoder.model.4.block.2.block.4.bias": [
+    96
+   ],
+   "decoder.model.4.block.2.block.4.weight_g": [
+    96,
+    1,
+    1
+   ],
+   "decoder.model.4.block.2.block.4.weight_v": [
+    96,
+    96,
+    1
+   ],
+   "decoder.model.4.block.3.block.0.alpha": [
+    1,
+    96,
+    1
+   ],
+   "decoder.model.4.block.3.block.2.bias": [
+    96
+   ],
+   "decoder.model.4.block.3.block.2.weight_g": [
+    96,
+    1,
+    1
+   ],
+   "decoder.model.4.block.3.block.2.weight_v": [
+    96,
+    96,
+    7
+   ],
+   "decoder.model.4.block.3.block.3.alpha": [
+    1,
+    96,
+    1
+   ],
+   "decoder.model.4.block.3.block.4.bias": [
+    96
+   ],
+   "decoder.model.4.block.3.block.4.weight_g": [
+    96,
+    1,
+    1
+   ],
+   "decoder.model.4.block.3.block.4.weight_v": [
+    96,
+    96,
+    1
+   ],
+   "decoder.model.4.block.4.block.0.alpha": [
+    1,
+    96,
+    1
+   ],
+   "decoder.model.4.block.4.block.2.bias": [
+    96
+   ],
+   "decoder.model.4.block.4.block.2.weight_g": [
+    96,
+    1,
+    1
+   ],
+   "decoder.model.4.block.4.block.2.weight_v": [
+    96,
+    96,
+    7
+   ],
+   "decoder.model.4.block.4.block.3.alpha": [
+    1,
+    96,
+    1
+   ],
+   "decoder.model.4.block.4.block.4.bias": [
+    96
+   ],
+   "decoder.model.4.block.4.block.4.weight_g": [
+    96,
+    1,
+    1
+   ],
+   "decoder.model.4.block.4.block.4.weight_v": [
+    96,
+    96,
+    1
+   ],
+   "decoder.model.5.alpha": [
+    1,
+    96,
+    1
+   ],
+   "decoder.model.7.bias": [
+    1
+   ],
+   "decoder.model.7.weight_g": [
+    1,
+    1,
+    1
+   ],
+   "decoder.model.7.weight_v": [
+    1,
+    96,
+    7
+   ],
+   "semantic_dequantizer.dequant.weight": [
+    8192,
+    1280
+   ]
+  }
+ },
  "longcat_omni": {
   "adaptor_dim": 7168,
   "audio_frame_ms": 25,
