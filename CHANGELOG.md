@@ -6,6 +6,36 @@
 
 
 
+## [0.391.0] — 2026-10-25
+
+### Granite-4.2 的 MXFP4 / NVFP4 走已有的 W4A4 账单
+
+- **新增 6 个发布**（2026-10-25 读取 config 与 safetensors header）。每一份 `param_check().rel_err == 0`。覆盖 full。`params_mtp == 0`。不把缺省 MTP 层数填成 1。
+  - **granite-4.2-3b / 8b / 30b 的 mxfp4 与 nvfp4。** `GraniteForCausalLM`。去掉 `quantization_config` 之后，config 与对应的 bf16 行相同。逻辑参数相同：3b 3,659,737,600，8b 8,791,592,960，30b 29,276,770,304。层数、hidden、头数、FFN 宽与 bf16 孪生相同。`tie_word_embeddings` 为 false。`kv_cache_scheme` 为空，KV bf16。embedding、norm、lm_head 仍是 bf16。`attention_multiplier` 与 bf16 孪生相同（3b 是 0.015625，8b 与 30b 是 0.0078125）。`embedding_multiplier`、`residual_multiplier`、`logits_scaling` 都是 1.0。这些标量不另计周期。
+  - **MXFP4。** `quant_method=compressed-tensors`，format `mxfp4-pack-quantized`。只有一个 group，targets 是 `["Linear"]`，`ignore` 是 `["lm_head"]`，`output_activations` 为 null。权重和输入都是 4 bit float、对称、无 zero-point，组 32，scale 是 `torch.uint8`，strategy `group`。权重 `dynamic` 为 false，输入 `dynamic` 为 true。3b 与 8b 是 643 张量，`bytes_total` 分别是 2,699,187,200 与 5,878,456,320。30b 是 1027 张量，`bytes_total` 16,761,495,552。注意力和 MLP 满足 `bytes * 32 == params * 17`，正好 4.25 bit（已有的 mxfp4：e2m1，每 32 个元素一个 e8m0）。
+  - **NVFP4。** format `nvfp4-pack-quantized`。组 16，scale 是 `torch.float8_e4m3fn`，strategy `tensor_group`。输入 `dynamic` 是 `"local"`。3b 与 8b 是 1203 张量，`bytes_total` 分别是 2,797,493,440 与 6,127,495,360。30b 是 1923 张量，`bytes_total` 17,650,691,584。比同尺寸 MX 多出来的张量数是 `层数 * 14`：每层 4 条注意力投影加 3 条 MLP，每条 Linear 多两个 fp32 标量（`weight_global_scale` 与 `input_global_scale`）。打包部分是已有的 nvfp4，4.5 bit（e2m1，每 16 个元素一个 e4m3）。header 把这两份 scale 算进权重字节，所以 `bytes == params * 9 // 16 + 8 * n_linears`，平均比特略高于 4.5。
+- **机制。** 只在方案与上面逐项相同、且该角色的权重格式就是 `mxfp4` 或 `nvfp4` 时，把 `attn` / `mlp`（以及同样存放格式的 `expert` / `shared_expert`）的 GEMM 输入记成已有的 `RoleFormat`。全局激活仍是 bf16。注意力的 QK/PV 用全局激活，lm_head 不在这份 4 bit 名单里，两者的输入都仍是 bf16。Blackwell 上 `gemm_exec` 对这两种格式的原生速率已是 4.0，转换是 `none`。没有原生 fp4 的芯片仍把权重和输入都升到 bf16。不新增 MAC 速率，也不另计反量化操作数。组大小、scale dtype、strategy、dynamic、ignore、targets、group 数量、`output_activations` 或非空的 KV scheme 对不上时，这些角色的输入回到 bf16，权重格式仍按 header。8 bit float 的 compressed-tensors 路径不改。granite-4.2 fp8 的全局激活仍是 fp8，lm_head 的输入仍是 fp8。
+- **未纳入：**
+  - **ibm-granite/granite-speech-5.0-2b。** `model_type=granite_speech`，类是 `GraniteSpeechForConditionalGeneration`，dtype bfloat16。编码器是 `granite_speech_encoder`（hidden 1024，16 层，8 头）。公开类 `GraniteSpeechConformerAttention` 用 Shaw 相对位置嵌入（`rel_pos_emb`）。投影器是 `blip_2_qformer`。文本是 granite（hidden 2048，40 层）。不是 Whisper，不是 Gemma-4 conformer，也不是 OmniASR。不新写语音塔，也不单列文本骨干。
+  - **ibm-granite/granite-speech-5.0-470m-turboctc。** `model_type=granite_speech5_ctc`，类是 `GraniteSpeech5ForCTC`。编码器是 `granite_speech5_encoder`（hidden 1024，16 层，`num_mel_bins` 80，`subsample_layers` 是 `[0, 1]`）。没有已有的 CTC 编码器可套。
+  - **ibm-granite/granite-speech-4.1-2b-plus。** `model_type=granite_speech_plus`，类是 `GraniteSpeechPlusForConditionalGeneration`。编码器是 `granite_speech_plus_encoder`，`cat_hidden_layers` 是 `[3]`，投影器仍是 `blip_2_qformer`。文本 config 的 dtype 是 float32，`tie_word_embeddings` 为 true。不是已有的语音塔。
+  - **LiquidAI/d1-omni-600M。** 本轮重读了 config 和公开类。`model_type=d1_omni`，类是 `D1OmniModel`，dtype float32。视觉塔是 SigLIP2 NaFlex 加 2×2 pixel-unshuffle，常量与已入库的 LFM2.5-VL 相近，但前缀长度不算图像特殊 token。主干是双向的 LFM2.5-Encoder（居中 3-tap 卷积，没有因果 mask，没有 lm_head），再加上 `DecisionHead`（题型嵌入、两层 pre-norm Transformer、共享打分 MLP）。音频是 17 层 FastConformer（128 mel，8 倍下采样，相对位置注意力，adapter 512→1024），和 Whisper / Gemma-4 conformer / OmniASR 都不是同一类。同一份 safetensors 里含音频和决策头。按现有 `lfm2` / `lfm2_vl` 计会对不上参数，也会把双向主干记成因果解码。不新写决策头或语音塔。音频继续延期。
+  - **nvidia Cosmos3。** `Cosmos3-Nano` / `Cosmos3-Super` 的 `model_type` 是 `cosmos3_omni`，类是 `Cosmos3ForConditionalGeneration`。里面是扩散专家、动作、声音 tokenizer，以及一份 `qwen3_vl_text`。这不是已有的 Qwen3-VL 条件生成路径。`Cosmos3-H-Dreams` 的 `config.json` 只有 `model_type=custom`，没有可建的 transformer config。
+  - **LiquidAI/LFM2.5-d1。** 本轮 `config.json` 仍是 401。按仓库名搜索没有公开行。
+  - **ibm-granite/granite-switch-4.1-8b 与 30b 的 GGUF。** 2026-10-22 的新文件仍是 GGUF，不是 safetensors header。
+  - **2026-10-20 之后的公开扫描。** google、Qwen、baidu、mistralai、OpenGVLab 没有能套上现有机制的新 safetensors / PT。LiquidAI 新的是 LFM2.5-24B-A2B-DSpark 的 GGUF。nvidia 新的是 InternVideo2-CLIP 异常检测（tensorrt），不新增机制。internlm 的 Atria-Dawn / FP8 已在 0.389 入库。GGUF / MLX / ONNX / DFlash 不单列。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused` / `moe_capacity` / `moe_use_aux_free`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。
+  - **LongCat-Flash MTP forward。** 当前公开类仍把 `model.mtp.*` 列在 `_keys_to_ignore_on_load_unexpected`。不另写递推。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **Gemma-4 assistant / QAT。** 与已入库的十个发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **omniasr-ctc。** 新的 CTC 头，本轮没有关闭。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控 / `mla_scale_*` / `routed_scaling_factor`。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.390.0] — 2026-10-24
 
 ### LFM2.5-VL 走 SigLIP2；Mistral-Small 孪生；MiniMax-M2 的 q/k norm 按整段宽度计；Intern-Decision 没有 MTP

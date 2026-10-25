@@ -28,7 +28,14 @@ def test_act_fmt_for_default_and_override():
                  "muse-spark-open-mxfp4": {"act_expert": "mxfp4"},
                  "drama-3": {"act_expert": "fp8"},
                  # 0.289: Nemotron 3.5 Lightning NVFP4 (MIXED_PRECISION: FP8 attention → fp8 inputs; W4A16 experts)
-                 "nemotron-3.5-lightning-30b-a3b-nvfp4": {"act_attn": "fp8"}}
+                 "nemotron-3.5-lightning-30b-a3b-nvfp4": {"act_attn": "fp8"},
+                 # 0.391: compressed-tensors W4A4. Linear inputs follow the packed format. lm_head stays bf16.
+                 "granite-4.2-3b-mxfp4": {"act_attn": "mxfp4", "act_mlp": "mxfp4"},
+                 "granite-4.2-8b-mxfp4": {"act_attn": "mxfp4", "act_mlp": "mxfp4"},
+                 "granite-4.2-30b-mxfp4": {"act_attn": "mxfp4", "act_mlp": "mxfp4"},
+                 "granite-4.2-3b-nvfp4": {"act_attn": "nvfp4", "act_mlp": "nvfp4"},
+                 "granite-4.2-8b-nvfp4": {"act_attn": "nvfp4", "act_mlp": "nvfp4"},
+                 "granite-4.2-30b-nvfp4": {"act_attn": "nvfp4", "act_mlp": "nvfp4"}}
         if e["id"] in mixed:
             assert acts == mixed[e["id"]], (e["id"], acts)
             continue

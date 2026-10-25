@@ -243,8 +243,9 @@ def test_lfm25_350m_and_230m():
 def test_granite_42_fp8_matches_bf16_shapes():
     ids = [e["id"] for e in list_models() if e["family"] == "Granite-4.2"]
     assert ids == [
-        "granite-4.2-30b", "granite-4.2-30b-fp8", "granite-4.2-8b", "granite-4.2-8b-fp8",
-        "granite-4.2-3b", "granite-4.2-3b-fp8",
+        "granite-4.2-30b", "granite-4.2-30b-mxfp4", "granite-4.2-30b-nvfp4", "granite-4.2-30b-fp8",
+        "granite-4.2-8b", "granite-4.2-8b-mxfp4", "granite-4.2-8b-nvfp4", "granite-4.2-8b-fp8",
+        "granite-4.2-3b", "granite-4.2-3b-mxfp4", "granite-4.2-3b-nvfp4", "granite-4.2-3b-fp8",
     ]
     for mid, twin, params, total, nt in _FP8:
         m, b = get_model(mid), get_model(twin)
@@ -283,8 +284,6 @@ def test_granite_42_fp8_matches_bf16_shapes():
         assert head and all(o.w_fmt == "bf16" and o.a_fmt == "fp8" for o in head), mid
         listed = next(e for e in list_models() if e["id"] == mid)
         assert listed["family"] == "Granite-4.2" and listed["coverage"] == "full", mid
-    assert not any(e["id"].startswith("granite-4.2-") and e["id"].rsplit("-", 1)[-1] in ("mxfp4", "nvfp4")
-                   for e in list_models())
     evaluate(Scenario(model="granite-4.2-8b-fp8", serving=Serving(phase="decode", batch=1, ctx=32)))
 
 

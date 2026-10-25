@@ -286,3 +286,11 @@ MiniMaxAI/MiniMax-M2.5
 internlm/Intern-Decision-4B
 internlm/Intern-Decision-2B
 internlm/Intern-Decision-0.8B
+# 0.391 granite-4.2 mxfp4 / nvfp4. compressed-tensors W4A4 on Linear.
+# MX group 32 e8m0. NVFP4 group 16 e4m3. lm_head stays bf16.
+ibm-granite/granite-4.2-8b-mxfp4
+ibm-granite/granite-4.2-8b-nvfp4
+ibm-granite/granite-4.2-3b-mxfp4
+ibm-granite/granite-4.2-3b-nvfp4
+ibm-granite/granite-4.2-30b-mxfp4
+ibm-granite/granite-4.2-30b-nvfp4
