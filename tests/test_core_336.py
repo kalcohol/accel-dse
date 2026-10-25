@@ -1,4 +1,4 @@
-"""0.336: OmniASR LLM v2 Wav2Vec2-style audio builder (asr domain); CTC kept pending; 0.335 LPDDR pins hold."""
+"""0.336: OmniASR LLM v2 Wav2Vec2-style audio builder (asr domain); 0.395 CTC head is linear; 0.335 LPDDR pins hold."""
 import os
 
 from accel_dse.core.catalog import get_model, list_models
@@ -43,11 +43,13 @@ def test_omniasr_w2v_frames_and_ops():
     assert any(o.name == "aud.proj.linear0" for o in ops)
     fl = sum(2 * o.m * o.k * o.n * o.count for o in ops if o.kind in ("gemm", "attn"))
     assert fl > 0
-    # CTC config builds the same audio tower but is not catalogued (no AR LM for asr domain)
+    # 0.395: the same tower plus a biased linear CTC head. This synthetic config has no dtype,
+    # so the weight format stays the bf16 default; the released rows are fp32 (test_core_395).
     ac = load_release("bezzam/omniasr-llm-300m-v2")["config"]["audio_config"]
     c = audio_spec({"model_type": "omniasr_ctc", "audio_config": ac, "vocab_size": 10288})
-    assert c.kind == "w2v" and c.lin == () and c.out == ac["hidden_size"]
-    assert not any(e["id"].startswith("omniasr-ctc") for e in list_models())
+    assert c.kind == "w2v" and c.ctc and c.lin == ((ac["hidden_size"], 10288),) and c.out == 10288
+    assert c.tokens(10) == 499 and c.prompt_tokens(10) == 0
+    assert any(e["id"].startswith("omniasr-ctc") for e in list_models())
 
 
 def test_omniasr_speech_kpis_smoke():

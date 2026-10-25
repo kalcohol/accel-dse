@@ -52,6 +52,15 @@ def test_tower_formats_and_bytes():
             assert fm == {k: ("fp32", 32.0, "fp32") for k in ("attn", "merger", "mlp", "patch")}, e["id"]
             assert m.vision.w_Bpp == 4.0 and m.vision.audio.w_fmt == "fp32" and m.vision.audio.w_bits == 32.0
             continue
+        if m.ctc_only and m.arch == "OmniASRForCTC":
+            # 0.395: the whole checkpoint is fp32. vision_fmt stays unset; storage is 4 bytes per param.
+            assert m.vision.wfmt == () and m.vision.w_Bpp == 4.0, e["id"]
+            assert m.vision.audio.w_fmt == "fp32" and m.vision.audio.w_bits == 32.0, e["id"]
+            rel = json.loads((ROOT / "accel_dse/data/releases" / (e["hf_id"].replace("/", "__") + ".json")).read_text())
+            vb = sum(x["bytes"] for x in rel["roles"]["vision"].values())
+            assert abs(m.vision.params * m.vision.w_Bpp - vb) < 1, e["id"]
+            assert set(rel["roles"]["vision"]) == {"fp32"}, e["id"]
+            continue
         if e["id"] == "granite-speech-5.0-470m-turboctc":
             # BatchNorm affine is fp32; every GEMM weight is bf16. Storage uses the mixed byte count.
             assert m.vision.wfmt == () and m.vision.audio.w_fmt == "bf16"

@@ -190,6 +190,11 @@ bezzam/omniasr-llm-300m-v2
 bezzam/omniasr-llm-1b-v2
 bezzam/omniasr-llm-3b-v2
 bezzam/omniasr-llm-7b-v2
+# 0.395 OmniASR CTC v2 (Wav2Vec2 tower + ctc_head; no Llama decoder)
+bezzam/omniasr-ctc-300m-v2
+bezzam/omniasr-ctc-1b-v2
+bezzam/omniasr-ctc-3b-v2
+bezzam/omniasr-ctc-7b-v2
 # 0.337 Carbon-X (Qwen3 DNA LM)
 HuggingFaceBio/Carbon-X
 # 0.338 Qwen3-TTS 12 Hz

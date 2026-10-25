@@ -9977,7 +9977,7 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
   - Output length: Wav2Vec2 `(L − k) // s + 1` per layer; Π stride = 320 → 50 Hz at 16 kHz.
 - **Text:** `text_config` Llama (shared across sizes: h=4096, L=12, nh=8, head_dim=512, ff=2816, vocab=11984) 「来源」.
 - **Param check:** builder `params` = `params_vision` (incl. projector) for every released size; `params_llm` matches the Llama trunk.
-- **CTC (`omniasr_ctc`):** same audio tower; no AR LM — pending (not in catalog).
+- **CTC (`omniasr_ctc`, 0.395):** same audio tower plus `ctc_head` Linear(hidden, vocab, bias) on every encoder frame. No Llama decoder. Catalogued as encoder-only ASR (`omniasr-ctc-*-v2`).
 - **0.335 LPDDR:** no change; adversarial pass reconfirmed device 3.23 + PHY 1.3, HBM untouched.
 
 ## §282 OmniASR w2v as-released dtype; Carbon-X; speech pending (0.337)

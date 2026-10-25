@@ -285,11 +285,15 @@ EXTRA_TAIL = [
     # 0.272 speech round 3: Fun-ASR-Nano-2512 (transformers fun_asr_nano: SAN-M 70-layer encoder + adaptor + Qwen3-0.6B)
     ("fun-asr-nano-2512", "FunAudioLLM/Fun-ASR-Nano-2512-hf"),
     # 0.336 OmniASR LLM v2 (bezzam HF ports of facebook/omniASR; Wav2Vec2 audio_tower + Llama text; fp32 as released).
-    # CTC siblings (omniasr_ctc) kept pending: encoder dims readable, but no AR language backbone for the asr domain.
+    # 0.395 CTC siblings: same tower plus ctc_head Linear(hidden, vocab, bias). No Llama decoder.
     ("omniasr-llm-300m-v2", "bezzam/omniasr-llm-300m-v2"),
     ("omniasr-llm-1b-v2", "bezzam/omniasr-llm-1b-v2"),
     ("omniasr-llm-3b-v2", "bezzam/omniasr-llm-3b-v2"),
     ("omniasr-llm-7b-v2", "bezzam/omniasr-llm-7b-v2"),
+    ("omniasr-ctc-300m-v2", "bezzam/omniasr-ctc-300m-v2"),
+    ("omniasr-ctc-1b-v2", "bezzam/omniasr-ctc-1b-v2"),
+    ("omniasr-ctc-3b-v2", "bezzam/omniasr-ctc-3b-v2"),
+    ("omniasr-ctc-7b-v2", "bezzam/omniasr-ctc-7b-v2"),
     # 0.272: Step-Audio-2-mini (Whisper-style encoder + AvgPool + conv Adaptor → Qwen2.5-7B-shaped LLM; audio in)
     ("step-audio-2-mini", "stepfun-ai/Step-Audio-2-mini"),
     # 0.339: Step-Audio-2-mini-Base / Think (same step_audio_2 + token2wav sidecar as mini)

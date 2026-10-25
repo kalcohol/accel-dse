@@ -387,6 +387,9 @@ class AudioSpec:
     # 0.393 Granite Speech 5 CTC (kind "gsctc"): conformer layers whose conv is stride-2.
     # Each listed layer keeps T // 2 frames (residual pool). Empty for every other kind.
     gs_sub: tuple[int, ...] = ()
+    # 0.395 OmniASR CTC (kind "w2v"): OmniASRForCTC.ctc_head is Linear(hidden, vocab) with bias,
+    # applied to every encoder frame. Prompt tokens stay 0. LLM ports leave this false.
+    ctc: bool = False
 
     @property
     def samples_per_token(self) -> int:
@@ -455,6 +458,9 @@ class AudioSpec:
         """0.270 audio positions inserted into the LLM prompt (0 for an encoder-decoder: cross-attention instead)."""
         if self.kind in ("gsctc", "d1fc"):
             # d1 prefix embeddings are not text tokens. expand_images must not add them.
+            return 0
+        if self.kind == "w2v" and self.ctc:
+            # OmniASRForCTC has no decoder. Encoder frames are not prompt tokens.
             return 0
         return 0 if self.cross else self.tokens(seconds)
 
@@ -1071,13 +1077,47 @@ def _sanm_spec(ac: dict, ad: dict) -> AudioSpec:
                      lin=((d, P), (P, D)), maxf=ac["max_position_embeddings"] - 1, lfr=(m, 6), ad=(nl, D, adh, adf))
 
 
-def _omniasr_audio_spec(cfg: dict, ac: dict) -> AudioSpec:
-    """0.336 OmniASR audio tower (bezzam/omniasr-*-v2 config + safetensors headers 「来源」; Wav2Vec2-shaped
-    transformers OmniASR audio): raw 16 kHz waveform → 7 Conv1d (bias) + LayerNorm per layer (config conv_dim /
-    conv_kernel / conv_stride) → LayerNorm → Linear last_conv → hidden → grouped positional Conv1d
-    (num_conv_pos_embeddings × groups) → L pre-LN blocks (q / k / v / o with bias, GELU intermediate / output with
-    bias, 2 × LayerNorm) → final LayerNorm; LLM releases add multi_modal_projector Linear hidden → text_hidden
-    (bias).  Frame rate = 16 kHz / Π stride = 50 Hz.  Param count matches params_vision (incl. projector)."""
+def _omniasr_ctc_ready(cfg: dict, ac: dict) -> bool:
+    """True when the config is OmniASRForCTC: uniform conv channels, biased convs, GELU, and a vocab."""
+    vocab = cfg.get("vocab_size")
+    d = ac.get("hidden_size")
+    layers = ac.get("num_hidden_layers")
+    heads = ac.get("num_attention_heads")
+    ff = ac.get("intermediate_size")
+    groups = ac.get("num_conv_pos_embedding_groups")
+    pk = ac.get("num_conv_pos_embeddings")
+    cd = ac.get("conv_dim")
+    ck = ac.get("conv_kernel")
+    cs = ac.get("conv_stride")
+    if ac.get("conv_bias") is not True or ac.get("hidden_act") != "gelu":
+        return False
+    if not all(_pos_int(x) for x in (vocab, d, layers, heads, ff, groups, pk)):
+        return False
+    if d % heads or d % groups:
+        return False
+    if not isinstance(cd, list) or not isinstance(ck, list) or not isinstance(cs, list):
+        return False
+    if not cd or len(cd) != len(ck) or len(cd) != len(cs):
+        return False
+    if any(not _pos_int(x) for x in (*cd, *ck, *cs)):
+        return False
+    if any(x != cd[0] for x in cd):
+        return False
+    return True
+
+
+def _omniasr_audio_spec(cfg: dict, ac: dict) -> AudioSpec | None:
+    """0.336 OmniASR audio tower (bezzam/omniasr-*-v2 config + safetensors headers; Wav2Vec2-shaped
+    transformers OmniASR audio): raw 16 kHz waveform -> 7 Conv1d (bias) + LayerNorm per layer (config conv_dim /
+    conv_kernel / conv_stride) -> LayerNorm -> Linear last_conv -> hidden -> grouped positional Conv1d
+    (num_conv_pos_embeddings x groups) -> L pre-LN blocks (q / k / v / o with bias, GELU intermediate / output with
+    bias, 2 x LayerNorm) -> final LayerNorm. LLM releases add multi_modal_projector Linear hidden -> text_hidden
+    (bias). 0.395 CTC releases add ctc_head Linear hidden -> vocab (bias, nn.Linear default) on every encoder
+    frame and no projector. Frame length is Wav2Vec2 (L - k) // s + 1 per Conv1d. Returns None for a CTC config
+    whose widths are not this class."""
+    ctc = cfg.get("model_type") == "omniasr_ctc"
+    if ctc and not _omniasr_ctc_ready(cfg, ac):
+        return None
     d, L, nh, ff = ac["hidden_size"], ac["num_hidden_layers"], ac["num_attention_heads"], ac["intermediate_size"]
     cd, ck, cs = list(ac["conv_dim"]), list(ac["conv_kernel"]), list(ac["conv_stride"])
     g = ac.get("num_conv_pos_embedding_groups", 16)
@@ -1092,16 +1132,20 @@ def _omniasr_audio_spec(cfg: dict, ac: dict) -> AudioSpec:
     out = d
     lin: tuple[tuple[int, int], ...] = ()
     tc = cfg.get("text_config") or {}
-    if cfg.get("model_type") == "omniasr" and tc.get("hidden_size"):
+    if ctc:
+        out = int(cfg["vocab_size"])
+        lin = ((d, out),)
+        params += _lin(d, out)
+    elif cfg.get("model_type") == "omniasr" and tc.get("hidden_size"):
         out = tc["hidden_size"]
         lin = ((d, out),)
         params += _lin(d, out)
     ds = tuple((ck[i], cs[i], 0) for i in range(len(ck)))
-    # as-released: bezzam OmniASR safetensors are float32 (release roles.vision fp32) 「来源」
+    # as-released: bezzam OmniASR safetensors are float32 (release roles.vision fp32)
     dt = (cfg.get("dtype") or cfg.get("torch_dtype") or "").lower()
     wb, wf = (32.0, "fp32") if dt in ("float32", "fp32") else (16.0, "bf16")
     return AudioSpec(16000, (math.prod(cs),), (d,), (L,), pk, ff / d, out, params, kind="w2v", heads=nh,
-                     n_mels=cd[-1], ds=ds, lin=lin, ch=g, w_bits=wb, w_fmt=wf)
+                     n_mels=cd[-1], ds=ds, lin=lin, ch=g, w_bits=wb, w_fmt=wf, ctc=ctc)
 
 
 def _w2v_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
@@ -1145,7 +1189,9 @@ def _w2v_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> li
                        act_bytes=clips * a.heads * T * dh * ab, orient=True),
                     Op(f"aud.{li}.softmax", "vector", li, vec=clips * a.heads * T * T * 5.0)]
         for j, (k, n) in enumerate(a.lin or ()):
-            ops.append(gemm(f"aud.proj.linear{j}", R, k, n, a.depths[0]))
+            # CTC: one Linear on every frame (OmniASRForCTC.ctc_head). LLM: multi_modal_projector.
+            name = "aud.ctc" if a.ctc else f"aud.proj.linear{j}"
+            ops.append(gemm(name, R, k, n, a.depths[0]))
     return ops
 
 
@@ -2415,6 +2461,10 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
             return VisionSpec("audio", "Granite Speech 5 CTC：Shaw Conformer（时间下采样）+ 绑定的 CTC 头",
                               0, 1, au.dims[0], au.gs_ff, au.depths[0], au.heads, au.dims[0],
                               False, 1, (), au.params, (), audio=au)
+        if au is not None and au.kind == "w2v" and au.ctc:
+            return VisionSpec("audio", "OmniASR CTC：Wav2Vec2 编码器（双向）+ 线性 CTC 头",
+                              0, 1, au.dims[0], int(au.mlp * au.dims[0]), au.depths[0], au.heads,
+                              au.dims[0], False, 1, (), au.params, (), audio=au)
         if au is not None and au.kind in ("whisper", "aut", "sanm", "w2v"):
             # 0.268 audio-only release (Ming-3.0-asr-tiny): an encoder container with no image path (family "audio":
             # image_grid_of → None, serving.images ignored with a warning); costed when serving.audio_s > 0

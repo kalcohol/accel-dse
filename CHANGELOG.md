@@ -6,6 +6,33 @@
 
 
 
+## [0.395.0] — 2026-10-25
+
+### OmniASR CTC 按 Wav2Vec2 编码器加线性头计
+
+- **新增 4 个发布**（2026-10-25 读取 config 与 safetensors header）。每一份 `param_check().rel_err == 0`。覆盖 full。`params_llm == 0`，`params_mtp == 0`。权重全部是 fp32，字节数是参数的 4 倍。
+  - **omniasr-ctc-300m-v2。** `OmniASRForCTC`，`model_type=omniasr_ctc`。hidden 1024，24 层，FFN 4096，16 头。422 张量，参数 325,982,768，`bytes_total` 1,303,931,072。
+  - **omniasr-ctc-1b-v2。** hidden 1280，48 层，FFN 5120，16 头。806 张量，参数 975,674,928，`bytes_total` 3,902,699,712。
+  - **omniasr-ctc-3b-v2。** hidden 2048，60 层，FFN 8192，16 头。998 张量，参数 3,081,398,832，`bytes_total` 12,325,595,328。
+  - **omniasr-ctc-7b-v2。** hidden 2048，128 层，FFN 8192，16 头。2086 张量，参数 6,505,761,328，`bytes_total` 26,023,045,312。
+  - 四份词表都是 10288。`ctc_head` 是 `Linear(hidden, vocab)`，带 bias。300m 的头是 1024×10288+10288 = 10,545,200；1b 是 13,178,928；3b 与 7b 是 21,080,112。按 safetensors 头计。
+- **机制。** 不走 Granite Speech 的 Shaw CTC。塔与 OmniASR LLM 的 Wav2Vec2 相同：7 次带 bias 的 Conv1d 加 LayerNorm，分组位置卷积，L 个 pre-LN 块（q / k / v / o 与 GELU FFN 都带 bias），最后 LayerNorm。注意力是双向整段 T×T（`causal=1`），不写 KV。`ctc_head` 对每个编码器帧读一次。没有 Llama，prompt token 是 0。帧长是 Wav2Vec2 `(L−k)//s+1`。各层 stride 相乘是 320。1 秒是 49 帧，10 秒是 499 帧。权重和激活都是 fp32。dropout、GELU 和最终 argmax 不另计 GEMM。`conv_bias` 不是 true、激活不是 gelu、词表或宽度不是正整数、hidden 不能被头数或分组整除、conv 列表为空或长度不一致、或者各层通道不相等时，不建这条塔。
+- **0.394 d1-omni。** 双向 L×L 加性 mask、DecisionHead 只看文本位置、SigLIP2 每个 crop 补到 1024 再做 2×2 unshuffle、FastConformer 相对表长 2T−1 且只建一次、深度卷积是向量运算、BN running stats 是 buffer、权重和激活都是 fp32、一次请求图像与音频互斥，仍由 0.394 锁住。本轮没有新的 header 对不上，GEMM 形状不改。
+- **未纳入：**
+  - **ERNIE-4.5-21B-A3B-Thinking。** config 200，`model_type=ernie4_5_moe`。`moe_gate` 的值是字符串 `"top2_fused"`，顶层没有布尔字段 `top2_fused`。仓库没有 modeling 文件。已入库的 ERNIE-4.5 MoE 路径不读 `moe_gate`。不把这个门写成现有的 softmax 选专家。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** `config.json` 仍是 401。带 PT 后缀的行已经入库。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 `config.json` 仍是 404。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **LongCat-Flash MTP。** `modeling_longcat_flash.py` 第 486 行和第 570 行的 `_keys_to_ignore_on_load_unexpected` 仍是 `[r"model\.mtp.*"]`。不另写递推。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 与 `tencent/Hy-Nomas-Diffusers` 的根 `config.json` 是 404（2026-10-24）。Diffusers 管线类是 `HyNomasModularPipeline`，transformer 是 `HyNomasTransformer3DModel`（54 层，in_channels 32）。不是已有的条件生成路径。不新写三维世界模型。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。公开的 ONNX / Core ML 再打包没有架构 config。
+  - **OrcaCyber-Nano-1.0。** `config.json` 仍是 401。
+  - **nvidia Cosmos3。** `Cosmos3-Nano` 的 `model_type` 仍是 `cosmos3_omni`，类是 `Cosmos3ForConditionalGeneration`。2026-10-24 的新行是 Cosmos3-*-Policy-DROID 与 Cosmos-H-Dreams，仍是同一扩散栈或 custom config。不新写。
+  - **Gemma-4 assistant / QAT。** `google/gemma-4-12B-it-assistant` 与各 QAT 行仍是 2026-07 / 2026-08，与已入库的 Gemma-4 同系列。不单列。
+  - **2026-10-24 之后的公开扫描**（deepseek-ai、THUDM、01-ai、allenai、bigscience、CohereForAI、meta-llama、microsoft、amazon、Alibaba-NLP、ByteDance、StepFun、MoonshotAI、TencentARC、black-forest-labs、Stability-AI、openai，以及 google、Qwen、baidu、mistralai、ibm-granite、LiquidAI、nvidia、internlm、OpenGVLab、meituan-longcat、stepfun-ai、moonshotai、tencent）。这个窗口里没有能套上现有机制的新 safetensors 或 PT。窗口内的新行是 TencentARC/Multics（2026-10-24，image-to-video，根 `config.json` 404）、上面的 Cosmos3 / Hy-Nomas。其余组织最近一条仍早于窗口：deepseek-ai DeepSeek-V4.1-Flash-1017（2026-10-17），THUDM 空，01-ai 停在 2024-11，allenai HiRO-ACEv2（2026-10-14），bigscience bloom（2026-07-29），CohereForAI 空，meta-llama Prompt-Guard-86M（2025-11-12），microsoft Sentiment-Analysis-7B（2026-10-20，已并进 startlux），amazon LAR-27B（2026-10-22），Alibaba-NLP core-reranker-8b（2026-09-04），ByteDance Bernini-Diffusers-v2（2026-08-13），StepFun 空，MoonshotAI 空，Stability-AI 空，openai privacy-filter（2026-04-22），google embeddinggemma-2（2026-10-06），Qwen-Image-2.1-Turbo（2026-10-12，diffusers），baidu Unlimited-OCR（2026-10-14），mistralai Timestral-28M（2026-10-19），ibm-granite 的新行是 GGUF 或已入库的 granite-speech，LiquidAI LFM2.5-2.6B（2026-10-23，已入库），internlm Atria-Dawn-FP8（2026-10-23，已入库），OpenGVLab Mono-InternVL-2B（2026-06-07），meituan-longcat LongCat-Flash-Lite-Sparse（2026-08-04），stepfun-ai Step-5-Preview-BF16（2026-10-15），moonshotai Kimi-K3（2026-09-02），black-forest-labs flux-3-image-klein-comfy（2026-10-17）。GGUF / MLX / ONNX / tensorrt / DFlash 不单列。
+  - **softcap / scalar-gate。** 不把标量门或 softcap 写成新的 GEMM。
+
 ## [0.394.0] — 2026-10-25
 
 ### d1-omni 按双向编码器加决策头计，不走因果 lfm2
