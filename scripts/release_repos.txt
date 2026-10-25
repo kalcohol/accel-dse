@@ -306,3 +306,7 @@ ibm-granite/granite-speech-4.1-2b-plus
 ibm-granite/granite-speech-5.0-470m-turboctc
 # 0.394 d1-omni-600M. Bidirectional LFM2.5 encoder + decision head + FastConformer + SigLIP2. fp32.
 LiquidAI/d1-omni-600M
+# 0.396 ERNIE-4.5 Thinking. Text moe_gate "top2_fused" is TopKGate (k = moe_k).
+# VL moe_gate "topk" is the existing dual-pool bill. Tied lm_head is stored once.
+baidu/ERNIE-4.5-21B-A3B-Thinking
+baidu/ERNIE-4.5-VL-28B-A3B-Thinking

@@ -6,6 +6,30 @@
 
 
 
+## [0.396.0] — 2026-10-25
+
+### ERNIE-4.5 Thinking 按已发布的 TopKGate 读 `moe_gate`
+
+- **新增 2 个发布**（2026-10-25 读取 config 与 safetensors header）。每一份 `param_check().rel_err == 0`。覆盖 full。`params_mtp == 0`。
+  - **ernie-4.5-21b-a3b-thinking。** `Ernie4_5_MoeForCausalLM`，`model_type=ernie4_5_moe`。语言栈与 `ERNIE-4.5-21B-A3B-Base-PT` 相同：5492 张量，参数 21,825,437,888，`bytes_total` 43,659,726,592。层 0 是稠密 SwiGLU，层 1–27 是 MoE。64 个专家，`moe_k` 是 6，共享宽 3072。router 是 fp32 `[64, 2560]`，校正 bias 是 fp32 `[1, 64]`。没有 MTP 张量。
+  - **ernie-4.5-vl-28b-a3b-thinking。** `Ernie4_5_VLMoeForConditionalGeneration`，`model_type=ernie4_5_moe_vl`。双池几何与 28B-A3B-PT 相同。语言参数在扣掉一份 tied `lm_head`（103424×2560）之后是 28,624,635,776。视觉塔 774,658,560，safetensors 全是 bf16（PT 行是 fp16+bf16，都是每参数 2 字节）。11106 张量，header 的 `bytes_total` 是 59,345,821,184。index 里的 `total_size` 33,906,952,576 与 header 不符，不采用。
+- **机制。** 文本仓库没有 modeling 文件。PaddlePaddle/ERNIE `modeling_moe.py` 的 `gate_class` 把字符串 `top2_fused` 和 `topk` 都映射到 `TopKGate`。`MOELayer` 的 `k` 是 `config.moe_k`，不是 2。模型卡写的是 64 个专家、6 个激活。`moe_capacity` 是 dispatch 缓冲，不另计 GEMM，也不计周期。缺这个键的已入库 PT 行保持原账单。其他字符串拒绝。VL 的 `modeling_ernie4_5_vl.py` 只有 `top2=Top2Gate` 和 `topk=TopKGate`，没有 `top2_fused`。已发布的 VL JSON 写的是 `topk`，仍按 `moe_k` 计。`top2` 与 `top2_fused` 在 VL 上拒绝。Thinking 的视频网格与 PT 相同（temporal 2，video 像素上下限不变）。
+- **0.395 OmniASR CTC 复核。** Wav2Vec2 加 `Linear(hidden, vocab)` bias 头、双向 T×T、不写 KV、权重和激活都是 fp32、1 秒 49 帧、10 秒 499 帧、`params_llm` 与 `params_mtp` 都是 0，和已发布的类一致。帧长仍是 `(L−k)//s+1`。短于第一层卷积核的片段是 0 帧，没有 CTC GEMM。batch 放大 CTC 的行数和注意力的头次数，不放大方阵的边长。decode 仍是这一次前向。参数和 GEMM 形状不改。
+- **未纳入：**
+  - **ERNIE-4.5-300B-A47B-Base（无 PT）。** `config.json` 现为 200，`library_name` 是 PaddlePaddle，`moe_gate` 是 `topk`。safetensors 是融合的 `qkv_proj` / `up_gate_proj`，dtype 是 U16，不是 bf16。没有现成的 U16 GEMM 规则。不把 U16 写成 bf16。
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401（2026-10-25）。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 `config.json` 仍是 404。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **LongCat-Flash MTP。** `modeling_longcat_flash.py` 的 `_keys_to_ignore_on_load_unexpected` 仍是 `[r"model\.mtp.*"]`。不另写递推。
+  - **Hy-Nomas。** 根 `config.json` 仍是 404。Diffusers 世界模型，不新写。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `config.json` 仍是 401。
+  - **nvidia Cosmos3。** 仍是扩散栈，不是已有的条件生成路径。
+  - **Gemma-4 assistant / QAT。** 没有新的可对上的 header。不单列。
+  - **2026-10-24 之后的公开扫描**（120 个组织，`createdAt` ≥ 2026-10-24，2026-10-25）。唯一新行是 `tencent/Hy-Nomas-Diffusers`（diffusers，根 `config.json` 404）。没有能套上现有机制的新 safetensors 或 PT。GGUF / MLX / ONNX / tensorrt / DFlash 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.395.0] — 2026-10-25
 
 ### OmniASR CTC 按 Wav2Vec2 编码器加线性头计

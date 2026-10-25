@@ -2678,6 +2678,13 @@ def _build_ernie4_5_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str], s
     MoE layer) plus ``mtp_linear_proj`` [hidden, 2·hidden], ``mtp_emb_norm`` and ``mtp_hidden_norm``. Those
     tensors use the existing MTP parameter path (eh_proj is 2h→h). A config that omits the field does not
     invent MTP layers.
+
+    PaddlePaddle/ERNIE ``modeling_moe.py`` maps the config string ``moe_gate`` through
+    ``gate_class = {top2_fused: TopKGate, topk: TopKGate}``. Both names are that fused top-k gate.
+    ``MOELayer`` selects ``k = config.moe_k`` (6 on the 21B cards, not 2). ``moe_capacity`` is the
+    dispatch buffer (``capacity = int(cap * num_tokens // num_experts)``); the class then dispatches
+    with ``k`` and does not add a GEMM. A missing key is the transformers class, which has no
+    ``moe_gate`` field and uses the same router. Any other string is refused.
     """
     if c.get("use_bias"):
         raise ValueError("ernie4_5_moe use_bias is not modeled")
@@ -2700,6 +2707,9 @@ def _build_ernie4_5_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str], s
     start = int(c.get("moe_layer_start_index") or 0)
     end_raw = c.get("moe_layer_end_index")
     end = L - 1 if end_raw is None or int(end_raw) < 0 else int(end_raw)
+    gate = c.get("moe_gate")
+    if gate is not None and gate not in ("topk", "top2_fused"):
+        raise ValueError("ernie4_5_moe moe_gate is not the published TopKGate")
 
     def moe_at(i: int) -> bool:
         return ((i + 1) % interval == 0) and start <= i <= end
@@ -2743,6 +2753,11 @@ def _build_ernie4_5_moe(c: dict) -> tuple[list[Layer], list[Layer], list[str], s
             "参数按这条形状记，不克隆最后一层 MoE，也不另写递推。没有视觉塔。")
     else:
         notes.append("num_nextn_predict_layers 未给出或为 0，不建模 MTP。没有视觉塔。")
+    if gate is not None:
+        notes.append(
+            "moe_gate 是 PaddlePaddle/ERNIE modeling_moe.py 的 gate_class 字符串："
+            "top2_fused 与 topk 都是 TopKGate。选中专家数仍是 moe_k，不是 2。"
+            "moe_capacity 是 dispatch 缓冲，不另计 GEMM，也不计周期。")
     return layers, mtp, notes, "full"
 
 
@@ -2780,6 +2795,10 @@ def _build_ernie4_5_moe_vl(c: dict) -> tuple[list[Layer], list[Layer], list[str]
     ``head_dim = hidden // heads``. The class builds no MTP module.     RoPE frequency split
     and 3-D positions do not change GEMM shapes or the KV width. Video frames are
     paired in the resampler and use a separate grid. Still images stay on the image grid.
+
+    ``modeling_ernie4_5_vl.py`` maps ``moe_gate`` through ``gate_class = {top2: Top2Gate, topk: TopKGate}``.
+    Shipped configs set ``topk`` (TopKGate, ``k = moe_k``). ``top2`` is the GShard top-2 gate and
+    ``top2_fused`` is not a key on this class. Both are refused. A missing key keeps the current bill.
     """
     if c.get("use_bias"):
         raise ValueError("ernie4_5_moe_vl use_bias is not modeled")
@@ -2813,6 +2832,9 @@ def _build_ernie4_5_moe_vl(c: dict) -> tuple[list[Layer], list[Layer], list[str]
     E, Eb = experts[0], experts[1]
     de, deb = widths[0], widths[1]
     bias_n = (2 * E) if c.get("moe_use_aux_free") else 0
+    gate = c.get("moe_gate")
+    if gate is not None and gate != "topk":
+        raise ValueError("ernie4_5_moe_vl moe_gate is not the published TopKGate")
 
     def moe_at(i: int) -> bool:
         return ((i + 1) % interval == 0) and moe_lo <= i <= moe_hi
@@ -2855,6 +2877,10 @@ def _build_ernie4_5_moe_vl(c: dict) -> tuple[list[Layer], list[Layer], list[str]
         "这个类没有 MTP。图像 token 含首尾标记，走视觉专家池。"
         "视频帧在 resampler 里两两配对，时间 GEMM 的行数减半，另走视频网格，不写进静止图像网格。",
     ]
+    if gate is not None:
+        notes.append(
+            "moe_gate 是 topk。公开 VL modeling_ernie4_5_vl.py 的 gate_class 里 topk 是 TopKGate，"
+            "top2 是 Top2Gate，没有 top2_fused。选中专家数仍是 moe_k。不把 top2 或 top2_fused 记成这条账单。")
     return layers, [], notes, "full"
 
 
