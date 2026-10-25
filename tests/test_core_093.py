@@ -44,7 +44,12 @@ def test_act_fmt_for_default_and_override():
                  "longcat-flash-lite": {"act_ngram": "bf16"},
                  "longcat-flash-lite-fp8": {"act_ngram": "bf16"},
                  # 0.401: Thinking-2601-FP8 quantizes every expert and dense block. Attention stays bf16.
-                 "longcat-flash-thinking-2601-fp8": {"act_attn": "bf16"}}
+                 "longcat-flash-thinking-2601-fp8": {"act_attn": "bf16"},
+                 # 0.402: Omni audio heads read the bf16 hidden row. FP8 language still
+                 # leaves attention and the ignored late blocks in bf16.
+                 "longcat-flash-omni": {"act_audio_head": "bf16"},
+                 "longcat-flash-omni-fp8": {"act_attn": "bf16", "act_audio_head": "bf16",
+                                            "act_expert_bf16": "bf16", "act_mlp_bf16": "bf16"}}
         if e["id"] in mixed:
             assert acts == mixed[e["id"]], (e["id"], acts)
             continue
