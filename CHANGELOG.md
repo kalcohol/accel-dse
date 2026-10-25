@@ -6,6 +6,33 @@
 
 
 
+## [0.392.0] — 2026-10-25
+
+### Granite Speech 走 Conformer 加 Q-Former，接到已有的 granite 文本
+
+- **新增 2 个发布**（2026-10-25 读取 config 与 safetensors header）。每一份 `param_check().rel_err == 0`。覆盖 full。`params_mtp == 0`。不把缺省 MTP 层数填成 1。
+  - **granite-speech-5.0-2b。** `GraniteSpeechForConditionalGeneration`，`model_type=granite_speech`，dtype bfloat16。语言参数 1,837,275,136（未绑词嵌入）。音频塔 475,866,460。954 张量，`bytes_total` 4,626,414,392。文本是 granite：hidden 2048，40 层，头 16/4，head 128，FFN 4096，`tie_word_embeddings` 为 false，上下文 16384。`lm_head` 与 embedding 都是 bf16 `[100353, 2048]`。
+  - **granite-speech-4.1-2b-plus。** `GraniteSpeechPlusForConditionalGeneration`，`model_type=granite_speech_plus`。语言参数 1,631,752,192（绑词嵌入，header 没有 `lm_head`）。音频塔 480,060,764。953 张量，`bytes_total` 4,223,757,112。文本 GEMM 形状与 5.0 相同，上下文 4096。`text_config.dtype` 是 float32，safetensors 全部是 bf16，按 bf16 计。`cat_hidden_layers` 是 `[3]`。
+- **机制。** 编码器是 16 层 Conformer（hidden 1024，8 头，dim_head 128，FFN 宽 4096，卷积扩展 2、kernel 15）。输入是 16 kHz、hop 160 的 mel，奇数帧丢掉后两帧一叠，`input_dim` 160。1 秒是 50 个编码器帧。Shaw 相对位置表是 `(2 * max_pos_emb + 1, dim_head)`，距离缓冲不进 checkpoint。注意力按 `context_size` 200 补成整块：q / kv 看补齐后的帧，out、两段 FFN、卷积和中间 CTC 看未补齐的帧。SDPA 的 QK/PV 和 Shaw 的 einsum 都计。深度卷积是向量运算，点卷积是 GEMM。`num_layers // 2` 处 `out` 与 `out_mid` 各跑一次。Q-Former 在 `use_qformer_text_input` 为 false 时没有文本嵌入、也没有文本 FFN；两层都有交叉注意力（frequency 1）。每窗 `window_size // downsample_rate` 个查询（15 / 5 = 3），含末尾不满的窗。1 秒是 4 窗、12 个 LLM token。交叉注意力的 K 看补齐后的窗。Plus 把第 3 层隐状态拼到最终状态上，K 宽从 1024 变成 2048，投影线性仍是 1024 → 2048。BatchNorm 的 running_mean / running_var 是 buffer，不进参数。0.5 残差、dropout、GLU、LayerNorm 和 granite 的 attention / embedding / residual / logits 标量不另计 GEMM，也不改变 KV 宽度。`has_lora_adapter` 不是 false、Q-Former 要吃文本、窗长不能整除下采样、context 超过 `max_pos_emb`、`dim_head * heads` 不等于 hidden、或者 K 宽对不上实际拼出来的宽度时，不建这条塔。
+- **0.388–0.391 复核过，账单不改。** WeVisOne-VL 的视觉权重仍是 fp32（字节是参数的 4 倍），激活 bf16。LFM2.5-VL 仍是 SigLIP2 NaFlex 加 pixel-unshuffle（投影输入宽是 hidden 乘 downsample 的平方）。MiniMax-M2 的 q/k RMSNorm 仍按整段投影宽度加 `e_score_correction_bias`。granite-4.2 的 mxfp4 仍是 W4A4；组大小对不上时权重格式留着，GEMM 输入回到 bf16。Atria-Dawn 的 MLA 宽度仍是 256，不是 config 的 `head_dim` 64。
+- **未纳入：**
+  - **ibm-granite/granite-speech-5.0-470m-turboctc。** `GraniteSpeech5ForCTC`，`model_type=granite_speech5_ctc`。header 与类对得上（去掉 BatchNorm buffer 后 472,928,256），但没有 granite 语言模型。`subsample_layers` 是 `[0, 1]`，时间轴在堆里减半。asr 域不收只有 CTC 头的编码器，和 omniasr-ctc 同一条限制。
+  - **LiquidAI/d1-omni-600M。** 本轮重读了 `modeling_d1.py`、`encoder.py`、`audio.py`。`D1OmniModel` 的主干是 `Trunk`：注释写明是双向的 LFM2.5-Encoder（居中 3-tap 卷积，没有因果 mask），没有 lm_head。旁边是 `DecisionHead`。音频是 `audio.py` 里的 17 层 FastConformer（`RelPositionAttention`），不是 Whisper、Gemma-4 conformer 或 OmniASR。视觉 config 是 `siglip2_vision_model`，但是整模不是 `lfm2` / `lfm2_vl`。按那两条路径计会对不上参数，也会把双向主干记成因果解码。不新写决策头或语音塔。
+  - **LongCat-Flash MTP。** 本轮重读了 `modeling_longcat_flash.py`。`LongcatFlashModel._keys_to_ignore_on_load_unexpected` 仍是 `[r"model\.mtp.*"]`。不另写递推。
+  - **2026-10-22 之后的公开扫描**（ibm-granite、LiquidAI、Qwen、google、baidu、mistralai、nvidia、OpenGVLab、meituan-longcat、internlm，各取最近 30 个仓库）。能看见的新行是 granite-switch-4.1 的 GGUF、InternVideo2-CLIP 的 tensorrt，以及已在 0.389 入库的 Atria-Dawn / FP8。没有能套上现有机制的新 safetensors 或 PT。GGUF / MLX / ONNX / tensorrt / DFlash 不单列。
+  - **ERNIE-4.5-21B-A3B-Thinking。** 公开类没有 `top2_fused`。不新增。
+  - **ERNIE-4.5-300B / 21B（无 PT 后缀）。** 仓库仍是 401。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **Gemma-4 assistant / QAT。** 与已入库的发布同系列。不单列。
+  - **LTX-2.3。** `config.json` 仍是 404。
+  - **OrcaCyber-Nano-1.0 / pocket-tts。** 没有可建模的架构 config。
+  - **Hy-Nomas-Diffusers。** 仓库没有 modeling 文件。
+  - **nvidia Cosmos3。** 扩散专家栈，不是已有的条件生成路径。
+  - **LiquidAI/LFM2.5-d1。** `config.json` 仍是 401。
+  - **omniasr-ctc。** 没有自回归语言骨干。
+  - **NPU。** 不编造形状、周期或面积。
+  - **softcap / 标量门控。** 不改变 GEMM 形状，也不改变 KV 宽度。不另计周期。
+
 ## [0.391.0] — 2026-10-25
 
 ### Granite-4.2 的 MXFP4 / NVFP4 走已有的 W4A4 账单
