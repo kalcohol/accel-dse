@@ -6,6 +6,27 @@
 
 
 
+## [0.406.0] — 2026-10-25
+
+### LongCat 视觉补上已执行的 q/k、残差 RMSNorm 和 LayerScale；FSMN 补上两处 LayerNorm
+
+- **修正（视觉）。** `LongCatVisionEncoderLayer.forward`（`encoders/vision_adaptor.py`）先做 `norm1`，再进 `Attention`，然后 `hidden + atten * ls1`，再做 `norm2`、SwiGLU、`mlp * ls2`。`Attention` 在 RoPE 之后把 q / k 的 head 维展平，`q_norm` / `k_norm` 是 `RMSNorm(embed_dim)`，不是按 head 归约。`RMSNorm.forward` 与 0.405 的内层 norm 相同：升到 fp32，`pow(2).mean`，每个 token 一次 `rsqrt`，再乘 weight。宽度是 1280，不是 `head_dim` 80，所以 `sfu` 是 patch token 数，不是 token 乘 16。每一层补 `vis.{层}.norm1`、`q_norm`、`k_norm`、`norm2`：`vec = tokens * 1280 * 4`，`sfu = tokens`，`a_fmt` 是 fp32，`w_params` 是 0。行数是 `ph * pw`，在宽度拼接之前。`ls1` / `ls2` 是 `Parameter(embed_dim)` 的乘加，类里没有升精度，也没有 `rsqrt`：`vec = tokens * 1280 * 2`，`sfu` 是 0，`a_fmt` 是 bf16。`VisionProjector.p0` 的第一层是 `LayerNorm(hidden * 2)`，行数是拼宽之后的 `ph * pw / 2`，不是 patch token。补 `vis.proj_ln`：`vec = merged * 2560 * 4`，`sfu = merged`，fp32。权重都已经在塔参数里。通用 GEMM 尾项 `VEC_PER_OUT` 不减。0.405 的内层 `mlp_norm` 仍在 `mlp_in` 和 `mlp_out` 之间。softmax 仍是原来的双向分数，`vec = heads * tokens² * 5`，`sfu` 仍是 0，不另写一次。Omni 与 Omni-FP8 的 `param_check().rel_err` 仍是 0。请求 fp8 时塔 GEMM 仍是 bf16，这几次归约仍是 fp32，LayerScale 仍是 bf16。
+- **修正（音频）。** `LongCatAudioEncoderLayer.forward` 在深度卷积前跑 `memory_ln`，FFN 的 Sequential 以另一个 `LayerNorm(proj)` 开头。宽度是 1536，不是 FFN 的 6144。PyTorch `layer_norm` 在 fp32 里归约，每帧一次 `rsqrt`。22 层各补 `aud.{层}.mem_ln` 和 `aud.{层}.ffn_ln`：`vec = frames * 1536 * 4`，`sfu = frames`，`w_params` 是 0。核仍是前 16 层 11、后 6 层 12，深度卷积的 `vec` 不变。
+- **仍留在尾项里。** SwiGLU 的 SiLU、投影器两处 GELU、rope2d 的 `cos` / `sin`，以及音频的 ReLU6、投影器 GELU、mask 乘，都不单列。没有新的语言栈、码本或 24k 解码器账单。
+- **未纳入：**
+  - **LongCat-Flash-Lite-Sparse。** 2026-10-25 再读：sha `35de83a18b5838ec1657edb3f885a59bbdd7888f`，`lastModified` 2026-08-04。根目录仍没有 modeling 文件。`architectures` 是 `LongcatCausalLM`，`attention_method` 仍是 LSA。vLLM #48302 仍是 open（更新于 2026-09-09），SGLang #32918 仍是 open（更新于 2026-08-17）。没有已合并的 LSA 前向。不套 MLA，也不套 DSA。
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 在 API 里是 diffusers 的 image-to-video。根 `config.json` 仍是 404。不新写扩散栈。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 与 `tencent/Hy-Nomas-Diffusers` 的 `lastModified` 是 2026-10-24。根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401。
+  - **nvidia Cosmos3。** `nvidia/Cosmos3` 与 `nvidia/Cosmos-3` 的 `config.json` 仍是 401。`nvidia/Cosmos3-Nano` 的 `config.json` 现在是 200，`model_type` 是 `cosmos3_omni`，类是 `Cosmos3ForConditionalGeneration`，里面嵌着一份 `qwen3_vl`。这不是已有的条件生成路径，不把内层文本记成 Qwen3-VL。
+  - **Gemma-4 assistant / QAT。** `google/gemma-4-assistant` 与 `google/gemma-4-E4B-it-qat` 的 `config.json` 仍是 401。不单列。
+  - **2026-10-20 及之后按 `lastModified` 的扫描**（120 个组织）。对得上现有机制、又缺 header 的没有入库。靠近的几条：`ornith-ai/Ornith-1.5-122B-NVFP4` 是 modelopt，不是已入库的 FP8；`nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Base-BF16` 是同一类的另一份 checkpoint，没有新的 header；`KRAFTON/Raon-1-mini-preview-nvfp4` 的 `quant_method` 是 `modelopt_fp4`；`IFM/K2-Horizon-0.9B` 是 float32；`inclusionAI/Ling-3.0-flash-Sante` 是 `bailing_hybrid`；`nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB` 与 `inclusionAI/Realtime-Venus` 的 `config.json` 是 404。GGUF / MLX / ONNX / diffusers / tensorrt 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.405.0] — 2026-10-25
 
 ### LongCat 视觉 SwiGLU 补上已执行的内层 RMSNorm
