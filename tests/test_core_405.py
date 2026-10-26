@@ -4,7 +4,8 @@ SwiGLU.forward is fc2(RMSNorm(silu(fc1(x)) * fc3(x))). The norm upcasts to
 fp32 and applies one rsqrt per patch token. The weight is already in the
 tower parameter total. Projector rows (ph * pw / 2) are the wrong M.
 Other ViT families do not grow this op. q/k, residual RMSNorm, LayerScale,
-and the projector LayerNorm are billed in 0.406. This file still locks the
+and the projector LayerNorm are billed in 0.406. SiLU and the gate product
+sit between mlp_in and this norm as of 0.407. This file still locks the
 inner norm.
 """
 from __future__ import annotations
@@ -37,8 +38,7 @@ def test_longcat_vision_bills_the_swiglu_inner_rmsnorm_on_patch_tokens():
         assert op.kind == "vector" and op.layer == li
         assert op.vec == tokens * INNER * 4 and op.sfu == tokens
         assert op.a_fmt == "fp32" and op.w_params == 0 and op.flops == 0
-        assert names.index(f"vis.{li}.mlp_in") + 1 == names.index(op.name)
-        assert names.index(op.name) + 1 == names.index(f"vis.{li}.mlp_out")
+        assert names.index(f"vis.{li}.mlp_in") < names.index(op.name) < names.index(f"vis.{li}.mlp_out")
         assert op.vec != g.merged * INNER * 4
     wide = vision_ops(vs, g, 2)
     wide_norms = [op for op in wide if op.name.endswith(".mlp_norm")]

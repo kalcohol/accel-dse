@@ -4,7 +4,8 @@ LongCatVisionEncoderLayer runs norm1, q_norm, k_norm, norm2, the SwiGLU inner
 norm, and two LayerScales. q_norm and k_norm flatten heads, so each is one
 RMSNorm over embed_dim. VisionProjector starts with LayerNorm on the
 width-paired rows. Each LongCatAudioEncoderLayer runs two LayerNorm(proj)
-modules. SiLU, projector GELU, RoPE, and the mask multiply stay in the tail.
+modules. SiLU, projector GELU, RoPE, ReLU6, and the mask multiply are billed in 0.407.
+This file still locks the norm and LayerScale shapes.
 """
 from __future__ import annotations
 
@@ -22,9 +23,10 @@ AUDIO_LAYERS = 22
 
 def _block(li: int) -> tuple[str, ...]:
     return (
-        f"vis.{li}.norm1", f"vis.{li}.qkv", f"vis.{li}.q_norm", f"vis.{li}.k_norm",
-        f"vis.{li}.o", f"vis.{li}.ls1", f"vis.{li}.norm2", f"vis.{li}.mlp_in",
-        f"vis.{li}.mlp_norm", f"vis.{li}.mlp_out", f"vis.{li}.ls2",
+        f"vis.{li}.norm1", f"vis.{li}.qkv", f"vis.{li}.rope", f"vis.{li}.q_norm",
+        f"vis.{li}.k_norm", f"vis.{li}.o", f"vis.{li}.ls1", f"vis.{li}.norm2",
+        f"vis.{li}.mlp_in", f"vis.{li}.silu", f"vis.{li}.mlp_mul", f"vis.{li}.mlp_norm",
+        f"vis.{li}.mlp_out", f"vis.{li}.ls2",
         f"vis.{li}.qk", f"vis.{li}.pv", f"vis.{li}.softmax",
     )
 
@@ -70,7 +72,9 @@ def test_longcat_vision_bills_block_norms_and_layerscale_on_patch_tokens():
     assert ln.a_fmt == "fp32" and ln.w_params == 0 and ln.flops == 0
     sm = next(op for op in ops if op.name == "vis.0.softmax")
     assert sm.vec == HEADS * tokens * tokens * 5 and sm.sfu == 0
-    assert sum(op.sfu for op in ops) == DEPTH * tokens * 5 + g.merged
+    norm_sfu = sum(op.sfu for op in ops if op.name == "vis.proj_ln" or op.name.endswith(
+        (".norm1", ".q_norm", ".k_norm", ".norm2", ".mlp_norm")))
+    assert norm_sfu == DEPTH * tokens * 5 + g.merged
     wide = vision_ops(vs, g, 2)
     assert next(op for op in wide if op.name == "vis.0.q_norm").sfu == 2 * tokens
     assert next(op for op in wide if op.name == "vis.0.ls1").vec == 2 * tokens * HIDDEN * 2
@@ -115,10 +119,10 @@ def test_longcat_audio_bills_both_fsmn_layernorms_on_proj_width():
     assert next(op for op in ops if op.name == "aud.0.dw").vec == frames * proj * 11
     assert next(op for op in ops if op.name == "aud.16.dw").vec == frames * proj * 12
     assert next(op for op in ops if op.name == "aud.16.mem_ln").vec == frames * proj * 4
-    assert sum(op.sfu for op in ops) == nlayer * 2 * frames
+    ln_sfu = sum(op.sfu for op in ops if op.name.endswith((".mem_ln", ".ffn_ln")))
+    assert ln_sfu == nlayer * 2 * frames
     wide = audio_ops(au, 1.0, 2)
     assert next(op for op in wide if op.name == "aud.0.ffn_ln").sfu == 2 * frames
     assert audio_ops(au, 0.01, 1) == []
-    assert not any("relu" in op.name or op.name.endswith(".gelu") or "mask" in op.name for op in ops)
     tiny = AudioSpec(16000, (160,), (32,), (1,), 3, 1.0, 32, 1, kind="g4lin")
     assert not any(op.name.endswith((".mem_ln", ".ffn_ln")) for op in audio_ops(tiny, 0.1, 1))
