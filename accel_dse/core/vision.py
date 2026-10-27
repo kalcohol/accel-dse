@@ -165,6 +165,15 @@ The merger bills ``nn.LayerNorm`` and ``nn.GELU()`` (erf) on merged rows at
 ``projection_intermediate_size``. SiLU, the product and GELU stay at the
 vision-role dtype. RMSNorm and LayerNorm stay fp32. The ``swiglu_limit``
 clamps, the axial RoPE, and the full residual adds are not ops.
+MiMo-V2.6 (``ln_mode`` ``mimo``, family stays ``qwen``) bills ``nn.RMSNorm``
+before attention and before the SwiGLU, on the full hidden width (one rsqrt
+per token, not per head). ``ACT2FN["silu"]`` is ``x * sigmoid(x)`` on the
+gate only. The product with ``up`` is one multiply. ``ln_q`` is
+``nn.LayerNorm`` on the patch rows before the view. ``nn.GELU()`` after the
+first merger linear is the erf form, on merged rows at ``4 * hidden``. SiLU,
+the product and GELU stay at the vision-role dtype. RMSNorm and LayerNorm
+stay fp32. The rotary ``torch.outer``, cos/sin, the full residual adds, and
+the window mask are not ops.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -388,10 +397,13 @@ class VisionSpec:
     # float safetensors vision role. RMSNorm stays fp32. Empty on every earlier tower.
     # 0.419 Qwen3-VL merger erf-GELU and LFM2.5-VL projector erf-GELU use the same field.
     # 0.422 GLM-5.3-Flash SiLU, the SwiGLU product, and merger nn.GELU() use it too.
+    # 0.423 MiMo-V2.6 gate SiLU, the SwiGLU product, and merger nn.GELU() use it too.
     # LayerNorm and RMSNorm stay fp32.
     vec_fmt: str = ""
     # 0.419: "qwen3vl" bills Qwen3VLVisionBlock / Qwen3VLVisionPatchMerger LayerNorms
-    # and nn.GELU(). Empty on every other tower, including Qwen3.5.
+    # and nn.GELU(). Empty on Qwen3.5.
+    # 0.423: "mimo" bills MiMo-V2.6 RMSNorm, gate SiLU, ln_q and merger nn.GELU().
+    # Other qwen towers stay empty.
     ln_mode: str = ""
     # 0.419: deepstack block indexes, in merger order. Empty when deepstack is 0.
     ds_idx: tuple[int, ...] = ()
@@ -3537,6 +3549,10 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return VisionSpec("qwen", "Qwen3-VL ViT + linear_proj", p, t, h, inter, L, nh, h, False, mk,
                           ((hm, text_h), (text_h, text_h)), params, tuple(sorted(pre.items())))
     if "fullatt_block_indexes" in vc and vc.get("num_key_value_heads"):   # 0.144 MiMo-V2.6 ViT (Qwen2.5-VL style)
+        # MiMoVisionSwiGLUMLP reads ACT2FN[hidden_act]. The released value is silu.
+        # nn.GELU() on the merger does not read it.
+        if vc.get("hidden_act") != "silu":
+            raise ValueError("mimo vision hidden_act is not silu")
         h, inter, L, nh, kv = vc["hidden_size"], vc["intermediate_size"], vc["depth"], vc["num_heads"], vc["num_key_value_heads"]
         p, t, mk, out = vc["patch_size"], vc["temporal_patch_size"], vc["spatial_merge_size"], vc["out_hidden_size"]
         dh = vc.get("head_dim") or 64                      # qkv [3072, 1280] = (32 + 2·8) × 64 in the released header
@@ -3551,7 +3567,7 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return VisionSpec("qwen", "MiMo ViT（GQA + 带状窗口注意力 + sink）", p, t, h, inter, L, nh, qd, True, mk,
                           ((hm, hm), (hm, out)), params, tuple(sorted(pre.items())), kv_heads=kv,
                           win=vc.get("visual_token_window_size") or 0, full_idx=tuple(vc["fullatt_block_indexes"]),
-                          sink=bool(vc.get("use_sink")), perm=perm)
+                          sink=bool(vc.get("use_sink")), perm=perm, ln_mode="mimo")
     if mt == "clip_vision_model" and cfg.get("model_type") == "minimax_m3_vl":    # 0.355 MiniMax M3.1-Flash
         h, inter, L, nh = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"]
         p, img_size = vc["patch_size"], vc["image_size"]
@@ -3999,6 +4015,7 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     pixtral = v.family == "pixtral"
     q3 = v.ln_mode == "qwen3vl"
     glm = v.family == "glm"
+    mimo = v.ln_mode == "mimo"
     if glm:
         # Glm5NextVisionBlock + Glm5NextVisionPatchMerger. Hidden RMSNorms, per-head
         # q/k RMSNorms, gate SiLU, merger LayerNorm and nn.GELU(). The clamps are not ops.
@@ -4012,6 +4029,16 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if (v.post[0][0] != hm or v.post[1] != (out_n, out_n) or v.post[2][0] != out_n
                 or v.post[2][1] % 2 or v.post[3] != (v.post[2][1] // 2, out_n)):
             raise ValueError("glm5 vision merger shapes do not match the release")
+    if mimo:
+        # MiMoVisionBlock + MiMoVisionPatchMerger. RMSNorm before attention and the
+        # SwiGLU, gate SiLU, ln_q on patch rows, nn.GELU() on merged rows.
+        # q/k are not normalized. The rotary table and the full residual are not ops.
+        if v.vec_fmt not in ("fp16", "bf16", "fp32"):
+            raise ValueError("mimo vision activation dtype is not a vision float")
+        hm = h * v.merge * v.merge
+        if (not v.gated or v.kv_heads < 1 or len(v.post) != 2
+                or v.post[0] != (hm, hm) or v.post[1][0] != hm):
+            raise ValueError("mimo vision block is not gqa swiglu plus a two-linear merger")
     if q3:
         # Qwen3VLVisionBlock LayerNorms and Qwen3VLVisionPatchMerger nn.GELU().
         # The block MLP stays gelu_pytorch_tanh. Merger fc1 is Linear(4h, 4h).
@@ -4079,6 +4106,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if glm:
             # norm1 is Glm5NextRMSNorm(hidden) on patch tokens, before the fused qkv.
             ops.append(_rms_vec(pfx + f"{li}.norm1", li, rows, h))
+        if mimo:
+            # norm1 is nn.RMSNorm(hidden) on patch tokens, before the fused qkv.
+            # One rsqrt per token. q and k are not normalized.
+            ops.append(_rms_vec(pfx + f"{li}.norm1", li, rows, h))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
         if pixtral:
             # Attention runs before o_proj. One bidirectional block per image.
@@ -4120,6 +4151,9 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if glm:
             # norm2 is Glm5NextRMSNorm(hidden) before the SwiGLU. The residual add is the full branch.
             ops.append(_rms_vec(pfx + f"{li}.norm2", li, rows, h))
+        if mimo:
+            # norm2 is nn.RMSNorm(hidden) before the SwiGLU. The residual add is the full branch.
+            ops.append(_rms_vec(pfx + f"{li}.norm2", li, rows, h))
         if longcat:
             # ls1 / ls2 are Parameter(embed_dim): branch * scale, then the residual add.
             # The class does not upcast. No rsqrt.
@@ -4148,6 +4182,11 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # ACT2FN["silu"] is x * sigmoid(x) on the gate only. Width is intermediate,
             # not the fused 2x GEMM. The product with up is one multiply. Neither upcasts.
             # gate.clamp / up.clamp (swiglu_limit) are not this op.
+            ops.append(_silu_vec(pfx + f"{li}.silu", li, rows * v.inter, v.vec_fmt))
+            ops.append(Op(pfx + f"{li}.mlp_mul", "vector", li, vec=rows * v.inter, a_fmt=v.vec_fmt))
+        if mimo:
+            # ACT2FN["silu"] is x * sigmoid(x) on the gate only. Width is intermediate,
+            # not the fused 2x GEMM. The product with up is one multiply. Neither upcasts.
             ops.append(_silu_vec(pfx + f"{li}.silu", li, rows * v.inter, v.vec_fmt))
             ops.append(Op(pfx + f"{li}.mlp_mul", "vector", li, vec=rows * v.inter, a_fmt=v.vec_fmt))
         ops.append(gemm(f"{li}.mlp_out", rows, v.inter, h, li))
@@ -4183,6 +4222,12 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # Final merger, use_postshuffle_norm false: LayerNorm(hidden) on the patch
         # sequence, then a view to 4h. The row count is not the merged count.
         ops.append(_ln_vec(pfx + "pre_ln", v.depth, images * N0, h))
+    if mimo:
+        # ln_q is LayerNorm(context_dim) on the patch sequence, before the view
+        # to 4 * hidden. Rows are patches, not merged positions. Width is hidden,
+        # not 4 * hidden and not out_hidden_size. The released header stores
+        # weight only; the class-default bias is not a tensor and is not an op.
+        ops.append(_ln_vec(pfx + "ln_q", v.depth, images * N0, h))
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
         m_ = merger_rows(kn)
@@ -4191,6 +4236,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             slot = i // 2 - 1
             ops.append(_ln_vec(pfx + f"ds{slot}.ln", v.ds_idx[slot], m_, k))
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
+        if mimo and i == 0:
+            # nn.GELU() default approximate is 'none': the erf form. Width is fc1's
+            # N (4 * hidden), not out_hidden_size. The second linear has no activation.
+            ops.append(_gelu_erf_vec(pfx + "mgelu", v.depth, m_ * n, v.vec_fmt))
         if q3 and i % 2 == 0:
             # nn.GELU() default approximate is 'none': the erf form. Width is fc1's N (4h).
             # The block MLP's gelu_pytorch_tanh is not this op.
