@@ -4350,6 +4350,9 @@ def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
     given this value.
     Ling-3.0-flash-VL ``linear_proj`` ``nn.GELU()`` uses it the same way.
     Those LayerNorms stay fp32.
+    MiniCPM-V-4.7 merger ``nn.GELU()`` uses it the same way. Those LayerNorms
+    stay fp32. The tower MLP and the vit_merger stay ``gelu_pytorch_tanh``
+    and are not this dtype.
     A Qwen3-VL
     tower stored entirely as fp32 keeps the model activation format instead
     (WeVisOne). LayerNorm and GLM RMSNorm stay fp32.
@@ -5031,6 +5034,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             patch = 3 * vs.tpatch * vs.patch * vs.patch * vs.hidden
             fmt, bpp = _minimax_vision_fmt(rel, patch, vs.params)
             vs = replace(vs, vec_fmt=fmt, w_Bpp=bpp)
+        if vs is not None and vs.family == "minicpm":
+            # 0.435: merger nn.GELU() follows the one vision-role float.
+            # GEMM w_fmt stays bf16. LayerNorm stays fp32.
+            if rel is None:
+                raise ValueError("minicpm vision role is missing")
+            vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "minicpm"))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -5373,6 +5382,24 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "文本激活是 swigluoai，不单列。"
                 "3D RoPE、整份残差加、图像的 mean/std 归一化不单列。"
                 "通用 GEMM 尾项不减。",))
+        if vs is not None and vs.family == "minicpm":
+            spec = replace(spec, notes=spec.notes + (
+                "MiniCPM-V-4.7 视觉塔：每一层注意力前和 MLP 前各一次 nn.LayerNorm(hidden)。"
+                "insert_layer_id 这一层仍按完整 patch 行计算，跑完这一层之后才做 vit_merger。"
+                "vit_merger 的 layer_norm1 在完整 patch 行上，宽度是 hidden。"
+                "四次 GEMM 的顺序不变，全分辨率注意力仍排在它们后面。"
+                "pre_norm 在 2×2 展平之后、linear_1 之前，行数是 N/4，宽度是 4*hidden。"
+                "塔内 MLP 和 vit_merger 的激活是 gelu_pytorch_tanh，不单列。"
+                "块之后的 post_layernorm 在已经降到 N/4 的行上，宽度是 hidden。"
+                "最终 merger 的 pre_norm 在 N/16 行上，宽度是 4*hidden。"
+                "linear_1 之后是 nn.GELU()，不传 approximate，默认 approximate='none'，erf 形式。"
+                "宽度是 4*hidden，不是文本 hidden。linear_2 没有激活。"
+                "发布的 q/k/v 仍是一份融合 GEMM，不拆成三份。"
+                f"GELU 不升精度，a_fmt 是 vision 角色的 {vs.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
+                "窗口 gather、均值残差、整份残差加不单列。"
+                "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
     return spec
 
 

@@ -138,6 +138,19 @@ docs/MODEL.md §20):
          The text activation stays swigluoai and is not billed. 3D RoPE, the full residual adds,
          and the image mean/std normalize are not ops. patch_merge_mlp parameters stay in the
          language role. The conv GEMM weight is fp32. Other GEMM labels stay bf16.
+  minicpm MiniCPM-V-4.7 (minicpmv4_7): Linear patch embed, a learned position table, and
+         depth pre-LN blocks (separate q / k / v / o, all width hidden). The layer at
+         ``insert_layer_id`` still sees the full patch rows. ``vit_merger`` runs after
+         that layer: ``layer_norm1``, window attention billed as one full-resolution
+         block, a 2x2 flatten, ``pre_norm`` on ``4 * hidden``, Linear,
+         ``gelu_pytorch_tanh``, Linear. Later blocks see N/4 rows. ``post_layernorm``
+         is ``nn.LayerNorm(hidden)`` on those rows. The final merger is
+         ``LayerNorm(4 * hidden)``, Linear, ``nn.GELU()`` (the erf form), Linear into
+         the text width, on N/16 rows. 0.435 bills those LayerNorms and that one
+         erf-GELU. The block MLP and the vit_merger activation stay
+         ``gelu_pytorch_tanh`` and are not billed. The window gather, the mean
+         residual, and the full residual adds stay in the tail. q/k/v stay one GEMM.
+         GEMM labels stay bf16.
 
 Counted per image (all images of a request share the size): every GEMM above at M = patches (tower) or merged rows
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
@@ -486,8 +499,9 @@ class VisionSpec:
     bias_qkv: bool = True
     # 0.144 (defaults keep every earlier encoder unchanged)
     kv_heads: int = 0           # GQA tower (MiMo): qkv GEMM N = (heads + 2·kv_heads)·head_dim
-    insert: int = 0             # in-tower 2×2 merger after this many blocks (MiniCPM-V-4.7 insert_layer_id): later
-                                # blocks run on N/4 rows; ``mid`` GEMMs run there
+    insert: int = 0             # MiniCPM-V-4.7 insert_layer_id: vit_merger runs after this layer index.
+                                # Layers 0..insert stay on the full patch rows; later blocks run on N/4.
+                                # ``mid`` GEMMs run at that layer.
     mid: tuple[tuple[int, int, int], ...] = ()   # (K, N, row divisor vs patches) GEMMs at the insert point
     extra: int = 0              # stored but not run for images (MiMo audio encoder + speech embeddings)
     approx: str = ""            # coverage reason when the encoder / resize is approximated
@@ -538,6 +552,8 @@ class VisionSpec:
     # quick_gelu and LayerScale stay in the GEMM tail.
     # 0.431: "ling" bills Ling-3.0-flash-VL block and merger LayerNorms and the
     # linear_proj nn.GELU() (erf). The block MLP stays gelu_pytorch_tanh.
+    # 0.435: "minicpm" bills MiniCPM-V-4.7 nn.LayerNorm calls and the final
+    # merger nn.GELU() (erf). The block MLP and vit_merger stay gelu_pytorch_tanh.
     ln_mode: str = ""
     # 0.419: deepstack block indexes, in merger order. Empty when deepstack is 0.
     ds_idx: tuple[int, ...] = ()
@@ -3994,18 +4010,57 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                                  "视频 tubelet 的 video_embedder（2 帧 patch）按单帧 patch 嵌入计「近似」，EVS 剪枝按保留数公式计",
                           post_ln=final_ln)
     if vc.get("model_type") == "minicpmv4_7_vision":          # 0.144 SigLIP + in-tower merger (insert_layer_id) + merger
+        # 0.435: nn.LayerNorm and the final merger's nn.GELU() (erf). The block MLP
+        # and vit_merger stay gelu_pytorch_tanh. Class defaults match
+        # MiniCPMV4_7Config / MiniCPMV4_7VisionConfig when the JSON omits the key.
+        if vc.get("hidden_act") != "gelu_pytorch_tanh":
+            raise ValueError("minicpm vision hidden_act is not gelu_pytorch_tanh")
+        mode = cfg.get("downsample_mode", "16x")
+        if mode is None:
+            mode = "16x"
+        if mode != "16x":
+            raise ValueError("minicpm downsample_mode is not 16x")
+        times = cfg.get("merger_times", 1)
+        if times is None:
+            times = 1
+        if times != 1:
+            raise ValueError("minicpm merger_times is not 1")
+
+        def _hw(val, name: str) -> tuple[int, int]:
+            if val is None:
+                return (2, 2)
+            if isinstance(val, (list, tuple)) and len(val) == 2:
+                try:
+                    return (int(val[0]), int(val[1]))
+                except (TypeError, ValueError):
+                    pass
+            raise ValueError(f"minicpm {name} is not (2, 2)")
+
+        if _hw(vc.get("window_kernel_size"), "window_kernel_size") != (2, 2):
+            raise ValueError("minicpm window_kernel_size is not (2, 2)")
+        if _hw(cfg.get("merge_kernel_size"), "merge_kernel_size") != (2, 2):
+            raise ValueError("minicpm merge_kernel_size is not (2, 2)")
         h, inter, L, nh, p = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"], vc["patch_size"]
-        ins = cfg.get("insert_layer_id") or 0
+        if "insert_layer_id" in cfg:
+            ins = cfg["insert_layer_id"]
+        elif "insert_layer_id" in vc:
+            ins = vc["insert_layer_id"]
+        else:
+            ins = 6
+        if isinstance(ins, bool) or not isinstance(ins, int) or ins < 0 or ins >= L:
+            raise ValueError("minicpm insert_layer_id is outside the tower")
         g = vc["image_size"] // p
         h4 = 4 * h
         mi = 17216 if h == 1152 else 4 * inter        # vit_merger MLP width (released header)
+        if mi != 4 * inter:
+            raise ValueError("minicpm vit merger width is not 4 * intermediate")
         params = (_lin(3 * p * p, h) + g * g * h + L * (4 * h + 4 * _lin(h, h) + _lin(h, inter) + _lin(inter, h)) + 2 * h
                   + 2 * h + 4 * _lin(h, h) + 2 * h4 + _lin(h4, mi) + _lin(mi, h)
                   + 2 * h4 + _lin(h4, h4) + _lin(h4, text_h))
         pre["patch"] = p
         return VisionSpec("minicpm", "SigLIP + 塔内 2×2 合并 + 2×2 merger（概览 + 切片）", p, 1, h, inter, L, nh, h, False, 4,
                           ((h4, h4, 16), (h4, text_h, 16)), params, tuple(sorted(pre.items())), insert=ins,
-                          mid=((h, 3 * h, 1), (h, h, 1), (h4, mi, 4), (mi, h, 4)))
+                          mid=((h, 3 * h, 1), (h, h, 1), (h4, mi, 4), (mi, h, 4)), ln_mode="minicpm")
     return None
 
 
@@ -4415,6 +4470,7 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     dseek = v.family == "ds"
     ernie = v.family == "ernievl"
     minimax = v.family == "minimax"
+    minicpm = v.family == "minicpm"
     if glm:
         # Glm5NextVisionBlock + Glm5NextVisionPatchMerger. Hidden RMSNorms, per-head
         # q/k RMSNorms, gate SiLU, merger LayerNorm and nn.GELU(). The clamps are not ops.
@@ -4506,6 +4562,21 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if (v.post[0] != (h, proj_n) or v.post[1] != (proj_n, text_n)
                 or v.post[2] != (wide, proj_n) or v.post[3] != (proj_n, text_n)):
             raise ValueError("minimax vision block is not fused qkv plus the projector")
+    if minicpm:
+        # Encoder LayerNorms, vit_merger layer_norm1 and pre_norm, post_layernorm,
+        # and the final merger's pre_norm plus nn.GELU(). The block MLP and the
+        # vit_merger activation stay gelu_pytorch_tanh. q/k/v stay one GEMM.
+        # The window gather and the mean residual are not ops.
+        if v.ln_mode != "minicpm" or v.vec_fmt not in ("fp16", "bf16", "fp32"):
+            raise ValueError("minicpm vision activation dtype is not a vision float")
+        h4 = 4 * h
+        if (v.gated or v.kv_heads or v.qkv != h or v.insert < 0 or v.insert >= v.depth
+                or len(v.mid) != 4 or len(v.post) != 2):
+            raise ValueError("minicpm vision block is not fused qkv plus the mergers")
+        if (v.mid[0] != (h, 3 * h, 1) or v.mid[1] != (h, h, 1)
+                or v.mid[2] != (h4, 4 * v.inter, 4) or v.mid[3] != (4 * v.inter, h, 4)
+                or v.post[0][:2] != (h4, h4) or v.post[1][0] != h4):
+            raise ValueError("minicpm vision block is not fused qkv plus the mergers")
     if muse:
         # MuseGlimmerVisionModel: LayerNorms and ACT2FN["gelu"] (erf). The
         # adapter is act(fc2(act(fc1(x)))). RoPE, pixel shuffle, the scale-free
@@ -4596,12 +4667,6 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # apply_index gathers (row ↔ merge-unit column order): read + write the hidden states per switch
         ops.append(Op(pfx + "win_perm", "vector", 0, vec=v.perm * rows * h, act_bytes=v.perm * 2 * rows * h * ab))
     for li in range(v.depth):
-        if v.insert and li == v.insert:
-            # 0.144 MiniCPM-V-4.7 vit_merger: attention at full resolution, 2×2 concat, MLP down to the tower width
-            for i, (k, n, dv) in enumerate(v.mid):
-                ops.append(gemm(f"vit_merger.{i}", images * (N // dv), k, n, li))
-            ops += attn("vit_merger", li, N, N * N, False)
-            N, rows = N // 4, rows // 4
         if longcat:
             # LongCatVisionEncoderLayer: norm1, then attention, then ls1, then
             # norm2, SwiGLU, ls2. All four block RMSNorms reduce embed_dim (hidden),
@@ -4651,6 +4716,11 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if minimax:
             # layer_norm1 is LayerNorm(hidden) on patch tokens, before q/k/v.
             # The residual add is the full branch. 3D RoPE is not this op.
+            ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
+        if minicpm:
+            # layer_norm1 is LayerNorm(hidden) on this layer's rows, before q/k/v.
+            # Layers through insert_layer_id still see the full patch rows.
+            # The residual add is the full branch. gelu_pytorch_tanh is not this op.
             ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
         if pixtral:
@@ -4730,6 +4800,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if minimax:
             # layer_norm2 is LayerNorm(hidden) before the MLP. The residual add is the full branch.
             ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
+        if minicpm:
+            # layer_norm2 is LayerNorm(hidden) before the MLP. The residual add is the full branch.
+            # VisionMLP reads ACT2FN[hidden_act] (gelu_pytorch_tanh) and is not billed.
+            ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
         if minimax:
             # CLIPMLP reads ACT2FN[hidden_act]. The released value is gelu: the erf
@@ -4792,6 +4866,20 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             continue
         windowed = bool(v.win) and li not in v.full_idx
         ops += attn(str(li), li, N, band_keys(N, v.win) if windowed else N * N, windowed and v.sink)
+        if minicpm and li == v.insert:
+            # MiniCPMV4_7VisionModel runs this encoder layer, then vit_merger.
+            # layer_norm1 is on the full patch rows. pre_norm is on the 2x2
+            # flattened rows, width hidden * 4, before linear_1. The four GEMMs
+            # stay in their existing order. Full-resolution attention stays after
+            # them; the window mask stays inside that softmax. gelu_pytorch_tanh
+            # between linear_1 and linear_2 is not billed. The mean residual is not an op.
+            ops.append(_ln_vec(pfx + "vit_merger.ln1", li, rows, h))
+            for i, (k, n, dv) in enumerate(v.mid):
+                if i == 2:
+                    ops.append(_ln_vec(pfx + "vit_merger.pre_ln", li, images * (N // dv), k))
+                ops.append(gemm(f"vit_merger.{i}", images * (N // dv), k, n, li))
+            ops += attn("vit_merger", li, N, N * N, False)
+            N, rows = N // 4, rows // 4
 
     def merger_rows(kn: tuple) -> int:
         if len(kn) > 2:
@@ -4853,6 +4941,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # self.ln is LayerNorm(hidden) on patch tokens, after the blocks and before
         # the resampler view. Width is embed_dim, not the merged width.
         ops.append(_ln_vec(pfx + "out_ln", v.depth, images * N0, h))
+    if minicpm:
+        # post_layernorm is LayerNorm(hidden) after the encoder, on the rows
+        # vit_merger already reduced (N/4). Width is hidden, not 4 * hidden.
+        ops.append(_ln_vec(pfx + "post_ln", v.depth, rows, h))
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
         m_ = merger_rows(kn)
@@ -4872,7 +4964,16 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # rows, after the temporal mean and before the view to 4 * hidden.
             # Width is hidden, not 4 * hidden. On a still those rows are the patches.
             ops.append(_ln_vec(pfx + "proj_ln", v.depth, m_ * v.merge * v.merge, h))
+        if minicpm and i == 0:
+            # DownsampleMLP.pre_norm is LayerNorm(hidden * 4) on the merged rows,
+            # before linear_1. eps is hardcoded 1e-6 and is not an op.
+            ops.append(_ln_vec(pfx + "merger.pre_ln", v.depth, m_, k))
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
+        if minicpm and i == 0:
+            # nn.GELU() does not pass approximate, so it is the erf form.
+            # Width is linear_1's N (4 * hidden), not the text hidden size.
+            # linear_2 has no activation. The block MLP's gelu_pytorch_tanh is not this op.
+            ops.append(_gelu_erf_vec(pfx + "mgelu", v.depth, m_ * n, v.vec_fmt))
         if minimax and i in (0, 2):
             # ACT2FN["gelu"] is hardcoded after linear_1 and after merge_linear_1.
             # The erf form. Width is that linear's N (projector_hidden_size).
