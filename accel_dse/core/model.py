@@ -4342,6 +4342,8 @@ def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
     DeepSeek-V4.1 vision ``F.silu``, the product, and ``F.gelu`` use it.
     DeepSeek RMSNorm stays fp32.
     Kimi projector ``nn.GELU()`` uses it. Kimi LayerNorm and RMSNorm stay fp32.
+    Muse Spark NaViT ``ACT2FN["gelu"]`` uses it the same way. Those LayerNorms
+    stay fp32.
     Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp merger ``nn.GELU()`` uses it the same way.
     Those LayerNorms stay fp32. A vision role with more than one dtype is not
     given this value.
@@ -4926,6 +4928,18 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             if rel is None:
                 raise ValueError("kimi vision role is missing")
             vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "kimi"))
+        if vs is not None and vs.ln_mode == "muse":
+            # 0.428: MLP and adapter ACT2FN["gelu"] follow the one vision-role float.
+            # GEMM w_fmt stays bf16. LayerNorm stays fp32. A tower stored as more
+            # than one vision dtype is not assigned a vector dtype and is not billed.
+            if rel is None:
+                raise ValueError("muse vision role is missing")
+            vr = (rel.get("roles") or {}).get("vision") or {}
+            keys = [k for k, v in vr.items() if isinstance(v, dict) and v.get("params")]
+            if len(keys) > 1:
+                vs = replace(vs, ln_mode="")
+            else:
+                vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "muse"))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -5159,6 +5173,23 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "RMSNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "RoPE、位置插值、整份残差加不单列。"
                 "通用 GEMM 尾项不减。",))
+        if vs is not None and vs.ln_mode == "muse":
+            spec = replace(spec, notes=spec.notes + (
+                "Muse Spark NaViT：ln_pre 在窗口置换之前，对 patch 行做 nn.LayerNorm(hidden)。"
+                "每一层注意力前和 MLP 前各一次 nn.LayerNorm(hidden)。"
+                "块之后的 ln_post 仍在 patch 行上，在像素重排之前，宽度是 hidden，不是 4*hidden。"
+                "MLP 是 ACT2FN['gelu']，也就是 nn.functional.gelu，默认 approximate='none'，"
+                "erf 形式。宽度是 intermediate，不是 hidden。"
+                "adapter 是 act(fc2(act(fc1(x))))，两级 Linear 之后各一次同样的 erf-GELU。"
+                "行数是合并后的位置，宽度是 projector_hidden_size，不是文本 hidden。"
+                "发布的 q/k/v 仍是一份融合 GEMM，不拆成三份。"
+                f"GELU 不升精度，a_fmt 是 vision 角色的 {vs.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
+                "GEMM 的 w_fmt 仍是 bf16，通用 GEMM 尾项不减。"
+                "RoPE、位置插值、像素重排、整份残差加、"
+                "没有 scale 的 perception RMSNorm、以及 vision_projection 不单列。"
+                "音频编码器的向量运算这次不改。",))
     return spec
 
 
