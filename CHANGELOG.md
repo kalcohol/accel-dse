@@ -6,6 +6,26 @@
 
 
 
+## [0.407.0] — 2026-10-26
+
+### LongCat 视觉补上已执行的 SiLU、门控乘、两处 erf-GELU 和 rope2d；FSMN 补上 ReLU6、mask 乘和投影器 GELU
+
+- **修正（视觉）。** `SwiGLU.forward`（`encoders/vision_adaptor.py`，`meituan-longcat/LongCat-Flash-Omni` `f6f1f0f`）是 `fc2(RMSNorm(silu(fc1(x)) * fc3(x)))`。`ACT2FN["silu"]` 是 `x * sigmoid(x)`，和语言栈同一套计数：`vec = tokens * 3456 * 4`，`sfu = tokens * 3456 * 2`（exp 与 reciprocal）。只作用在 fc1 上，宽度是内宽 3456，不是 `mlp_in` 拼出来的 `2 * 3456`。类没有升到 fp32，`a_fmt` 是 bf16。`silu(fc1) * fc3` 是一次逐元素乘，同一宽度，`sfu` 是 0。每一层补 `vis.{层}.silu` 和 `vis.{层}.mlp_mul`，夹在 `mlp_in` 和 0.405 的 `mlp_norm` 之间。`VisionProjector.p0` 是 `LayerNorm`、`Linear`、`GELU`、`Linear`、`GELU`。`nn.GELU()` 默认 `approximate='none'`，公式是 `0.5 * x * (1 + erf(x / sqrt(2)))`：四次算术加一次 erf，`vec = 元素 * 5`，`sfu = 元素`。不是 tanh 近似，类也不升精度。两处都在拼宽之后，行数是 `ph * pw / 2`，宽度是 adaptor 7168，不是 patch token，也不是 `2 * 1280`。补 `vis.proj_gelu0`、`vis.proj_gelu1`。最后一层 `proj` 没有 GELU。`apply_rotary_pos_emb_vision` 把 q 和 k 升到 fp32，对 `freqs` 做 `cos` 和 `sin`。`VisionRotaryEmbedding2D` 先在 `head_dim/2` 上建表，再按高、宽位置取两段拼成最后一维 `head_dim/2`（80 的头是 40），不是每个头一份，也不是 `embed_dim`。q 和 k 各调用一次，不复用三角函数表。`repeat` 只把表复制到 `head_dim`，不再算一次 SFU。旋转乘沿用语言栈的每元素 3 次，作用在完整 head 上。每一层补 `vis.{层}.rope`：`a_fmt` 是 fp32，`vec = 2 * tokens * (heads * head_dim * 3 + (head_dim/2) * 2)`，`sfu = 2 * tokens * (head_dim/2) * 2`。`forward_` 的 `outer(seq, inv_freq)` 每个前向一次，`inv_freq` 仍不是 persistent，不记成 GEMM。softmax 仍是双向分数，`vec = heads * tokens² * 5`，`sfu` 仍是 0，不另写一次。通用 GEMM 尾项 `VEC_PER_OUT` 不减。Omni 与 Omni-FP8 的 `param_check().rel_err` 仍是 0。请求 fp8 时塔 GEMM 仍是 bf16；SiLU、门控乘和 GELU 仍是 bf16；rope 仍是 fp32。
+- **修正（音频）。** 发布的 `audio/config.json` 里 `activation` 是 `relu6`，`dropout` 是 0。`nn.ReLU6` 是 `min(max(x, 0), 6)`，两次截断，没有超越函数，不升精度。pre 的第一层 Linear、22 层 FFN、以及 `ndnn=2` 的每一层 Linear 之后各跑一次，宽度是 hidden 6144，不是 proj 1536。补 `aud.pre_relu`、`aud.{层}.relu`、`aud.dnn.0.relu`、`aud.dnn.1.relu`：`vec = frames * 6144 * 2`，`sfu` 是 0，`a_fmt` 是 bf16。`LongCatAudioEncoder.forward` 在每一层之前、以及 DNN 之前，用 `hidden * attention_mask.int()`。隐状态是 bf16，mask 是 int32，PyTorch 把这个乘提升到 fp32。宽度是 proj。补 `aud.{层}.mask` 和 `aud.dnn_mask`：`vec = frames * 1536`，`sfu` 是 0。音频投影器是 `Linear`、`GELU`、`Linear`。GELU 用上面的 erf 计数，宽度是文本 hidden 6144，行数是帧。补 `aud.proj_gelu`。第二层 Linear 后面没有 GELU。`emb_mult` 固定是 1，不单列。0.406 的两处 LayerNorm 仍在，深度卷积核仍是 11 / 12。请求 fp8 时 GEMM 仍是 bf16。
+- **未纳入：**
+  - **LongCat-Flash-Lite-Sparse。** 2026-10-26 再读：sha `35de83a18b5838ec1657edb3f885a59bbdd7888f`，`lastModified` 2026-08-04。根目录仍没有 modeling 文件，只有 `tokenization_llama.py`。`architectures` 是 `LongcatCausalLM`，`attention_method` 仍是 LSA，`mtp_num_layers` 是 3。vLLM #48302 仍是 open（更新于 2026-09-09），SGLang #32918 仍是 open（更新于 2026-08-17）。没有已合并的 LSA 前向。不套 MLA，也不套 DSA。
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 根 `config.json` 仍是 404。不新写扩散栈。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 的 `lastModified` 是 2026-10-25，根 `config.json` 现在是 200，内容是空对象。权重在 `DiT/`、`VAE/` 和 `PE/`。`PE/config.json` 是 `qwen3_5`（文本 hidden 5120、64 层），但是这份扩散发布里的提示编码器，不把整个仓库记成已有的 Qwen3.5，也不新写 DiT。`tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401。
+  - **nvidia Cosmos3。** `nvidia/Cosmos3` 与 `nvidia/Cosmos-3` 的 `config.json` 仍是 401。`nvidia/Cosmos3-Nano` 的 `config.json` 是 200，`model_type` 是 `cosmos3_omni`，类是 `Cosmos3ForConditionalGeneration`，里面嵌着 `qwen3_vl` 文本（hidden 4096、36 层）和 `qwen3_vl` 视觉。`model.config` 的 `_target` 是 `omni_mot_model`，并带 `diffusion_expert_config`。这不是已有的条件生成路径，不把内层文本记成 Qwen3-VL，也不新写扩散栈。
+  - **Gemma-4 assistant / QAT。** `google/gemma-4-assistant` 与 `google/gemma-4-E4B-it-qat` 的 `config.json` 仍是 401。`google/gemma-4-12B-it-assistant` 的 `config.json` 是 200，类是 `Gemma4UnifiedAssistantForCausalLM`，`model_type` 是 `gemma4_unified_assistant`。文本配置是 4 层、hidden 1024 的 `gemma4_unified_text`，另有 `num_centroids` 和 `centroid_intermediate_top_k`。这不是已入库的 12B Gemma-4 栈。不单列。
+  - **2026-10-20 及之后按 `lastModified` 的扫描**（120 个组织，248 条，接口错误 0）。对得上现有机制、又缺 header 的没有入库。靠近的几条：`MiniMaxAI/MiniMax-M3-MXFP8` 的 `quant_method` 是 `mxfp8`，不是已入库的 fp8；`IFM/K2-Horizon-0.9B` 仍是 `dtype=float32`；`KRAFTON/Raon-1-mini-preview-nvfp4` 的 `quant_method` 仍是 `modelopt_fp4`；`inclusionAI/ZwZ-2B` 是已有的 `qwen3_vl` 形状（文本 2048 / 28 层，视觉 depth 24、hidden 1024、out 2048），没有新的 header；`tencent/Hy-SimulMT-30B-A3B` 的类是 `HYV3SpeechForCausalLM`，不是已入库的 `HYV3ForCausalLM`；`nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Base-BF16` 仍是 `NemotronH_Omni_Reasoning_V3`；`nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB` 的 `config.json` 仍是 404；`inclusionAI/Realtime-Venus` 的根 `config.json` 现在是 200，但是 `version` / `refs` / `venus` 的包索引，音频子目录是 MiniCPM-o 加 token2wav，不把根配置当成一条已有的条件生成路径。GGUF / MLX / ONNX / diffusers / tensorrt 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.406.0] — 2026-10-25
 
 ### LongCat 视觉补上已执行的 q/k、残差 RMSNorm 和 LayerScale；FSMN 补上两处 LayerNorm

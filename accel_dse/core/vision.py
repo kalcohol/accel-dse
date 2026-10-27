@@ -80,8 +80,10 @@ docs/MODEL.md §20):
 Counted per image (all images of a request share the size): every GEMM above at M = patches (tower) or merged rows
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
 residual element-ops 3 per GEMM output 「假设」, softmax 5 per score.  LongCat-ViT also bills the RMSNorm
-modules and LayerScales ``LongCatVisionEncoderLayer`` runs, and the projector LayerNorm. The shared
-3-wide tail stays on every GEMM.  Image tokens into the LLM = merged positions
+modules and LayerScales ``LongCatVisionEncoderLayer`` runs, the projector LayerNorm, the SwiGLU SiLU and the
+product it multiplies, the two projector erf-GELUs, and rope2d cos/sin. The FSMN encoder bills its ReLU6 calls,
+the int32 mask multiply, and the projector GELU. The shared 3-wide tail stays on every GEMM. Softmax is not
+given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
 """
@@ -1613,11 +1615,15 @@ def _d1_audio_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
 
 
 def _lcafsmn_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
-    """LongCatAudioEncoder plus the two-linear projector. Weights and activations stay bf16.
+    """LongCatAudioEncoder plus the two-linear projector. GEMM weights and activations stay bf16.
 
     The output linear is executed and then multiplied by zero (``hidden + 0.0 * output.sum()``).
     Its GEMM is billed. Each FSMN layer runs two ``LayerNorm(proj)`` modules (memory, then the FFN).
-    Those are billed as fp32 reductions. ReLU6, the projector GELU, and the mask multiply are not.
+    Those are billed as fp32 reductions. The released ``activation`` is ``relu6``: two clips, no
+    transcendental, on the FFN hidden width. The encoder multiplies by an int32 mask before every
+    layer and once more before the DNN; bf16 times int32 is fp32. The projector GELU is ``nn.GELU``
+    (erf) on the text hidden width. ``dropout`` in the released config is 0, and ``emb_mult`` is the
+    constant 1, so neither is a separate op.
     """
     from .dtypes import fmt as _fmt
     af = "bf16"
@@ -1634,25 +1640,47 @@ def _lcafsmn_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
         return Op(name, "gemm", layer, m=t, k=k, n=n, role="vision", w_params=k * n, w_bits=16.0,
                   w_fmt="bf16", a_fmt=af, act_bytes=t * (k + n) * ab, stream=True, vec=t * n * VEC_PER_OUT)
 
-    ops = [gemm("aud.pre", inp, hidden), gemm("aud.pre_down", hidden, proj)]
+    # Released audio/config.json activation is relu6. nn.ReLU6 is min(max(x, 0), 6):
+    # two clips, no transcendental, and the class does not upcast. The width is the
+    # FFN hidden size. The pre-net, every FSMN FFN, and every DNN linear run it.
+    def relu6(name: str, layer: int) -> Op:
+        return Op(name, "vector", layer, vec=t * hidden * 2, a_fmt="bf16")
+
+    # bf16 hidden states times the int32 mask. PyTorch promotes that product to fp32.
+    # One multiply on the proj width. No rsqrt.
+    def mask(name: str, layer: int) -> Op:
+        return Op(name, "vector", layer, vec=t * proj, a_fmt="fp32")
+
+    ops = [gemm("aud.pre", inp, hidden), relu6("aud.pre_relu", 0), gemm("aud.pre_down", hidden, proj)]
     for i in range(nlayer):
         right = a.ctx_r if i >= nlayer - n_right else 0
         ker = a.ctx_l + right + 1
-        # LongCatAudioEncoderLayer: LayerNorm(proj) before the depthwise conv, and the
-        # FFN Sequential starts with another LayerNorm(proj). PyTorch layer_norm reduces
-        # in fp32 and applies one rsqrt per frame. The width is proj, not the FFN hidden
-        # size. Weight and bias are already in the encoder parameter total.
+        # LongCatAudioEncoder.forward multiplies by the mask, then the layer runs
+        # LayerNorm(proj) before the depthwise conv. The FFN Sequential starts with
+        # another LayerNorm(proj), then Linear, ReLU6, Linear. PyTorch layer_norm
+        # reduces in fp32 and applies one rsqrt per frame. The width is proj, not
+        # the FFN hidden size. Weight and bias are already in the encoder total.
+        ops.append(mask(f"aud.{i}.mask", i))
         ops.append(Op(f"aud.{i}.mem_ln", "vector", i, vec=t * proj * 4, sfu=float(t), a_fmt="fp32"))
         ops.append(Op(f"aud.{i}.dw", "vector", i, vec=t * proj * ker, act_bytes=2 * t * proj * ab))
         ops.append(Op(f"aud.{i}.ffn_ln", "vector", i, vec=t * proj * 4, sfu=float(t), a_fmt="fp32"))
         ops.append(gemm(f"aud.{i}.ffn_up", proj, hidden, i))
+        ops.append(relu6(f"aud.{i}.relu", i))
         ops.append(gemm(f"aud.{i}.ffn_down", hidden, proj, i))
+    ops.append(mask("aud.dnn_mask", 0))
     ops.append(gemm("aud.dnn.0", proj, hidden))
+    ops.append(relu6("aud.dnn.0.relu", 0))
     for j in range(1, ndnn):
         ops.append(gemm(f"aud.dnn.{j}", hidden, hidden))
+        ops.append(relu6(f"aud.dnn.{j}.relu", 0))
     ops.append(gemm("aud.out", hidden, a.out))
     for j, (k, n) in enumerate(a.lin or ()):
         ops.append(gemm(f"aud.proj.{j}", k, n))
+        if j == 0:
+            # nn.GELU() default is the erf form, not the tanh approximation.
+            # 0.5 * x * (1 + erf(x / sqrt(2))): four arithmetic ops and one erf.
+            # The class does not upcast. The width is the text hidden size.
+            ops.append(Op("aud.proj_gelu", "vector", 0, vec=t * n * 5, sfu=float(t * n), a_fmt="bf16"))
     return ops
 
 
@@ -3316,6 +3344,18 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             ops.append(lc_rms(f"{li}.norm1", li, h, rows))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
         if longcat:
+            # apply_rotary_pos_emb_vision upcasts q and k to fp32. freqs.cos and
+            # freqs.sin run once per call. freqs is [tokens, head_dim/2] (the
+            # h/w pair flattened), not per head and not embed_dim. The function
+            # is called for q and again for k, so the trig is not reused.
+            # repeat() copies the table out to head_dim; that copy is not an SFU.
+            # The rotate-multiply is the same 3 element ops per full-head element
+            # as the language RoPE vector. Softmax stays the bidirectional score
+            # op below and is not given a second SFU.
+            half = dh // 2
+            ops.append(Op(pfx + f"{li}.rope", "vector", li, a_fmt="fp32",
+                          vec=2 * rows * (v.heads * dh * 3 + half * 2),
+                          sfu=2 * rows * half * 2))
             ops.append(lc_rms(f"{li}.q_norm", li, h, rows))
             ops.append(lc_rms(f"{li}.k_norm", li, h, rows))
         ops.append(gemm(f"{li}.o", rows, q, h, li))
@@ -3326,8 +3366,16 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             ops.append(lc_rms(f"{li}.norm2", li, h, rows))
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
         if longcat:
-            # SwiGLU.forward is fc2(RMSNorm(silu(fc1(x)) * fc3(x))). The norm reduces
-            # the inner width. Rows are patch tokens, before the width-pair projector.
+            # SwiGLU.forward is fc2(RMSNorm(silu(fc1(x)) * fc3(x))). ACT2FN["silu"]
+            # is x * sigmoid(x): the language-stack count, 4 element ops with exp
+            # and reciprocal. It runs on fc1 only, so the width is the inner size,
+            # not the fused 2×inner GEMM. The class does not upcast.
+            # The product of that SiLU and fc3 is one multiply on the same width.
+            # The norm then reduces the inner width. Rows are patch tokens, before
+            # the width-pair projector.
+            ops.append(Op(pfx + f"{li}.silu", "vector", li, vec=rows * v.inter * 4,
+                          sfu=rows * v.inter * 2, a_fmt="bf16"))
+            ops.append(Op(pfx + f"{li}.mlp_mul", "vector", li, vec=rows * v.inter, a_fmt="bf16"))
             ops.append(lc_rms(f"{li}.mlp_norm", li, v.inter, rows))
         ops.append(gemm(f"{li}.mlp_out", rows, v.inter, h, li))
         if longcat:
@@ -3352,6 +3400,14 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         k, n = kn[:2]
         m_ = merger_rows(kn)
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
+        if longcat and i < 2:
+            # VisionProjector.p0 is LayerNorm, Linear, GELU, Linear, GELU.
+            # nn.GELU() default is the erf form, not tanh:
+            # 0.5 * x * (1 + erf(x / sqrt(2))). Four arithmetic ops and one erf.
+            # The class does not upcast. Rows are the width-paired count, and the
+            # width is adaptor_dim. The final proj linear has no GELU.
+            ops.append(Op(pfx + f"proj_gelu{i}", "vector", v.depth,
+                          vec=m_ * n * 5, sfu=float(m_ * n), a_fmt="bf16"))
     if v.deepstack and v.post:
         # Qwen3VLTextModel._deepstack_process: after each of the first len(indexes) decoder layers, add that
         # merger's output onto visual-token rows.  Decode positions are not visual, so this is prefill-only.

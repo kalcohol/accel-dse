@@ -4142,10 +4142,25 @@ def _attach_longcat_omni(spec: "ModelSpec", rel: dict, c: dict) -> "ModelSpec":
         "权重已在塔参数里，不再记 w_params。"
         "LayerScale 是分支乘 ls1 / ls2 再加回残差，宽度是 embed_dim，不升 fp32，没有 rsqrt。"
         "投影器先把宽度相邻两列拼成 2h，再做 LayerNorm(2h)，行数是 ph*pw/2，然后三层 Linear。"
-        "SiLU、投影器的两处 GELU，以及 rope2d 的 cos/sin 仍留在 GEMM 尾项里。inv_freq 不是 persistent。"
+        "SwiGLU 的 SiLU 只作用在 fc1 上，宽度是内宽，不是拼起来的 2 倍内宽。"
+        "类没有升精度：vec 是 4 乘内宽，sfu 是 2 乘内宽（exp 与 reciprocal），a_fmt 是 bf16。"
+        "SiLU 与 fc3 的乘是一次逐元素乘，宽度仍是内宽，sfu 是 0。"
+        "p0 在前两层 Linear 之后各有一次 nn.GELU()，默认是 erf，不是 tanh 近似。"
+        "行数是拼宽后的 ph*pw/2，宽度是 adaptor。vec 是 5 乘元素，sfu 是元素数（一次 erf），不升 fp32。"
+        "最后一层 proj 没有 GELU。"
+        "apply_rotary_pos_emb_vision 把 q 和 k 升到 fp32，对 freqs 做 cos 和 sin。"
+        "freqs 的最后一维是 head_dim/2，不是 head 数，也不是 embed_dim。q 和 k 各算一次，不复用表。"
+        "旋转乘是每个元素 3 次，作用在完整 head 上。repeat 只复制，不再算三角函数。"
+        "softmax 仍是双向分数，vec 是 heads 乘 tokens 的平方乘 5，sfu 仍是 0。"
+        "inv_freq 不是 persistent。forward_ 的 outer 每个前向一次，不记成 GEMM。"
         "单张图的 post-squeeze 在 token 数不超过 max_tokens_video 时是恒等。视频多帧压缩不进默认图像网格。"
         "音频 FSMN 每一层有两次 LayerNorm(proj)：memory_ln 在深度卷积前，ffn 的 LayerNorm 在升维前。"
-        "按帧计，fp32，每帧一次 rsqrt。宽度是 proj，不是 FFN 的 hidden。ReLU6、投影器 GELU 和 mask 乘仍不单列。",
+        "按帧计，fp32，每帧一次 rsqrt。宽度是 proj，不是 FFN 的 hidden。"
+        "发布的 activation 是 relu6：min(max(x, 0), 6)，没有超越函数，不升精度。"
+        "pre、每一层 FFN、以及每个 DNN Linear 之后各一次，宽度是 hidden，不是 proj。"
+        "mask 乘在每一层之前和 DNN 之前各一次，宽度是 proj。bf16 乘 int32，结果是 fp32，sfu 是 0。"
+        "音频投影器是 Linear、GELU、Linear。GELU 用同一套 erf 计数，宽度是文本 hidden。"
+        "发布的 dropout 是 0。emb_mult 固定是 1，不单列。",
     )
     fm = dict(spec.formats)
     fm["audio_head"] = RoleFormat("bf16", 16.0)
