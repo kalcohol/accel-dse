@@ -4359,6 +4359,27 @@ def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
     return key
 
 
+def _radio_vision_fmt(rel: dict) -> str:
+    """Activation dtype of a C-RADIO tower.
+
+    The linears are one bf16 vision role. The fp32 bucket is the six
+    input-conditioner buffers (``norm_mean`` / ``norm_std``), not a second
+    weight dtype. GELU uses the bf16 role. LayerNorm and RMSNorm stay fp32.
+    """
+    vr = (rel.get("roles") or {}).get("vision") or {}
+    keys = [k for k, v in vr.items() if isinstance(v, dict) and v.get("params")]
+    if keys != ["bf16", "fp32"] and keys != ["fp32", "bf16"]:
+        raise ValueError("radio tower vision role is not bf16 plus the conditioner")
+    fp = vr["fp32"]
+    if fp.get("params") != 6 or fp.get("bytes") != 24:
+        raise ValueError("radio conditioner is not 6 fp32 values")
+    block = vr["bf16"]
+    bits = 8.0 * block["bytes"] / block["params"]
+    if abs(bits - 16.0) > 1e-3:
+        raise ValueError(f"radio tower vision role bf16 is {bits} bits")
+    return "bf16"
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -4884,6 +4905,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 vs = replace(vs, ln_mode="")
             else:
                 vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "qwen35"))
+        if vs is not None and vs.family == "radio":
+            # 0.425: MLP GELU follows the bf16 tower role. The six fp32 values are
+            # the conditioner buffers. LayerNorm and RMSNorm stay fp32.
+            if rel is None:
+                raise ValueError("radio tower vision role is missing")
+            vs = replace(vs, vec_fmt=_radio_vision_fmt(rel))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -5055,6 +5082,23 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。"
                 "位置插值、RoPE 的 cos/sin、整份残差加、eval 的 attention dropout 不单列。"
                 "通用 GEMM 尾项不减。",))
+        if vs is not None and vs.family == "radio":
+            spec = replace(spec, notes=spec.notes + (
+                "C-RADIO 视觉塔：每一层注意力前和 MLP 前各一次 nn.LayerNorm(hidden)。"
+                "MLP 是 ACT2FN['gelu']，也就是 nn.functional.gelu，默认 approximate='none'，"
+                "erf 形式。宽度是 intermediate，不是 hidden。"
+                "发布的 qkv 仍是一份矩阵，GEMM 不拆成三份。"
+                "投影器在像素重排之后是 NemotronH_Omni_RMSNorm，宽度是 4*hidden，"
+                "行数是合并后的位置。升到 fp32，pow(2).mean 再一次 rsqrt，乘 weight。"
+                "Super-VL 的语言侧有 MTP，所以在去掉 cls / register 之后、像素重排之前"
+                "还有一次 LayerNorm(hidden)。Bolt 的 vision_final_layernorm 是 false，没有这一次。"
+                f"GELU 不升精度，a_fmt 是 vision 角色里塔权重的 {vs.vec_fmt}。"
+                "另外 6 个 fp32 是输入 conditioner 的 buffer，不是第二种权重 dtype。"
+                "不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 和 RMSNorm 在 fp32 归约。仿射已经在参数里。"
+                "ACT2FN['relu2']、layerscale_value 为 1 且检查点里没有的 LayerScale、"
+                "dropout 0、输入 conditioner、位置插值、整份残差加不单列。"
+                "10 个 cls / register token 仍不计入塔的行数。通用 GEMM 尾项不减。",))
     return spec
 
 
