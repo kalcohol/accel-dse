@@ -3847,6 +3847,8 @@ Sources: the evo2 inference yml files (layer pattern hcs / hcm / hcl / attn, fil
   - FlashFFTConv (`use_flashfft: False`).
   - The `recurrence` prefill style: the release uses fft.
   - The scoring-only forward without a cache, which skips the modal state.
+- **Gated MLP (0.444).** `ParallelGatedMLP` is `l3(act(l1(z)) * l2(z))`. With `mlp_activation: gelu` and `evo2_style_activations: true`, layer 0 uses `F.gelu` (`approximate='none'`, the erf form) and every later layer uses `Identity`. The bill is erf-GELU plus one multiply on layer 0, and the multiply only after that. Neither upcasts. The GEMMs stay `mlp.gate_up` (N = 2 * inner) then `mlp.down`.
+- **RMSNorm stays on the generic tail.** The eager vortex norm is `x / (x.norm(2) * hidden**(-0.5) + eps) * scale` (`use_flash_rmsnorm: false`). eps sits outside the square root, so this is not `rsqrt(mean(x^2)+eps)*weight` and is not newly billed.
 
 ## 117. Evo 2 long-context prefill (0.171)
 - **CP (savanna use_cp_hyena):** per Hyena layer, 4 all-to-alls of the rank's block of x1, x2, v and z (b·S/cp·h/TP·2 B each) plus a p2p halo of (taps − 1)·3h/TP columns. The FFT conv runs at 2S on ch/(TP·cp) channels, which is the same work as TP·cp channel sharding. Attention uses the 0.88 ring.
