@@ -85,8 +85,10 @@ residual element-ops 3 per GEMM output 「假设」, softmax 5 per score.  LongC
 modules and LayerScales ``LongCatVisionEncoderLayer`` runs, the projector LayerNorm, the SwiGLU SiLU and the
 product it multiplies, the two projector erf-GELUs, rope2d cos/sin, the per-forward ``torch.outer`` that
 builds ``inv_freq`` angles, and the cos/sin ``repeat`` that widens those angles to ``head_dim``. The FSMN
-encoder bills its ReLU6 calls, the int32 mask multiply, and the projector GELU. The shared 3-wide tail stays
-on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
+encoder bills its ReLU6 calls, the int32 mask multiply, and the projector GELU. OmniASR bills
+``ACT2FN["gelu"]`` (``nn.functional.gelu``, the erf form) on every feature-extractor conv output, on the
+positional conv after the even-kernel pad slice, and on each FFN intermediate. Eval dropout is not an op.
+The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
 """
@@ -1181,7 +1183,15 @@ def _omniasr_audio_spec(cfg: dict, ac: dict) -> AudioSpec | None:
 
 def _w2v_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
     """0.336 OmniASR / Wav2Vec2 encoder ops: each Conv1d as an implicit GEMM over every output frame; positional
-    conv as depthwise-ish GEMM; L bidirectional full-attention blocks; optional projector Linear."""
+    conv as depthwise-ish GEMM; L bidirectional full-attention blocks; optional projector Linear.
+
+    0.410: ``hidden_act`` is ``gelu``. ``ACT2FN["gelu"]`` is ``nn.functional.gelu`` (erf, not tanh).
+    ``OmniASRLayerNormConvLayer`` runs it on every conv output, ``OmniASRPositionalConvEmbedding`` runs it
+    after the even-kernel ``[:, :, :-1]`` slice, and ``OmniASRFeedForward`` runs it on the intermediate width.
+    The class does not cast, so the vector dtype is the released weight format. Requested GEMM activation
+    format does not change it. Eval ``Dropout`` and ``layerdrop`` are identity. The projector and the CTC
+    head have no GELU. LayerNorm stays in the shared GEMM tail, which is not reduced.
+    """
     d, dh = a.dims[0], a.dims[0] // a.heads
     T = a.tokens(seconds)
     R = T * clips
@@ -1205,16 +1215,23 @@ def _w2v_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> li
         cout = a.n_mels
         rows = Lout * clips
         ops.append(gemm(f"aud.fe.{i}", rows, k * cin, cout, 0, wp=cout * cin * k + cout))
+        # LayerNorm then ACT2FN["gelu"] on the conv channels. The norm stays in the GEMM tail.
+        ops.append(_gelu_erf_vec(f"aud.fe.{i}.gelu", 0, rows * cout, a.w_fmt))
         din = cout
     if T:
         ops.append(gemm("aud.fe.proj", R, a.n_mels, d, 0))
-        # grouped positional conv: weight [d, d/g, pk] → treat as GEMM R × (pk·d/g) → d
+        # grouped positional conv: weight [d, d/g, pk] → treat as GEMM R × (pk·d/g) → d.
+        # padding kernel//2 on an even kernel emits T+1, then [:, :, :-1] drops one frame.
+        # GELU reads the sliced length, which is the encoder frame count.
         ops.append(gemm("aud.pos", R, a.kernel * (d // a.ch), d, 0, wp=d * (d // a.ch) * a.kernel + d))
+        ops.append(_gelu_erf_vec("aud.pos.gelu", 0, R * d, a.w_fmt))
         ff = int(a.mlp * d)
         for li in range(a.depths[0]):
             ops += [gemm(f"aud.{li}.qkv", R, d, 3 * d, li), gemm(f"aud.{li}.o", R, d, d, li),
-                    gemm(f"aud.{li}.fc1", R, d, ff, li), gemm(f"aud.{li}.fc2", R, ff, d, li),
-                    Op(f"aud.{li}.qk", "attn", li, m=T, k=dh, n=T, count=clips * a.heads, causal=1.0,
+                    gemm(f"aud.{li}.fc1", R, d, ff, li)]
+            ops.append(_gelu_erf_vec(f"aud.{li}.gelu", li, R * ff, a.w_fmt))
+            ops.append(gemm(f"aud.{li}.fc2", R, ff, d, li))
+            ops += [Op(f"aud.{li}.qk", "attn", li, m=T, k=dh, n=T, count=clips * a.heads, causal=1.0,
                        act_bytes=clips * a.heads * T * dh * ab, stream=True, orient=True),
                     Op(f"aud.{li}.pv", "attn", li, m=T, k=T, n=dh, count=clips * a.heads, causal=1.0,
                        act_bytes=clips * a.heads * T * dh * ab, orient=True),
