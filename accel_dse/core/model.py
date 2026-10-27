@@ -4280,7 +4280,18 @@ def _from_d1_omni(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelSpec:
     note = ("d1-omni：双向 LFM2.5 编码器（居中 3-tap，稠密加性 mask，没有因果 KV，没有 lm_head）。"
             "DecisionHead 只在文本位置上跑，打分只看标记位。FastConformer 的相对位置是 2T-1，"
             "深度卷积是向量运算。SigLIP2 把每个 crop 补到 1024，投影只看 pixel-unshuffle 之后的有效行。"
-            "权重和激活都是 fp32。BatchNorm running stats 是 buffer。")
+            "权重和激活都是 fp32。BatchNorm running stats 是 buffer。"
+            "ConformerLayer 每一层是 LayerNorm、Linear、F.silu、Linear，然后 x + ff * 0.5；"
+            "卷积是 LayerNorm、pointwise 到 2*d、F.glu（切分是 view，保留 d）、深度卷积、"
+            "BatchNorm1d、F.silu、pointwise。"
+            "SiLU、GLU、0.5 残差、LayerNorm 和 BatchNorm 按发布的前向计成向量运算，不是 GEMM。"
+            "GLU 和卷积 SiLU 的宽度是 d，不是 2*d。0.5 残差的宽度是 d。"
+            "BatchNorm 的 rsqrt 每个通道一次，不随 clip 数变。类不升精度，这些向量运算的 a_fmt 是 fp32。"
+            "adapter 是 LayerNorm、Linear、F.gelu、Linear。"
+            "residual 是 LayerNorm、Linear、F.gelu、Linear，再加回输入。"
+            "F.gelu 默认是 erf 形式，不是 gelu_pytorch_tanh。通用 GEMM 尾项不减。"
+            "subsampling 的 ReLU、时间 mask、masked_fill、整份残差加和位置正弦表不单列。"
+            "视觉塔的 hidden_act 是 gelu_pytorch_tanh，不单列。")
     return ModelSpec(
         id=model_id, hf_id=hf_id, arch="D1OmniModel", hidden=int(pr["trunk"]), vocab=int(pr["vocab"]),
         layers=(), tie_embeddings=True, coverage="full", notes=(note,),
