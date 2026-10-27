@@ -2380,6 +2380,16 @@ matrix (`_full_attn`, causal factor 1), has no KV cache, and writes no KV.
 - 「假设」 No special tokens are counted per window, and the overlap-averaging post-processing (host side) is not
   modelled.
 
+**0.438 vector billing.** `modeling_generanno.py` (`GenerannoRMSNorm`, documented as equivalent to T5LayerNorm)
+is fp32 `pow(2).mean`, one `rsqrt`, then times `weight`. The class is `input_layernorm`, `post_attention_layernorm`,
+and `model.norm`. The MLP is `down_proj(silu(gate_proj(x)) * up_proj(x))` with published `hidden_act="silu"`.
+There is no QK-norm. RoPE is applied to q and k before `repeat_kv`, so the k count is the KV heads. RMSNorm is
+`vec = tokens * hidden * 4`, `sfu = tokens`, `a_fmt = fp32`. SiLU is `vec = elements * 4`, `sfu = elements * 2`,
+and the gate times up product is one multiply. Both follow the billed activation dtype (bf16 on the card, fp8 on
+a what-if). Vector flops stay 0. GEMM shapes and FLOPs stay on the shared full-sequence path. The fp32 cosine
+and sine table, the padding mask, and the two residual adds stay on that path. A checkpoint whose `hidden_act`
+is not `silu`, or that carries a QK-norm tensor, is refused.
+
 **Carbon-500M / 3B / 8B** are stock `LlamaForCausalLM` checkpoints with the 155,776-entry hybrid vocabulary
 (6-mer DNA + Qwen3 BPE), released in BF16. They are evaluated as LLMs with no special casing.
 

@@ -786,18 +786,77 @@ def build_esm(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> Model
     return replace(spec, notes=tuple(notes), vec_kind="esm2")
 
 
+def _require_generanno(c: dict, sh: dict) -> None:
+    """Published Carbon-A encoder (modeling_generanno.py). RMSNorm is T5LayerNorm.
+    The MLP is down(silu(gate) * up). A checkpoint that does not match is refused."""
+    if c.get("model_type") != "generanno":
+        raise ValueError("generanno model_type is not generanno")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("generanno hidden_act is not silu")
+    if c.get("attention_bias") is not False:
+        raise ValueError("generanno attention_bias is not false")
+    if c.get("mlp_bias") is not False:
+        raise ValueError("generanno mlp_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("generanno attention_dropout is not 0")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("generanno rope_scaling is not null")
+    if int(c.get("pretraining_tp") or 1) != 1:
+        raise ValueError("generanno pretraining_tp is not 1")
+    if c.get("use_mlp_classifier"):
+        raise ValueError("generanno use_mlp_classifier is not false")
+    if int(c.get("num_prediction_heads") or 0) != 2:
+        raise ValueError("generanno num_prediction_heads is not 2")
+    d = int(c["hidden_size"])
+    H = int(c["num_attention_heads"])
+    KV = int(c["num_key_value_heads"])
+    f = int(c["intermediate_size"])
+    L = int(c["num_hidden_layers"])
+    if H <= 0 or KV <= 0 or d % H or H % KV:
+        raise ValueError("generanno head counts do not divide")
+    hd = c.get("head_dim")
+    if hd is not None and int(hd) != d // H:
+        raise ValueError("generanno head_dim is not hidden/heads")
+    kmer = int(c.get("k") or 0)
+    labels = c.get("id2label") or {}
+    if kmer != 6 or len(labels) != 2:
+        raise ValueError("generanno score width is not k*2")
+
+    def _need(name: str, shape: list) -> None:
+        got = sh.get(name)
+        if list(got or []) != shape:
+            raise ValueError(f"generanno {name} shape is not {shape}")
+
+    for li in (0, L - 1):
+        p = f"model.layers.{li}."
+        _need(p + "input_layernorm.weight", [d])
+        _need(p + "post_attention_layernorm.weight", [d])
+        _need(p + "mlp.gate_proj.weight", [f, d])
+        _need(p + "mlp.up_proj.weight", [f, d])
+        _need(p + "mlp.down_proj.weight", [d, f])
+    _need("model.norm.weight", [d])
+    _need("score.0.weight", [12, d])
+    _need("score.1.weight", [12, d])
+    if any("q_norm" in n or "k_norm" in n for n in sh):
+        raise ValueError("generanno has q_norm")
+    if any(n.startswith("score.") and n.endswith(".bias") for n in sh):
+        raise ValueError("generanno score bias is present")
+
+
 def build_generanno(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
     """0.106 Carbon-A (Generanno): Llama-style blocks (RMSNorm, GQA + RoPE, SwiGLU), bidirectional, no KV cache;
-    two per-token strand heads score.{0,1} (hidden → k·2: per base of the 6-mer token, CDS / non-coding)."""
+    two per-token strand heads score.{0,1} (hidden → k·2: per base of the 6-mer token, CDS / non-coding).
+    0.438 bills the published RMSNorm and SiLU from modeling_generanno.py."""
     from .model import _ffn_dense, _gqa
     c, sh = rel["config"], rel["shapes"]
+    _require_generanno(c, sh)
     d, H, KV, f, L, V = (c["hidden_size"], c["num_attention_heads"], c["num_key_value_heads"], c["intermediate_size"],
                          c["num_hidden_layers"], c["vocab_size"])
     hd = c.get("head_dim") or d // H
     alin, core = _gqa(d, H, KV, hd)
-    core = replace(core, rope_dim=hd, causal=False)
+    core = replace(core, rope_dim=hd, causal=False, qk_norm=False)
     ffn, flin = _ffn_dense(d, f, gated=True)
-    layer = Layer(alin, core, ffn, flin, 2 * d)              # input / post-attention RMSNorm
+    layer = Layer(alin, core, ffn, flin, 2 * d, vec_kind="generanno")  # input / post-attention RMSNorm
     heads = sorted(n for n in sh if n.startswith("score.") and n.endswith(".weight"))
     io_post = tuple(Linear(n.rsplit(".", 1)[0].replace(".", "_"), d, sh[n][0], "rep") for n in heads)
     wl = replace(wl, max_seq=c.get("max_position_embeddings", wl.seq_len), kmer=c.get("k", wl.kmer))
@@ -812,10 +871,14 @@ def build_generanno(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) ->
         f"无词表 MLM 头：两个逐 token 链头（正 / 反链）{' + '.join(f'{d}→{l.n}' for l in io_post)}"
         f"（每 token {k_} 个碱基 × 2 类：CDS / 非编码）",
         f"窗口 {wl.seq_len} token（{wl.seq_len * k_:,} bp），相邻窗口重叠 {wl.overlap} token；每窗口新增 "
-        f"{(wl.seq_len - wl.overlap) * k_:,} bp（注释流水线对重叠部分取平均）"]
+        f"{(wl.seq_len - wl.overlap) * k_:,} bp（注释流水线对重叠部分取平均）",
+        "0.438：input_layernorm、post_attention_layernorm 和 model.norm 是 GenerannoRMSNorm"
+        "（fp32 pow(2).mean，每行一次 rsqrt，再乘 weight）。MLP 是 down(silu(gate) * up)。"
+        "没有 QK-norm。RoPE 打在 repeat_kv 之前的 q 和 k 上。cos/sin 的 fp32 表不单列"]
     reasons = [r for r in spec.coverage_reasons]
     return replace(spec, formats=fm, act_fmt="bf16", kv_fmt="bf16", final_norm_params=d, vocab_head=False,
-                   notes=tuple(notes), coverage_reasons=tuple(reasons), coverage="partial" if reasons else "full")
+                   notes=tuple(notes), coverage_reasons=tuple(reasons), coverage="partial" if reasons else "full",
+                   vec_kind="generanno")
 
 
 # ---------------------------------------------------------------- 0.330 PixText (pixel-space text-editing DiT)

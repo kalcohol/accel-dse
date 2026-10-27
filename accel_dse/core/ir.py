@@ -2068,12 +2068,19 @@ def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
     t_loc = b * _cdiv(ph.q, sh.sp)
     if not cross:
         # qk_norm True (default): the historical lump, QK-norm plus RoPE, 3 element-ops each.
-        # qk_norm False: RoPE only. ESM-2 has no QK-norm (modeling_esm.py EsmSelfAttention).
-        qk_part = core.qk_dim * 2 * 3 if core.qk_norm else 0
-        rope_part = core.rope_dim * 2 * 3
-        if core.qk_norm or rope_part:
-            ops.append(Op("qk_norm_rope" if core.qk_norm else "rope", "vector", li,
-                          vec=t_loc * heads_tp * (qk_part + rope_part)))
+        # qk_norm False: RoPE only, on the published q and k tensors (before repeat_kv).
+        # 3 element-ops per element. k uses n_kv heads. MHA (n_kv == n_q) matches the
+        # previous query-head times 2 count. ESM-2 and Carbon-A have no QK-norm.
+        if core.qk_norm or core.rope_dim:
+            if core.qk_norm:
+                qk_part = core.qk_dim * 2 * 3
+                rope_part = core.rope_dim * 2 * 3
+                ops.append(Op("qk_norm_rope", "vector", li,
+                              vec=t_loc * heads_tp * (qk_part + rope_part)))
+            else:
+                hk = _cdiv(core.n_kv, sh.tp)
+                ops.append(Op("rope", "vector", li,
+                              vec=t_loc * (heads_tp + hk) * core.rope_dim * 3))
         if core.q_scale:
             # query * attention_head_size**-0.5, before RoPE. One multiply. The class does not upcast.
             ops.append(Op("q_scale", "vector", li, vec=t_loc * heads_tp * core.qk_dim, a_fmt=model.act_fmt))
@@ -2271,6 +2278,11 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         if model.adaln or L.ffn.kind != "dense" or L.ffn.gated:
             raise ValueError("esm2 vector billing is pre-LN dense erf-GELU")
         ops = [Op("attn_norm", "vector", li, vec=t * h * 4, sfu=float(t), a_fmt="fp32")]
+    elif L.vec_kind == "generanno":
+        # GenerannoRMSNorm before attention. fp32 pow(2).mean, one rsqrt, times weight.
+        if model.adaln or L.ffn.kind != "dense" or not L.ffn.gated:
+            raise ValueError("generanno vector billing is RMSNorm and SwiGLU")
+        ops = [Op("attn_rms", "vector", li, vec=t * h * 4, sfu=float(t), a_fmt="fp32")]
     else:
         ops = [Op("attn_norm", "vector", li, vec=t * h * (4 + mod))]
 
@@ -2291,6 +2303,8 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
             ops.append(Op("cross_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     if L.vec_kind == "esm2":
         ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=float(t), a_fmt="fp32"))
+    elif L.vec_kind == "generanno":
+        ops.append(Op("mlp_rms", "vector", li, vec=t * h * 4, sfu=float(t), a_fmt="fp32"))
     else:
         ops.append(Op("ffn_norm", "vector", li, vec=t * h * (4 + mod)))
     f = L.ffn
@@ -2347,6 +2361,14 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
             # The class does not upcast, so a_fmt follows the activation dtype.
             nact = t * _cdiv(L.ffn.d_ff, tp)
             ops.append(Op("gelu", "vector", li, vec=nact * 5, sfu=float(nact), a_fmt=model.act_fmt))
+        elif L.vec_kind == "generanno":
+            # ACT2FN["silu"] is x * sigmoid(x): exp, one add, a reciprocal, then the multiply
+            # by x (4 element-ops, 2 of them on the SFU). The gate*up product is one multiply.
+            # The class does not upcast, so a_fmt follows the billed activation dtype.
+            nact = t * _cdiv(L.ffn.d_ff, tp)
+            af = model.act_fmt
+            ops.append(Op("silu", "vector", li, vec=nact * 4, sfu=float(nact * 2), a_fmt=af))
+            ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
         else:
             ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))  # GELU (tanh) / SwiGLU 「假设」 8 ops / element
     if L.post_norm:      # 0.144 sandwich norms (RMSNorm on the attention and FFN outputs before the gated residual)
@@ -2377,6 +2399,9 @@ def _full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
         if model.vec_kind == "esm2":
             # EsmEncoder.emb_layer_norm_after. Same LayerNorm recipe as the block norms.
             ops.append(Op("final_norm", "vector", li, vec=t * model.hidden * 4, sfu=float(t), a_fmt="fp32"))
+        elif model.vec_kind == "generanno":
+            # GenerannoModel.norm. Same RMSNorm recipe as the block norms.
+            ops.append(Op("final_rms", "vector", li, vec=t * model.hidden * 4, sfu=float(t), a_fmt="fp32"))
         else:
             ops.append(Op("final_norm", "vector", li, vec=t * model.hidden * (4 + (4 if model.adaln else 0))))
     for l in (model.io_pre if side == "pre" else model.io_post):

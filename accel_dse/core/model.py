@@ -165,7 +165,8 @@ class AttnCore:
     # so this flag is what actually drops that vector.
     no_rope: bool = False
     # 0.437: the lumped qk_norm_rope op charges a QK-norm (3 element-ops, no rsqrt) on every
-    # full-attention model. ESM-2 has rotary and no QK-norm, so that half is not billed.
+    # full-attention model. ESM-2 and Carbon-A (0.438) have rotary and no QK-norm, so that
+    # half is not billed. With qk_norm false, RoPE counts n_kv heads, not a second n_q.
     # q_scale is the published query multiply by head_dim**-0.5 (one multiply, no upcast).
     qk_norm: bool = True
     q_scale: bool = False
@@ -381,7 +382,9 @@ class Layer:
     kv_alias: bool = False
     deepemb: int = 0                         # 0.361 RWKV-8 DeepEmbed width (ffn.enn row); 0 = none.  Current-token lookup.
     ple_in: int = 0                          # 0.369 Gemma-4 per-layer input width (gate h→ple, proj ple→h). 0 = none.
-    # 0.437 ESM-2 encoder: published pre-LN + erf-GELU. "" keeps the shared full-forward assumption.
+    # 0.437 ESM-2 encoder: published pre-LN + erf-GELU.
+    # 0.438 Carbon-A: published RMSNorm + SiLU SwiGLU.
+    # "" keeps the shared full-forward assumption.
     vec_kind: str = ""
 
     def expert_params(self, hidden: int) -> int:
@@ -544,7 +547,8 @@ class ModelSpec:
     final_norm_params: int | None = None     # None → hidden (LLM RMSNorm)
     adaln: bool = False                      # AdaLN modulation (shift/scale/gate) around each norm
     # 0.437: "esm2" bills the published EsmEncoder final LayerNorm and EsmLMHead
-    # (erf-GELU, LayerNorm, decoder bias). "" keeps the shared full-forward formulas.
+    # (erf-GELU, LayerNorm, decoder bias). 0.438: "generanno" bills the published
+    # final GenerannoRMSNorm. "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
     vocab_head: bool = True                  # encoders: MLM decoder over the vocab on every token (0.106: False =
