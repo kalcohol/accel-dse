@@ -4315,7 +4315,8 @@ def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
     ``config.torch_dtype`` is not the source. Distil-Whisper large-v2 says float32 and
     stores fp16. GEMM ``w_fmt`` stays the historical bf16 billing; this value is only
     the vector ``a_fmt`` for GELU, SiLU and ReLU. LayerNorm stays fp32. AuT uses the
-    same rule.
+    same rule. Pixtral uses it for SiLU, the SwiGLU product, and the projector
+    erf-GELU. Pixtral RMSNorm stays fp32.
     """
     vr = (rel.get("roles") or {}).get("vision") or {}
     keys = [k for k, v in vr.items() if isinstance(v, dict) and v.get("params")]
@@ -4807,6 +4808,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             if rel is None:
                 raise ValueError("aut tower vision role is missing")
             vs = replace(vs, audio=replace(vs.audio, vec_fmt=_whisper_vision_fmt(rel, "aut")))
+        if vs is not None and vs.family == "pixtral":
+            # 0.418: SiLU, the product, and projector GELU follow the vision role.
+            # GEMM w_fmt stays bf16. RMSNorm stays fp32.
+            if rel is None:
+                raise ValueError("pixtral tower vision role is missing")
+            vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "pixtral"))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -4899,6 +4906,17 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "Index-Echo 2B 的 connector 在 w1 之后再计一次 F.gelu。9B 的 connector 是一次 Linear，没有激活。"
                 "eval 的 Dropout 是恒等，不单列。"
                 "正弦位置加、fp16 clamp、connector 的 exp(log_alpha) 和 beta 标量、整份残差加不单列。",))
+        if vs is not None and vs.family == "pixtral":
+            spec = replace(spec, notes=spec.notes + (
+                "Pixtral 视觉塔：ln_pre、每一层注意力前和 SwiGLU 前的 RMSNorm、"
+                "投影器在合并之前的 RMSNorm，都带 weight，升到 fp32，pow(2).mean 再一次 rsqrt。"
+                "MLP 是 ACT2FN['silu']（x * sigmoid(x)）再乘 up。宽度是 intermediate，不是 2*intermediate。"
+                "这不是 GLU。投影器在 linear_1 之后是 ACT2FN['gelu']，erf 形式，"
+                "行数是合并后的位置，宽度是文本 hidden。"
+                f"SiLU、乘积和 GELU 不升精度，a_fmt 是 vision 角色的 {vs.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "GEMM 的 w_fmt 仍是 bf16，通用 GEMM 尾项不减。"
+                "RoPE 的 sin/cos、整份残差加、块状注意力 mask 不单列。",))
     return spec
 
 
