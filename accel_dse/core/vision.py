@@ -41,7 +41,9 @@ docs/MODEL.md §20):
          without bias, w2), final RMSNorm, aligner 3×3 unfold (9h → text dim → GELU → text dim).  Resize:
          ``plan_image_grid`` (≥ min_pixels, ≤ vision_max_n_token LLM positions incl. one newline token per row and
          start / end).  The aligner sits outside ``vision`` in the release role table (``aligner.*`` → other); its
-         73.41 M params are added here.
+         73.41 M params are added here.  0.426 bills those RMSNorms (fp32 ``square().mean``, one ``rsqrt``, times
+         the weight), ``F.silu`` on the gate, the product with up, and ``F.gelu`` (the erf form) after aligner
+         ``w1``. RoPE, the pad and unfold, and the full residual adds stay in the tail.
 
   gemma4 Gemma-4 ViT (gemma4_vision): Linear patch embed (3·16² → h, no bias), factorised position table
          (2, position_embedding_size, h), depth pre-norm blocks (separate q / k / v / o, q / k RMSNorm,
@@ -197,6 +199,13 @@ RMSNorm stay fp32. ``ACT2FN["relu2"]``, the identity LayerScale, the input
 conditioner, and the position interpolation are not ops. The ten cls /
 register tokens stay outside the tower row count. The shared GEMM tail is
 unchanged.
+DeepSeek-V4.1-Flash (family ``ds``) bills ``RMSNorm`` before attention, before
+the SwiGLU, and once after the last block on the patch rows. ``F.silu`` is
+``x * sigmoid(x)`` on the gate only. The product with ``up`` is one multiply.
+``F.gelu`` after aligner ``w1`` is the erf form, on merged rows at the text
+hidden size. SiLU, the product and GELU stay at the vision-role dtype. RMSNorm
+stays fp32. RoPE, the aligner pad and unfold, the full residual adds, and the
+image-span stores are not ops.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -421,6 +430,7 @@ class VisionSpec:
     # 0.419 Qwen3-VL merger erf-GELU and LFM2.5-VL projector erf-GELU use the same field.
     # 0.422 GLM-5.3-Flash SiLU, the SwiGLU product, and merger nn.GELU() use it too.
     # 0.423 MiMo-V2.6 gate SiLU, the SwiGLU product, and merger nn.GELU() use it too.
+    # 0.426 DeepSeek-V4.1 vision F.silu, the product, and F.gelu use it too.
     # LayerNorm and RMSNorm stay fp32.
     vec_fmt: str = ""
     # 0.419: "qwen3vl" bills Qwen3VLVisionBlock / Qwen3VLVisionPatchMerger LayerNorms
@@ -4079,6 +4089,7 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     glm = v.family == "glm"
     mimo = v.ln_mode == "mimo"
     radio = v.family == "radio"
+    dseek = v.family == "ds"
     if glm:
         # Glm5NextVisionBlock + Glm5NextVisionPatchMerger. Hidden RMSNorms, per-head
         # q/k RMSNorms, gate SiLU, merger LayerNorm and nn.GELU(). The clamps are not ops.
@@ -4110,6 +4121,16 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         hm = h * v.merge * v.merge
         if (v.gated or v.kv_heads or v.qkv != h or len(v.post) != 2 or v.post[0][0] != hm):
             raise ValueError("radio vision block is not fused qkv plus a two-linear projector")
+    if dseek:
+        # ViT Block RMSNorms, F.silu on the gate, the product, the final RMSNorm,
+        # and F.gelu (erf) after aligner w1. RoPE, pad, unfold, and the full
+        # residual adds are not ops.
+        if v.vec_fmt not in ("fp16", "bf16", "fp32"):
+            raise ValueError("deepseek vision activation dtype is not a vision float")
+        hm = h * v.merge * v.merge
+        if (not v.gated or v.kv_heads or v.qkv != h or len(v.post) != 2
+                or v.post[0][0] != hm or v.post[0][1] != v.post[1][0] or v.post[1][0] != v.post[1][1]):
+            raise ValueError("deepseek vision block is not fused qkv plus a two-linear aligner")
     if q3:
         # Qwen3VLVisionBlock LayerNorms and Qwen3VLVisionPatchMerger nn.GELU().
         # The block MLP stays gelu_pytorch_tanh. Merger fc1 is Linear(4h, 4h).
@@ -4194,6 +4215,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # norm1 is LayerNorm(hidden) on the billed patch rows, before fused qkv.
             # The ten cls / register tokens stay in the existing row approximation.
             ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
+        if dseek:
+            # Block.norm1 is RMSNorm(hidden) on patch tokens, before the fused qkv.
+            # One rsqrt per token. q and k are not normalized.
+            ops.append(_rms_vec(pfx + f"{li}.norm1", li, rows, h))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
         if pixtral:
             # Attention runs before o_proj. One bidirectional block per image.
@@ -4241,6 +4266,9 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if radio:
             # norm2 is LayerNorm(hidden) before the MLP. The residual add is the full branch.
             ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
+        if dseek:
+            # Block.norm2 is RMSNorm(hidden) before the SwiGLU. The residual add is the full branch.
+            ops.append(_rms_vec(pfx + f"{li}.norm2", li, rows, h))
         if longcat:
             # ls1 / ls2 are Parameter(embed_dim): branch * scale, then the residual add.
             # The class does not upcast. No rsqrt.
@@ -4279,6 +4307,13 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if mimo:
             # ACT2FN["silu"] is x * sigmoid(x) on the gate only. Width is intermediate,
             # not the fused 2x GEMM. The product with up is one multiply. Neither upcasts.
+            ops.append(_silu_vec(pfx + f"{li}.silu", li, rows * v.inter, v.vec_fmt))
+            ops.append(Op(pfx + f"{li}.mlp_mul", "vector", li, vec=rows * v.inter, a_fmt=v.vec_fmt))
+        if dseek:
+            # MLP.forward is w2(F.silu(gate) * up). F.silu is x * sigmoid(x) on the
+            # gate only, so the width is intermediate, not the fused 2x GEMM. The
+            # product with up is one multiply. Neither upcasts. The text
+            # swiglu_limit clamp is not this module.
             ops.append(_silu_vec(pfx + f"{li}.silu", li, rows * v.inter, v.vec_fmt))
             ops.append(Op(pfx + f"{li}.mlp_mul", "vector", li, vec=rows * v.inter, a_fmt=v.vec_fmt))
         ops.append(gemm(f"{li}.mlp_out", rows, v.inter, h, li))
@@ -4326,6 +4361,11 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # not 4 * hidden and not out_hidden_size. The released header stores
         # weight only; the class-default bias is not a tensor and is not an op.
         ops.append(_ln_vec(pfx + "ln_q", v.depth, images * N0, h))
+    if dseek:
+        # ViT.norm is RMSNorm(hidden) on the patch rows, before the aligner pad
+        # and unfold. Width is hidden, not the text hidden size. The row count
+        # is not the merged count. eps is not an op.
+        ops.append(_rms_vec(pfx + "out_rms", v.depth, images * N0, h))
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
         m_ = merger_rows(kn)
@@ -4338,6 +4378,13 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # projector_hidden_size. eps is not an op. relu2 after linear1 is not this op.
             ops.append(_rms_vec(pfx + "proj_rms", v.depth, m_, k))
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
+        if dseek and i == 0:
+            # Aligner.forward is w2(F.gelu(w1(x))). F.gelu's default approximate
+            # is 'none': the erf form. Rows are the merged count, including the
+            # pad that makes each side divisible by the downsample ratio. Width
+            # is w1's N, the text hidden size. w2 has no activation. Pad and
+            # unfold are not ops.
+            ops.append(_gelu_erf_vec(pfx + "align_gelu", v.depth, m_ * n, v.vec_fmt))
         if mimo and i == 0:
             # nn.GELU() default approximate is 'none': the erf form. Width is fc1's
             # N (4 * hidden), not out_hidden_size. The second linear has no activation.

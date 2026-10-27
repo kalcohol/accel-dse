@@ -226,7 +226,7 @@ def test_other_towers_do_not_gain_mimo_names():
         assert m.vision is not None and m.vision.ln_mode != "mimo", mid
         names = [op.name for op in vision_ops(m.vision, image_grid(m.vision, 1024, 1024), 1)]
         assert "vis.ln_q" not in names, mid
-        if mid != "glm-5.3-flash":
+        if mid not in ("glm-5.3-flash", "deepseek-v4.1-flash"):
             assert "vis.0.norm1" not in names, mid
-        if mid not in ("mistral-small-3.2-24b-instruct-2506", "glm-5.3-flash"):
+        if mid not in ("mistral-small-3.2-24b-instruct-2506", "glm-5.3-flash", "deepseek-v4.1-flash"):
             assert "vis.0.silu" not in names, mid

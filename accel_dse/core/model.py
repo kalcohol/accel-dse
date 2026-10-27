@@ -4339,6 +4339,8 @@ def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
     uses it for gate SiLU, the SwiGLU product, and merger ``nn.GELU()``.
     MiMo-V2.6 uses it for gate SiLU, the SwiGLU product, and merger ``nn.GELU()``.
     MiMo RMSNorm and LayerNorm stay fp32.
+    DeepSeek-V4.1 vision ``F.silu``, the product, and ``F.gelu`` use it.
+    DeepSeek RMSNorm stays fp32.
     Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp merger ``nn.GELU()`` uses it the same way.
     Those LayerNorms stay fp32. A vision role with more than one dtype is not
     given this value.
@@ -4911,6 +4913,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             if rel is None:
                 raise ValueError("radio tower vision role is missing")
             vs = replace(vs, vec_fmt=_radio_vision_fmt(rel))
+        if vs is not None and vs.family == "ds":
+            # 0.426: F.silu, the product, and F.gelu follow the one vision-role float.
+            # GEMM w_fmt stays bf16. RMSNorm stays fp32.
+            if rel is None:
+                raise ValueError("deepseek vision role is missing")
+            vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "deepseek"))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -5099,6 +5107,22 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "ACT2FN['relu2']、layerscale_value 为 1 且检查点里没有的 LayerScale、"
                 "dropout 0、输入 conditioner、位置插值、整份残差加不单列。"
                 "10 个 cls / register token 仍不计入塔的行数。通用 GEMM 尾项不减。",))
+        if vs is not None and vs.family == "ds":
+            spec = replace(spec, notes=spec.notes + (
+                "DeepSeek-V4.1 视觉塔：每一层 norm1 和 norm2 是带 weight 的 RMSNorm(hidden)。"
+                "升到 fp32，square().mean 再一次 rsqrt，乘 weight，然后回到输入 dtype。"
+                "宽度是 hidden，每行一次，不是按头。q 和 k 没有单独的 RMSNorm。"
+                "MLP 是 F.silu（x * sigmoid(x)）再乘 up。宽度是 intermediate，不是 2*intermediate。"
+                "块之后的最终 RMSNorm 仍在 patch 行上，宽度是 hidden，不是文本 hidden。"
+                "aligner 在 w1 之后是 F.gelu，默认 approximate='none'，erf 形式。"
+                "行数是合并后的位置（每一边按 downsample 向上取整，含 pad），宽度是文本 hidden。"
+                f"SiLU、乘积和 GELU 不升精度，a_fmt 是 vision 角色的 {vs.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "RMSNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
+                "文本侧的 swiglu_limit 和 rms_norm_eps 视觉塔没有读。"
+                "RoPE 的 cos/sin、pad、unfold、整份残差加、"
+                "image_start / image_newline / image_end 的下标写入不单列。"
+                "通用 GEMM 尾项不减。",))
     return spec
 
 
