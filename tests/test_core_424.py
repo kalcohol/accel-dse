@@ -73,7 +73,7 @@ def test_qwen35_vision_bills_layernorm_and_merger_erf_gelu():
         assert vc["model_type"] == mt and vc["hidden_act"] == "gelu_pytorch_tanh", mid
         assert vc.get("deepstack_visual_indexes") in (None, [], ()), mid
         assert set(rel["roles"]["vision"]) == {"bf16"}, mid
-        assert "Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp" in m.notes, mid
+        assert "Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp" in " ".join(m.notes), mid
         g = image_grid(vs, 1024, 1024)
         assert (g.ph, g.pw, g.merged) == (64, 64, 1024), mid
         ops = vision_ops(vs, g, 1, "bf16")
@@ -194,7 +194,7 @@ def test_mixed_vision_role_stays_on_the_gemm_tail():
     names = [op.name for op in vision_ops(m.vision, image_grid(m.vision, 1024, 1024), 1)]
     for needle in ("vis.0.attn_ln", "vis.pre_ln", "vis.mgelu", "vis.0.gelu"):
         assert needle not in names, needle
-    assert "Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp" not in m.notes
+    assert "Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp" not in " ".join(m.notes)
 
 
 def test_other_towers_do_not_gain_qwen35():
