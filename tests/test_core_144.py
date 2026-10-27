@@ -100,6 +100,7 @@ def test_new_vision_encoders_exact_and_tokens():
     assert qkv.n == (32 + 2 * 8) * 64
     v = get_model("minicpm-v-4.7-35b-a3b").vision
     ops = {o.name: o for o in vision_ops(v, image_grid(v, 448, 448), 1)}
-    assert ops["vis.5.qkv"].m == 1024 and ops["vis.6.qkv"].m == 256 and ops["vis.merger.1"].m == 64
+    assert ops["vis.5.qkv"].m == 1024 and ops["vis.6.qkv"].m == 1024 and ops["vis.7.qkv"].m == 256
+    assert ops["vis.merger.1"].m == 64
     ops = {o.name: o for o in vision_ops(get_model("step-5-preview").vision, image_grid(get_model("step-5-preview").vision, 1, 1), 1)}
     assert (ops["vis.merger.0"].m, ops["vis.merger.1"].m, ops["vis.merger.2"].m) == (676, 169, 169)
