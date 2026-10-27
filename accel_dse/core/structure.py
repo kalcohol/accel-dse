@@ -537,25 +537,294 @@ def _af2_groups(c: dict) -> list[Group]:
             Group("", "embed", "recycle")]
 
 
+def _need_vec(sh: dict, who: str, name: str, width: int) -> None:
+    if list(sh.get(name) or []) != [width]:
+        raise ValueError(f"{who} {name} shape is not [{width}]")
+
+
+def _lin_norm(layer: Layer, name: str, who: str) -> Linear:
+    from .ir import _strip_core
+    found = [ln for ln in layer.pair_linears if _strip_core(ln.name) == name]
+    if len(found) != 1:
+        raise ValueError(f"{who} {name} is missing")
+    return found[0]
+
+
+def _expect_of(ln: Linear, k: int, n: int, rows: str, who: str) -> None:
+    if (ln.k, ln.n, ln.rows) != (k, n, rows):
+        raise ValueError(f"{who} {ln.name} shape is not [{k}, {n}] on {rows}")
+
+
+def _tag_af2_vectors(pl: list[Layer], sh: dict, c: dict, stacks: dict, who: str) -> list[Layer]:
+    """Bill published LayerNorm and ReLU on OpenFold and AlphaFold 2. Mask-mul stays in the .ew tail.
+
+    OpenFold multiplies some transition outputs by a mask. The AF2 JAX Transition expands the mask and
+    does not multiply it onto the output, so this pass does not bill mask-mul for either model.
+    """
+    from .ir import (
+        ALPHAFOLD2_HEAD_LINEARS, ALPHAFOLD2_SM_LINEARS, ESMFOLD_SM_LINEARS, OPENFOLD_EMBED_LINEARS,
+        OPENFOLD_EVO_LINEARS, OPENFOLD_EXTRA_LINEARS, OPENFOLD_HEAD_LINEARS, OPENFOLD_TMPL_LINEARS, _strip_core,
+    )
+    cm, cz, cs, ct, ce = int(c["c_m"]), int(c["c_z"]), int(c["c_s"]), int(c["c_t"]), int(c["c_e"])
+    if cm <= 0 or cz <= 0 or cs <= 0 or ct <= 0 or ce <= 0:
+        raise ValueError(f"{who} channel width is not positive")
+    if c.get("no_blocks") != 48 or stacks.get("evoformer.blocks") != 48:
+        raise ValueError(f"{who} evoformer blocks are not 48")
+    if c.get("extra_msa_blocks") != 4 or stacks.get("extra_msa_stack.blocks") != 4:
+        raise ValueError(f"{who} extra msa blocks are not 4")
+    if c.get("template_blocks") != 2 or stacks.get("template_pair_stack.blocks") != 2:
+        raise ValueError(f"{who} template blocks are not 2")
+    if c.get("no_ipa_blocks") != 8:
+        raise ValueError(f"{who} ipa blocks are not 8")
+    of = who == "openfold"
+    if of:
+        pre_name = "linear_in"
+        sm_set, head_set = ESMFOLD_SM_LINEARS, OPENFOLD_HEAD_LINEARS
+        plddt = ("plddt.linear_1", "plddt.linear_2", "plddt.linear_3")
+        angle = ("angle_resnet.linear_initial", "angle_resnet.linear_in",
+                 "angle_resnet.layers.0.linear_1", "angle_resnet.layers.0.linear_2",
+                 "angle_resnet.layers.1.linear_1", "angle_resnet.layers.1.linear_2",
+                 "angle_resnet.linear_out")
+        trans = ("transition.layers.0.linear_1", "transition.layers.0.linear_2", "transition.layers.0.linear_3")
+        bb = "bb_update.linear"
+    else:
+        pre_name = "initial_projection"
+        sm_set, head_set = ALPHAFOLD2_SM_LINEARS, ALPHAFOLD2_HEAD_LINEARS
+        plddt = ("plddt.act_0", "plddt.act_1", "plddt.logits")
+        angle = ("rigid_sidechain.input_projection_1", "rigid_sidechain.input_projection",
+                 "rigid_sidechain.resblock1", "rigid_sidechain.resblock2",
+                 "rigid_sidechain.resblock1_1", "rigid_sidechain.resblock2_1",
+                 "rigid_sidechain.unnormalized_angles")
+        trans = ("transition", "transition_1", "transition_2")
+        bb = "affine_update"
+
+    def evo_norms(msa_w: int, h_in: int, h_out: int, col: str) -> list[tuple[str, int]]:
+        if of:
+            return [
+                ("core.msa_transition.layer_norm.weight", msa_w),
+                ("core.outer_product_mean.layer_norm.weight", msa_w),
+                ("core.pair_transition.layer_norm.weight", cz),
+                ("core.tri_att_end.layer_norm.weight", cz),
+                ("core.tri_att_start.layer_norm.weight", cz),
+                ("core.tri_mul_in.layer_norm_in.weight", cz),
+                ("core.tri_mul_in.layer_norm_out.weight", h_in),
+                ("core.tri_mul_out.layer_norm_in.weight", cz),
+                ("core.tri_mul_out.layer_norm_out.weight", h_out),
+                (col, msa_w),
+                ("msa_att_row.layer_norm_m.weight", msa_w),
+                ("msa_att_row.layer_norm_z.weight", cz),
+            ]
+        return [
+            ("msa_transition.input_layer_norm.scale", msa_w),
+            ("outer_product_mean.layer_norm_input.scale", msa_w),
+            ("pair_transition.input_layer_norm.scale", cz),
+            ("tri_att_end.query_norm.scale", cz),
+            ("tri_att_start.query_norm.scale", cz),
+            ("tri_mul_in.layer_norm_input.scale", cz),
+            ("tri_mul_in.center_layer_norm.scale", h_in),
+            ("tri_mul_out.layer_norm_input.scale", cz),
+            ("tri_mul_out.center_layer_norm.scale", h_out),
+            (col, msa_w),
+            ("msa_att_row.query_norm.scale", msa_w),
+            ("msa_att_row.feat_2d_norm.scale", cz),
+        ]
+
+    def tmpl_norms(h_in: int, h_out: int) -> list[tuple[str, int]]:
+        if of:
+            return [
+                ("pair_transition.layer_norm.weight", ct),
+                ("tri_att_end.layer_norm.weight", ct),
+                ("tri_att_start.layer_norm.weight", ct),
+                ("tri_mul_in.layer_norm_in.weight", ct),
+                ("tri_mul_in.layer_norm_out.weight", h_in),
+                ("tri_mul_out.layer_norm_in.weight", ct),
+                ("tri_mul_out.layer_norm_out.weight", h_out),
+            ]
+        return [
+            ("pair_transition.input_layer_norm.scale", ct),
+            ("tri_att_end.query_norm.scale", ct),
+            ("tri_att_start.query_norm.scale", ct),
+            ("tri_mul_in.layer_norm_input.scale", ct),
+            ("tri_mul_in.center_layer_norm.scale", h_in),
+            ("tri_mul_out.layer_norm_input.scale", ct),
+            ("tri_mul_out.center_layer_norm.scale", h_out),
+        ]
+
+    def hidden(layer: Layer, side: str) -> int:
+        z = _lin_norm(layer, f"tri_mul_{side}.linear_z", who)
+        proj = _lin_norm(layer, f"tri_mul_{side}.linear_a_p", who)
+        if z.k != proj.n:
+            raise ValueError(f"{who} triangle multiply hidden width is not the projection width")
+        return z.k
+
+    def check_block_norms(prefix: str, last: int, specs_at) -> None:
+        for idx in (0, last):
+            for suffix, width in specs_at(idx):
+                _need_vec(sh, who, f"{prefix}{idx}.{suffix}", width)
+
+    evo_layers = [L for L in pl if L.stack == "evoformer"]
+    extra_layers = [L for L in pl if L.stack == "extra_msa"]
+    tmpl_layers = [L for L in pl if L.stack == "template"]
+    if not evo_layers or not extra_layers or not tmpl_layers:
+        raise ValueError(f"{who} vector layers are not the published set")
+
+    def evo_at(idx: int):
+        layer = evo_layers[0] if idx == 0 else evo_layers[-1]
+        col = "msa_att_col._msa_att.layer_norm_m.weight" if of else "msa_att_col._msa_att.query_norm.scale"
+        return evo_norms(cm, hidden(layer, "in"), hidden(layer, "out"), col)
+
+    def extra_at(idx: int):
+        layer = extra_layers[0] if idx == 0 else extra_layers[-1]
+        col = "msa_att_col.layer_norm_m.weight" if of else "msa_att_col.query_norm.scale"
+        return evo_norms(ce, hidden(layer, "in"), hidden(layer, "out"), col)
+
+    def tmpl_at(idx: int):
+        layer = tmpl_layers[0] if idx == 0 else tmpl_layers[-1]
+        return tmpl_norms(hidden(layer, "in"), hidden(layer, "out"))
+
+    check_block_norms("evoformer.blocks.", 47, evo_at)
+    check_block_norms("extra_msa_stack.blocks.", 3, extra_at)
+    check_block_norms("template_pair_stack.blocks.", 1, tmpl_at)
+    if of:
+        _need_vec(sh, who, "template_pair_stack.layer_norm.weight", ct)
+        _need_vec(sh, who, "recycling_embedder.layer_norm_m.weight", cm)
+        _need_vec(sh, who, "recycling_embedder.layer_norm_z.weight", cz)
+        _need_vec(sh, who, "structure_module.layer_norm_s.weight", cs)
+        _need_vec(sh, who, "structure_module.layer_norm_z.weight", cz)
+        _need_vec(sh, who, "structure_module.layer_norm_ipa.weight", cs)
+        _need_vec(sh, who, "structure_module.transition.layer_norm.weight", cs)
+        _need_vec(sh, who, "aux_heads.plddt.layer_norm.weight", cs)
+    else:
+        _need_vec(sh, who, "template_pair_stack.layer_norm.scale", ct)
+        _need_vec(sh, who, "recycling_embedder.layer_norm_m.scale", cm)
+        _need_vec(sh, who, "recycling_embedder.layer_norm_z.scale", cz)
+        _need_vec(sh, who, "structure_module.single_layer_norm.scale", cs)
+        _need_vec(sh, who, "structure_module.pair_layer_norm.scale", cz)
+        _need_vec(sh, who, "structure_module.attention_layer_norm.scale", cs)
+        _need_vec(sh, who, "structure_module.transition_layer_norm.scale", cs)
+        _need_vec(sh, who, "aux_heads.plddt.input_layer_norm.scale", cs)
+
+    tagged: list[Layer] = []
+    for layer in pl:
+        normed = {_strip_core(ln.name) for ln in layer.pair_linears}
+        if layer.stack == "template":
+            if normed != OPENFOLD_TMPL_LINEARS or layer.repeat != "recycle":
+                raise ValueError(f"{who} block linears are not the published set")
+            _expect_of(_lin_norm(layer, "pair_transition.linear_1", who), ct, 2 * ct, "tmpl", who)
+            for side in ("start", "end"):
+                att = _lin_norm(layer, f"tri_att_{side}.linear", who)
+                if (att.k, att.n, att.rows) != (ct, 4, "tmpl"):
+                    raise ValueError(f"{who} triangle attention heads are not 4")
+            tagged.append(replace(layer, vec_kind="of_block"))
+        elif layer.stack in ("evoformer", "extra_msa"):
+            want = OPENFOLD_EVO_LINEARS if layer.stack == "evoformer" else OPENFOLD_EXTRA_LINEARS
+            msa_w = cm if layer.stack == "evoformer" else ce
+            grid = "msa" if layer.stack == "evoformer" else "xmsa"
+            if normed != want or layer.repeat != "recycle":
+                raise ValueError(f"{who} block linears are not the published set")
+            _expect_of(_lin_norm(layer, "msa_transition.linear_1", who), msa_w, 4 * msa_w, grid, who)
+            _expect_of(_lin_norm(layer, "pair_transition.linear_1", who), cz, 4 * cz, "pair", who)
+            _expect_of(_lin_norm(layer, "outer_product_mean.linear_1", who), msa_w, 32, grid, who)
+            for side in ("start", "end"):
+                att = _lin_norm(layer, f"tri_att_{side}.linear", who)
+                if (att.k, att.n, att.rows) != (cz, 4, "pair"):
+                    raise ValueError(f"{who} triangle attention heads are not 4")
+            if layer.stack == "extra_msa":
+                gate = _lin_norm(layer, "msa_att_col.global_attention.linear_g", who)
+                query = _lin_norm(layer, "msa_att_col.global_attention.linear_q", who)
+                if gate.rows != "xmsa" or gate.k != ce or query.rows != "res":
+                    raise ValueError(f"{who} extra msa column norm is not on the msa grid")
+            else:
+                gate = _lin_norm(layer, "msa_att_col._msa_att.mha.linear_g", who)
+                if gate.rows != "msa" or gate.k != cm:
+                    raise ValueError(f"{who} msa column norm is not on the msa grid")
+            row_z = _lin_norm(layer, "msa_att_row.linear_z", who)
+            row_g = _lin_norm(layer, "msa_att_row.mha.linear_g", who)
+            if row_z.rows != "pair" or row_z.k != cz or row_g.rows != grid or row_g.k != msa_w:
+                raise ValueError(f"{who} msa row norm grids do not match the published forward")
+            tagged.append(replace(layer, vec_kind="of_block"))
+        elif layer.stack == "structure":
+            by = {ln.name: ln for ln in layer.pair_linears}
+            if layer.iters != 8 or layer.repeat != "recycle" or pre_name not in by \
+                    or set(by) - {pre_name} != sm_set:
+                raise ValueError(f"{who} structure-module loop linears are not the published set")
+            _expect_of(by[pre_name], cs, cs, "res", who)
+            _expect_of(by[angle[0]], cs, 128, "res", who)
+            _expect_of(by[angle[1]], cs, 128, "res", who)
+            for name in angle[2:6]:
+                _expect_of(by[name], 128, 128, "res", who)
+            _expect_of(by[angle[6]], 128, 14, "res", who)
+            for name in trans:
+                _expect_of(by[name], cs, cs, "res", who)
+            _expect_of(by[bb], cs, 6, "res", who)
+            ipa_out = by["ipa.linear_out"]
+            if ipa_out.n != cs or ipa_out.rows != "res":
+                raise ValueError(f"{who} ipa.linear_out shape is not the single width")
+            # The input projection runs once per structure-module call. Its bias stays in the loop misc.
+            pre = replace(layer, pair_linears=(by[pre_name],), pair_cores=(), misc_params=0,
+                          vec_kind="of_sm_pre", vec_width=cz, iters=1)
+            rest = tuple(ln for ln in layer.pair_linears if ln.name != pre_name)
+            tagged.append(pre)
+            tagged.append(replace(layer, pair_linears=rest, vec_kind="of_sm"))
+        elif layer.stack == "heads":
+            plddt_names = [ln.name for ln in layer.pair_linears if ln.name.startswith("plddt.")]
+            if len(plddt_names) > 3:
+                raise ValueError(f"{who} plddt head has a fourth linear")
+            if layer.iters != 1 or layer.repeat != "" or {ln.name for ln in layer.pair_linears} != head_set:
+                raise ValueError(f"{who} heads linears are not the published set")
+            by = {ln.name: ln for ln in layer.pair_linears}
+            _expect_of(by[plddt[0]], cs, 128, "res", who)
+            _expect_of(by[plddt[1]], 128, 128, "res", who)
+            _expect_of(by[plddt[2]], 128, 50, "res", who)
+            tagged.append(replace(layer, vec_kind="of_heads"))
+        elif layer.stack == "embed":
+            if layer.repeat != "recycle" or layer.iters != 1 \
+                    or {ln.name for ln in layer.pair_linears} != OPENFOLD_EMBED_LINEARS:
+                raise ValueError(f"{who} embed linears are not the published set")
+            by = {ln.name: ln for ln in layer.pair_linears}
+            _expect_of(by["evoformer.linear"], cm, cs, "res", who)
+            _expect_of(by["recycling_embedder.linear"], 15, cz, "pair", who)
+            _expect_of(by["template_angle_embedder.linear_1"], 57, cm, "tres", who)
+            _expect_of(by["template_angle_embedder.linear_2"], cm, cm, "tres", who)
+            _expect_of(by["template_pair_embedder.linear"], 88, ct, "tmpl", who)
+            _expect_of(by["template_pointwise_att.mha.linear_k"], ct, ct, "tmpl", who)
+            tagged.append(replace(layer, vec_kind="of_embed"))
+        else:
+            raise ValueError(f"{who} vector layers are not the published set")
+    kinds: dict[str, int] = {}
+    for layer in tagged:
+        kinds[layer.vec_kind] = kinds.get(layer.vec_kind, 0) + 1
+    if kinds.get("of_block") != 54 or kinds.get("of_sm") != 1 or kinds.get("of_sm_pre") != 1 \
+            or kinds.get("of_heads") != 1 or kinds.get("of_embed") != 1:
+        raise ValueError(f"{who} vector layers are not the published set")
+    return tagged
+
+
 def build_alphafold2(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
     """AlphaFold 2 monomer (model_1_ptm), from the official JAX parameter release (names mapped to OpenFold-style
     names by scripts/summarize_ckpt.py, so the same row / core tables apply)."""
     c = rel["config"]
     pl, _ = layers_from(rel, _af2_groups(c), {"c_hidden_msa_att": c["c_hidden_msa_att"]})
+    pl = _tag_af2_vectors(pl, rel["shapes"], c, rel["stacks"], "alphafold2")
     msa = c["max_msa_clusters"] - c["max_templates"]
     wl = _apply_defaults(wl, msa=msa, xmsa=c["max_extra_msa"], templates=c["max_templates"], tmpl_msa=True,
                          recycles=c["max_recycling_iters"] + 1, pair_dim=c["c_z"])
     notes = [f"官方 JAX 参数 params_model_1_ptm（alphafold_params_2022-12-06.tar，CC BY 4.0）：Evoformer "
              f"{rel['stacks']['evoformer.blocks']} 块（MSA {c['c_m']} 维 / pair {c['c_z']} 维）+ extra MSA 栈 "
              f"{rel['stacks']['extra_msa_stack.blocks']} 块（全局列注意力）+ 模板 pair 栈 "
-             f"{rel['stacks']['template_pair_stack.blocks']} 块 + 结构模块（IPA × {c['no_ipa_blocks']}，共享权重）",
+             f"{rel['stacks']['template_pair_stack.blocks']} 块 + 结构模块（IPA × {c['no_ipa_blocks']}，循环共享权重）",
              f"默认（model_1_ptm）：MSA 聚类 {msa} 行（512 − 模板数）、extra MSA {c['max_extra_msa']} 行、模板 "
              f"{c['max_templates']} 个；num_recycle {c['max_recycling_iters']} → 主干 {c['max_recycling_iters'] + 1} 遍；"
              "MSA 行数按上限计「假设」（浅 MSA 更快）",
              "monomer 预设跑 5 个模型（model_1…5_ptm）各一次：这里评估单个模型的一次预测；5 模型 ≈ 5 倍（model_3–5 "
              "无模板，略少）",
              "模板扭转角嵌入每个模板残基一行（T × N 行），其输出拼接到 MSA 表示上、随 MSA 跑完 Evoformer 全部块（MSA 网格 = 聚类行 + T）；IPA 几何运算同 ESMFold 的近似；subbatch / "
-             "全局分块只降低峰值显存"]
+             "全局分块只降低峰值显存",
+             "0.441：Evoformer 和 extra MSA 每块计 12 次 LayerNorm 和 2 次 ReLU，模板 pair 块计 7 次 LayerNorm 和 1 次 ReLU。"
+             "结构模块的 single / pair LayerNorm 和 initial_projection 每次 recycle 只跑一遍，IPA 循环仍是 8 次。"
+             "pLDDT 的 LayerNorm 和两次 ReLU 只作用在最终 single 上，不乘 IPA 次数，也不乘 recycle。"
+             "recycling 的第一条 MSA 行和 pair、模板角的 ReLU、模板栈最终 LayerNorm 每次 recycle 计一次。"
+             "逐线性 .ew 不减。mask 乘、sigmoid 门、IPA 的 softplus、扭转角 clamp 不单列"]
     reasons = ["只评估神经网络推理：MSA / 模板检索（jackhmmer / HHblits 数据库搜索，CPU）与特征化未建模；AMBER 松弛未建模"]
     return _spec(model_id, hf_id, rel, "AlphaFold 2（Evoformer + 结构模块，官方 JAX 参数）", c["c_s"], pl, wl, notes,
                  reasons, "alphafold2")
@@ -570,15 +839,21 @@ def build_openfold(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
               Group("aux_heads.", "heads"),
               Group("", "embed", "recycle")]
     pl, _ = layers_from(rel, groups, {"c_hidden_msa_att": c["c_hidden_msa_att"]})
+    pl = _tag_af2_vectors(pl, rel["shapes"], c, rel["stacks"], "openfold")
     wl = _apply_defaults(wl, msa=c["max_msa_clusters"], xmsa=c["max_extra_msa"], templates=c["max_templates"], tmpl_msa=True,
                          recycles=c["max_recycling_iters"] + 1, pair_dim=c["c_z"])
     notes = [f"AF2 架构（OpenFold 复现权重 finetuning_ptm_2）：Evoformer {rel['stacks']['evoformer.blocks']} 块（MSA {c['c_m']} 维 / "
              f"pair {c['c_z']} 维）+ extra MSA 栈 {rel['stacks']['extra_msa_stack.blocks']} 块（全局列注意力）+ 模板 pair 栈 "
-             f"{rel['stacks']['template_pair_stack.blocks']} 块 + 结构模块（IPA × {c['no_ipa_blocks']}）",
+             f"{rel['stacks']['template_pair_stack.blocks']} 块 + 结构模块（IPA × {c['no_ipa_blocks']}，循环共享权重）",
              f"默认：MSA 聚类 {c['max_msa_clusters']} 行、extra MSA {c['max_extra_msa']} 行、模板 {c['max_templates']} 个"
              f"（data.predict）；recycle {c['max_recycling_iters']} 次 → 主干 {c['max_recycling_iters'] + 1} 遍（嵌入、模板、"
              "extra MSA、Evoformer、结构模块每遍都重跑）；MSA 行数按上限计「假设」（浅 MSA 更快）",
-             "模板扭转角嵌入每个模板残基一行（T × N 行），其输出拼接到 MSA 表示上、随 MSA 跑完 Evoformer 全部块（MSA 网格 = 聚类行 + T）；IPA 几何运算同 ESMFold 的近似"]
+             "模板扭转角嵌入每个模板残基一行（T × N 行），其输出拼接到 MSA 表示上、随 MSA 跑完 Evoformer 全部块（MSA 网格 = 聚类行 + T）；IPA 几何运算同 ESMFold 的近似",
+             "0.441：Evoformer 和 extra MSA 每块计 12 次 LayerNorm 和 2 次 ReLU，模板 pair 块计 7 次 LayerNorm 和 1 次 ReLU。"
+             "结构模块的 layer_norm_s / layer_norm_z 和 linear_in 每次 recycle 只跑一遍，IPA 循环仍是 8 次。"
+             "pLDDT 的 LayerNorm 和两次 ReLU 只作用在最终 single 上，不乘 IPA 次数，也不乘 recycle。"
+             "recycling 的第一条 MSA 行和 pair、模板角的 ReLU、模板栈最终 LayerNorm 每次 recycle 计一次。"
+             "逐线性 .ew 不减。mask 乘、sigmoid 门、IPA 的 softplus、扭转角 clamp 不单列"]
     reasons = ["只评估神经网络推理：MSA / 模板检索（jackhmmer / HHblits 数据库搜索，CPU）与特征化未建模；AMBER 松弛未建模"]
     return _spec(model_id, hf_id, rel, "AF2 架构（Evoformer + 结构模块，OpenFold 权重）", c["c_s"], pl, wl, notes, reasons,
                  "openfold")

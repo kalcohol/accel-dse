@@ -2212,20 +2212,20 @@ def _tri_unfused(tag: str, li: int, rows: int, n: int, d: int, vd: int, heads: i
             Op(tag + ".softmax", "vector", li, vec=cnt * n * n * 6, sfu=cnt * n * n, launch=nch)]
 
 
-def _esm_ln(name: str, rows: int, width: int, li: int, rep: float) -> Op:
-    """nn.LayerNorm / OpenFold LayerNorm (F.layer_norm). fp32 reduction, one rsqrt per row.
+def _esm_ln(name: str, rows: int, width: int, li: int, rep: float, who: str = "esmfold") -> Op:
+    """nn.LayerNorm / OpenFold LayerNorm / AF2 haiku LayerNorm (F.layer_norm). fp32 reduction, one rsqrt per row.
 
     Affine weights are already in the layer's misc parameters. eps is not billed.
     """
     if rows <= 0 or width <= 0:
-        raise ValueError(f"esmfold {name} has no rows")
+        raise ValueError(f"{who} {name} has no rows")
     return Op(name, "vector", li, vec=float(rows * width * 4), sfu=float(rows), a_fmt="fp32", replicated=rep)
 
 
-def _esm_relu(name: str, n: int, li: int, rep: float, af: str) -> Op:
+def _esm_relu(name: str, n: int, li: int, rep: float, af: str, who: str = "esmfold") -> Op:
     """nn.ReLU is max(x, 0). One clip, no transcendental, no upcast."""
     if n <= 0:
-        raise ValueError(f"esmfold {name} has no elements")
+        raise ValueError(f"{who} {name} has no elements")
     return Op(name, "vector", li, vec=float(n), a_fmt=af, replicated=rep)
 
 
@@ -2299,6 +2299,126 @@ _ESM_SM_LN_AFTER = {
 }
 
 
+def _strip_core(name: str) -> str:
+    """OpenFold nests Evoformer pair modules under ``core.``. AF2's mapped names do not."""
+    return name[5:] if name.startswith("core.") else name
+
+
+def _mha(prefix: str) -> tuple[str, ...]:
+    return tuple(f"{prefix}.linear_{leaf}" for leaf in ("g", "k", "o", "q", "v"))
+
+
+def _tri_mul(side: str) -> tuple[str, ...]:
+    return tuple(f"tri_mul_{side}.linear_{leaf}" for leaf in ("a_g", "a_p", "b_g", "b_p", "g", "z"))
+
+
+def _tri_att(side: str) -> tuple[str, ...]:
+    return (f"tri_att_{side}.linear",) + _mha(f"tri_att_{side}.mha")
+
+
+_OF_PAIR_TAIL = (
+    ("pair_transition.linear_1", "pair_transition.linear_2")
+    + _tri_att("end") + _tri_att("start") + _tri_mul("in") + _tri_mul("out")
+)
+OPENFOLD_TMPL_LINEARS = frozenset(_OF_PAIR_TAIL)
+OPENFOLD_EVO_LINEARS = frozenset(
+    ("msa_transition.linear_1", "msa_transition.linear_2",
+     "outer_product_mean.linear_1", "outer_product_mean.linear_2", "outer_product_mean.linear_out")
+    + _OF_PAIR_TAIL
+    + _mha("msa_att_col._msa_att.mha")
+    + ("msa_att_row.linear_z",)
+    + _mha("msa_att_row.mha")
+)
+OPENFOLD_EXTRA_LINEARS = frozenset(
+    ("msa_transition.linear_1", "msa_transition.linear_2",
+     "outer_product_mean.linear_1", "outer_product_mean.linear_2", "outer_product_mean.linear_out")
+    + _OF_PAIR_TAIL
+    + _mha("msa_att_col.global_attention")
+    + ("msa_att_row.linear_z",)
+    + _mha("msa_att_row.mha")
+)
+# LayerNorm sits on the activation that feeds the named linear. Width is that linear's K.
+_OF_BLOCK_LN_BEFORE = {
+    "msa_transition.linear_1": "msa_trans_ln",
+    "outer_product_mean.linear_1": "opm_ln",
+    "pair_transition.linear_1": "pair_trans_ln",
+    "tri_att_end.linear": "tri_att_end_ln",
+    "tri_att_start.linear": "tri_att_start_ln",
+    "tri_mul_in.linear_a_g": "tri_mul_in_ln_in",
+    "tri_mul_in.linear_z": "tri_mul_in_ln_out",
+    "tri_mul_out.linear_a_g": "tri_mul_out_ln_in",
+    "tri_mul_out.linear_z": "tri_mul_out_ln_out",
+    "msa_att_col._msa_att.mha.linear_g": "msa_col_ln",
+    "msa_att_col.global_attention.linear_g": "msa_col_ln",
+    "msa_att_row.linear_z": "msa_row_z_ln",
+    "msa_att_row.mha.linear_g": "msa_row_m_ln",
+}
+# ReLU follows the expansion linear. MSATransition and PairTransition only. Width is N.
+_OF_BLOCK_RELU_AFTER = {
+    "msa_transition.linear_1": "msa_trans_relu",
+    "pair_transition.linear_1": "pair_trans_relu",
+}
+# AlphaFold 2 haiku names for the same StructureModule loop (initial_projection is the preamble).
+ALPHAFOLD2_SM_LINEARS = frozenset({
+    "affine_update",
+    "ipa.linear_b", "ipa.linear_kv", "ipa.linear_kv_points", "ipa.linear_out",
+    "ipa.linear_q", "ipa.linear_q_points",
+    "rigid_sidechain.input_projection", "rigid_sidechain.input_projection_1",
+    "rigid_sidechain.resblock1", "rigid_sidechain.resblock1_1",
+    "rigid_sidechain.resblock2", "rigid_sidechain.resblock2_1",
+    "rigid_sidechain.unnormalized_angles",
+    "transition", "transition_1", "transition_2",
+})
+_OF_SM_RELU_BEFORE = {
+    **_ESM_SM_RELU_BEFORE,
+    "rigid_sidechain.input_projection": "angle_in_relu",
+    "rigid_sidechain.input_projection_1": "angle_init_relu",
+    "rigid_sidechain.resblock1": "angle_b0_relu_1",
+    "rigid_sidechain.resblock2": "angle_b0_relu_2",
+    "rigid_sidechain.resblock1_1": "angle_b1_relu_1",
+    "rigid_sidechain.resblock2_1": "angle_b1_relu_2",
+    "rigid_sidechain.unnormalized_angles": "angle_out_relu",
+}
+_OF_SM_RELU_AFTER = {
+    **_ESM_SM_RELU_AFTER,
+    "transition": "trans_relu_1",
+    "transition_1": "trans_relu_2",
+}
+_OF_SM_LN_AFTER = {
+    **_ESM_SM_LN_AFTER,
+    "transition_2": "trans_ln",
+}
+OPENFOLD_HEAD_LINEARS = frozenset({
+    "distogram.linear", "experimentally_resolved.linear", "masked_msa.linear",
+    "plddt.linear_1", "plddt.linear_2", "plddt.linear_3", "tm.linear",
+})
+ALPHAFOLD2_HEAD_LINEARS = frozenset({
+    "distogram.linear", "experimentally_resolved.linear", "masked_msa.linear",
+    "plddt.act_0", "plddt.act_1", "plddt.logits", "tm.linear",
+})
+_OF_PLDDT_LN = {"plddt.linear_1": "plddt_ln", "plddt.act_0": "plddt_ln"}
+_OF_PLDDT_RELU = {
+    "plddt.linear_1": "plddt_relu_1", "plddt.linear_2": "plddt_relu_2",
+    "plddt.act_0": "plddt_relu_1", "plddt.act_1": "plddt_relu_2",
+}
+OPENFOLD_EMBED_LINEARS = frozenset({
+    "evoformer.linear", "extra_msa_embedder.linear",
+    "input_embedder.linear_msa_m", "input_embedder.linear_relpos",
+    "input_embedder.linear_tf_m", "input_embedder.linear_tf_z_i", "input_embedder.linear_tf_z_j",
+    "recycling_embedder.linear",
+    "template_angle_embedder.linear_1", "template_angle_embedder.linear_2",
+    "template_pair_embedder.linear",
+    "template_pointwise_att.mha.linear_k", "template_pointwise_att.mha.linear_o",
+    "template_pointwise_att.mha.linear_q", "template_pointwise_att.mha.linear_v",
+})
+
+
+def _of_who(model: ModelSpec) -> str:
+    if model.id in ("openfold", "alphafold2"):
+        return model.id
+    return "openfold"
+
+
 def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -> list[Op]:
     """One execution of a structure-model block on one rank.  Every weight GEMM runs on the rows of its grid; each
     linear also carries its layer-norm / gating / bias work (「假设」 4 element-ops per input element + 4 per output
@@ -2323,6 +2443,8 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         s = s_loc
     ops: list[Op] = []
     kind = L.vec_kind
+    who = _of_who(model)
+    embed_by: dict[str, object] = {}
     if kind == "esm_proj":
         # modeling_esmfold.py EsmForProteinFolding.esm_s_mlp: LayerNorm(language width),
         # Linear to the trunk width, nn.ReLU, Linear. Rows are residues (bos/eos already stripped).
@@ -2355,6 +2477,33 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
     elif kind == "esm_lddt":
         if [l.name for l in L.pair_linears] != ["1", "2", "3"]:
             raise ValueError("esmfold lddt head is not three linears")
+    elif kind == "of_block":
+        normed = {_strip_core(l.name) for l in L.pair_linears}
+        if normed not in (OPENFOLD_EVO_LINEARS, OPENFOLD_EXTRA_LINEARS, OPENFOLD_TMPL_LINEARS):
+            raise ValueError(f"{who} block linears are not the published set")
+        by_norm = {_strip_core(l.name): l for l in L.pair_linears}
+        for side in ("in", "out"):
+            hidden = by_norm[f"tri_mul_{side}.linear_z"]
+            proj = by_norm[f"tri_mul_{side}.linear_a_p"]
+            if hidden.k != proj.n:
+                raise ValueError(f"{who} triangle multiply hidden width is not the projection width")
+    elif kind == "of_sm":
+        names = {l.name for l in L.pair_linears}
+        if names not in (ESMFOLD_SM_LINEARS, ALPHAFOLD2_SM_LINEARS):
+            raise ValueError(f"{who} structure-module loop linears are not the published set")
+    elif kind == "of_sm_pre":
+        if [l.name for l in L.pair_linears] not in (["linear_in"], ["initial_projection"]):
+            raise ValueError(f"{who} structure-module preamble is not the published projection")
+        pre_lin = L.pair_linears[0]
+        if pre_lin.k != pre_lin.n or pre_lin.rows != "res" or L.vec_width <= 0:
+            raise ValueError(f"{who} structure-module preamble shape is not the published projection")
+    elif kind == "of_heads":
+        if {l.name for l in L.pair_linears} not in (OPENFOLD_HEAD_LINEARS, ALPHAFOLD2_HEAD_LINEARS):
+            raise ValueError(f"{who} heads linears are not the published set")
+    elif kind == "of_embed":
+        embed_by = {l.name: l for l in L.pair_linears}
+        if set(embed_by) != OPENFOLD_EMBED_LINEARS:
+            raise ValueError(f"{who} embed linears are not the published set")
     state_copies = _esmfold_state_copies(model) if kind == "esm_lddt" else 1
     for l in L.pair_linears:
         m = _pair_rows(l.rows, pd, b, s, ps, dap)
@@ -2383,6 +2532,36 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         elif kind == "esm_lddt" and l.name == "1":
             # nn.Sequential: LayerNorm, Linear, Linear, Linear. No ReLU.
             ops.append(_esm_ln("lddt_ln", m, l.k, li, rep))
+        elif kind == "of_block":
+            ln_name = _OF_BLOCK_LN_BEFORE.get(_strip_core(l.name))
+            if ln_name:
+                ops.append(_esm_ln(ln_name, m, l.k, li, rep, who))
+        elif kind == "of_sm":
+            relu_name = _OF_SM_RELU_BEFORE.get(l.name)
+            if relu_name:
+                ops.append(_esm_relu(relu_name, m * l.k, li, rep, model.act_fmt, who))
+        elif kind == "of_sm_pre":
+            # StructureModule: layer_norm_s, layer_norm_z, then the input projection, once per recycle.
+            ops.append(_esm_ln("sm_s_ln", m, l.k, li, rep, who))
+            pz = _pair_rows("pair", pd, b, s, ps, dap)
+            if pz > 0:
+                ops.append(_esm_ln("sm_z_ln", pz, L.vec_width, li, 1, who))
+        elif kind == "of_heads":
+            ln_name = _OF_PLDDT_LN.get(l.name)
+            if ln_name:
+                # Aux heads read the final single representation, not the stacked IPA states.
+                ops.append(_esm_ln(ln_name, m, l.k, li, rep, who))
+        elif kind == "of_embed" and l.name == "recycling_embedder.linear":
+            # First MSA row (residue grid) then the pair, including the zero-initialised first pass.
+            evo = embed_by["evoformer.linear"]
+            rm = _pair_rows("res", pd, b, s, ps, dap)
+            if rm > 0:
+                ops.append(_esm_ln("recycle_m_ln", rm, evo.k, li, rep_tok, who))
+            ops.append(_esm_ln("recycle_z_ln", m, l.n, li, rep, who))
+        elif kind == "of_embed" and l.name == "template_pointwise_att.mha.linear_k":
+            # Template pair stack's final LayerNorm, once per recycle, before pointwise attention.
+            width = embed_by["template_pair_embedder.linear"].n
+            ops.append(_esm_ln("tmpl_out_ln", m, width, li, rep, who))
         o = gemm(model, f"{L.stack}.{l.name}", li, m, l.k, l.n, l.role or "pair", stream=True, replicated=rep)
         ops.append(o)
         if kind == "esm_proj" and l.name == "mlp.1":
@@ -2399,6 +2578,23 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
             ln_name = _ESM_SM_LN_AFTER.get(l.name)
             if ln_name:
                 ops.append(_esm_ln(ln_name, m, l.n, li, rep))
+        elif kind == "of_block":
+            relu_name = _OF_BLOCK_RELU_AFTER.get(_strip_core(l.name))
+            if relu_name:
+                ops.append(_esm_relu(relu_name, m * l.n, li, rep, model.act_fmt, who))
+        elif kind == "of_sm":
+            relu_name = _OF_SM_RELU_AFTER.get(l.name)
+            if relu_name:
+                ops.append(_esm_relu(relu_name, m * l.n, li, rep, model.act_fmt, who))
+            ln_name = _OF_SM_LN_AFTER.get(l.name)
+            if ln_name:
+                ops.append(_esm_ln(ln_name, m, l.n, li, rep, who))
+        elif kind == "of_heads":
+            relu_name = _OF_PLDDT_RELU.get(l.name)
+            if relu_name:
+                ops.append(_esm_relu(relu_name, m * l.n, li, rep, model.act_fmt, who))
+        elif kind == "of_embed" and l.name == "template_angle_embedder.linear_1":
+            ops.append(_esm_relu("tmpl_angle_relu", m * l.n, li, rep, model.act_fmt, who))
         ops.append(Op(f"{L.stack}.{l.name}.ew", "vector", li, vec=m * (l.k + l.n) * 4, replicated=rep))
     has_col = any(c.kind == "col_att" for c in L.pair_cores)
     for i, c in enumerate(L.pair_cores):

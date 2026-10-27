@@ -388,10 +388,13 @@ class Layer:
     # (the ESM-2 hidden size). ModelSpec.hidden stays the folding trunk.
     # 0.440 ESMFold trunk / recycle / structure / lddt use esm_trunk,
     # esm_recycle, esm_sm_pre, esm_sm, and esm_lddt.
+    # 0.441 OpenFold and AlphaFold 2 use of_block, of_sm_pre, of_sm,
+    # of_heads, and of_embed. esm_sm_pre stores the structure pair width.
     # "" keeps the shared full-forward assumption.
     vec_kind: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
-                                             # esm_proj sets the language width. esm_sm_pre sets the structure pair width.
+                                             # esm_proj sets the language width. esm_sm_pre and of_sm_pre set the
+                                             # structure pair width.
     emb_ln: bool = False                     # last ESMFold language layer: EsmEncoder.emb_layer_norm_after
 
     def expert_params(self, hidden: int) -> int:
