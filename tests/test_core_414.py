@@ -44,11 +44,12 @@ def _enc(li: int, final: bool) -> list[str]:
     return names
 
 
-def _ad(j: int) -> list[str]:
+def _ad(j: int, li: int) -> list[str]:
+    # Attention names keep the layer index, the same strings as before 0.414.
     p = f"aud.ad{j}."
     return [
-        p + "in_ln", p + "qkv", p + "qk", p + "pv", p + "softmax", p + "o",
-        p + "post_ln", p + "fc1", p + "relu", p + "fc2",
+        p + "in_ln", p + "qkv", f"{p}{li}.qk", f"{p}{li}.pv", f"{p}{li}.softmax",
+        p + "o", p + "post_ln", p + "fc1", p + "relu", p + "fc2",
     ]
 
 
@@ -93,7 +94,7 @@ def test_fun_asr_nano_bills_relu_layernorm_and_mask():
     assert names[names.index("aud.50.in_ln"):names.index("aud.51.in_ln")] == _enc(50, False)
     assert names[names.index("aud.69.in_ln"):] == _enc(69, True) + [
         "aud.proj.linear0", "aud.proj.relu", "aud.proj.linear1",
-    ] + _ad(0) + _ad(1)
+    ] + _ad(0, 71) + _ad(1, 72)
     assert [name for name in names if name.endswith(".out_ln")] == ["aud.49.out_ln", "aud.69.out_ln"]
     for missing in ("aud.0.out_ln", "aud.48.out_ln", "aud.50.out_ln", "aud.ad0.mask", "aud.ad0.fsmn", "aud.ad0.out_ln",
                     "aud.ad1.mask", "aud.ad1.out_ln"):
