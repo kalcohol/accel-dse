@@ -43,7 +43,8 @@ def test_longcat_vision_bills_silu_gelu_and_rope_on_the_published_shapes():
     half = HD // 2
     for li in range(DEPTH):
         assert names.index(f"vis.{li}.qkv") + 1 == names.index(f"vis.{li}.rope")
-        assert names.index(f"vis.{li}.rope") + 1 == names.index(f"vis.{li}.q_norm")
+        assert names.index(f"vis.{li}.rope") + 1 == names.index(f"vis.{li}.rope_repeat")
+        assert names.index(f"vis.{li}.rope_repeat") + 1 == names.index(f"vis.{li}.q_norm")
         assert names.index(f"vis.{li}.mlp_in") + 1 == names.index(f"vis.{li}.silu")
         assert names.index(f"vis.{li}.silu") + 1 == names.index(f"vis.{li}.mlp_mul")
         assert names.index(f"vis.{li}.mlp_mul") + 1 == names.index(f"vis.{li}.mlp_norm")

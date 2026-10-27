@@ -81,9 +81,10 @@ Counted per image (all images of a request share the size): every GEMM above at 
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
 residual element-ops 3 per GEMM output 「假设」, softmax 5 per score.  LongCat-ViT also bills the RMSNorm
 modules and LayerScales ``LongCatVisionEncoderLayer`` runs, the projector LayerNorm, the SwiGLU SiLU and the
-product it multiplies, the two projector erf-GELUs, and rope2d cos/sin. The FSMN encoder bills its ReLU6 calls,
-the int32 mask multiply, and the projector GELU. The shared 3-wide tail stays on every GEMM. Softmax is not
-given a second SFU.  Image tokens into the LLM = merged positions
+product it multiplies, the two projector erf-GELUs, rope2d cos/sin, the per-forward ``torch.outer`` that
+builds ``inv_freq`` angles, and the cos/sin ``repeat`` that widens those angles to ``head_dim``. The FSMN
+encoder bills its ReLU6 calls, the int32 mask multiply, and the projector GELU. The shared 3-wide tail stays
+on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
 """
@@ -3319,6 +3320,19 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     cnt = images * v.heads
     qkv_n = (v.heads + 2 * v.kv_heads) * dh if v.kv_heads else 3 * q
     longcat = v.family == "longcatvit" and v.gated
+    if longcat and grid is not None:
+        # VisionRotaryEmbedding2D(head_dim // 2). inv_freq is arange(0, dim, 2)
+        # in fp32 and is not persistent. Encoder.forward calls forward_ once,
+        # before the layer loop: torch.outer(seq, inv_freq). seqlen is
+        # max(t, h, w). VisionProjector requires t == 1, so the side is
+        # max(ph, pw). The table is shared across layers and across images of
+        # this grid; it is not a GEMM and it has no transcendental. The later
+        # pos_ids gather is not a separate op.
+        ph, pw = grid
+        dim = dh // 2
+        inv_len = (dim + 1) // 2
+        side = max(ph, pw)
+        ops.append(Op(pfx + "rope_outer", "vector", 0, vec=side * inv_len, a_fmt="fp32"))
 
     def lc_rms(name: str, li: int, width: int, n_rows: int) -> Op:
         # RMSNorm.forward / the same 4-elem + 1 rsqrt recipe as attn_norm. fp32 upcast.
@@ -3348,7 +3362,6 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # freqs.sin run once per call. freqs is [tokens, head_dim/2] (the
             # h/w pair flattened), not per head and not embed_dim. The function
             # is called for q and again for k, so the trig is not reused.
-            # repeat() copies the table out to head_dim; that copy is not an SFU.
             # The rotate-multiply is the same 3 element ops per full-head element
             # as the language RoPE vector. Softmax stays the bidirectional score
             # op below and is not given a second SFU.
@@ -3356,6 +3369,12 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             ops.append(Op(pfx + f"{li}.rope", "vector", li, a_fmt="fp32",
                           vec=2 * rows * (v.heads * dh * 3 + half * 2),
                           sfu=2 * rows * half * 2))
+            # cos/sin are [tokens, 1, head_dim/2]. repeat(1, 1, 2) materializes
+            # [tokens, 1, head_dim] for each of them. q and k each call the
+            # function, so the copy is not shared. It is fp32 and has no
+            # transcendental. unsqueeze is a view and is not counted.
+            ops.append(Op(pfx + f"{li}.rope_repeat", "vector", li, a_fmt="fp32",
+                          vec=4 * rows * dh))
             ops.append(lc_rms(f"{li}.q_norm", li, h, rows))
             ops.append(lc_rms(f"{li}.k_norm", li, h, rows))
         ops.append(gemm(f"{li}.o", rows, q, h, li))
