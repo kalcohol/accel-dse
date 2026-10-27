@@ -4304,6 +4304,26 @@ def _from_d1_omni(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelSpec:
         d1=True, trunk_params=trunk, d1_buf=buf)
 
 
+def _whisper_vision_fmt(rel: dict) -> str:
+    """Activation dtype of a shared Whisper encoder, from the one float vision role.
+
+    ``config.torch_dtype`` is not the source. Distil-Whisper large-v2 says float32 and
+    stores fp16. GEMM ``w_fmt`` stays the historical bf16 billing; this value is only
+    the vector ``a_fmt`` for GELU, SiLU and ReLU. LayerNorm stays fp32.
+    """
+    vr = (rel.get("roles") or {}).get("vision") or {}
+    keys = [k for k, v in vr.items() if isinstance(v, dict) and v.get("params")]
+    if len(keys) != 1:
+        raise ValueError("whisper tower vision role is not one dtype")
+    key = keys[0]
+    block = vr[key]
+    bits = 8.0 * block["bytes"] / block["params"]
+    expect = {"fp16": 16.0, "bf16": 16.0, "fp32": 32.0}
+    if key not in expect or abs(bits - expect[key]) > 1e-3:
+        raise ValueError(f"whisper tower vision role {key} is {bits} bits")
+    return key
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -4771,6 +4791,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                     (k, "fp32", bits, act) for k in ("patch", "attn", "mlp", "merger")))
                 spec = replace(spec, notes=spec.notes + (
                     "safetensors 是 fp32（config dtype 为 bfloat16）。语言 GEMM 与视觉塔权重按 fp32 计，激活仍是 bf16。",))
+        if vs is not None and getattr(vs, "audio", None) is not None and vs.audio.kind == "whisper":
+            # 0.415: vector activations follow the safetensors vision role. GEMM w_fmt stays bf16.
+            if rel is None:
+                raise ValueError("whisper tower vision role is missing")
+            vs = replace(vs, audio=replace(vs.audio, vec_fmt=_whisper_vision_fmt(rel)))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -4826,6 +4851,24 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。ReLU 和 mask 乘不升精度，发布权重是 bf16。"
                 "eval 的 Dropout 是恒等。配置里的 activation_dropout 类没有读。"
                 "sqrt(d) 和正弦位置表不单列。通用 GEMM 尾项不减。",))
+        if (vs is not None and getattr(vs, "audio", None) is not None and vs.audio.kind == "whisper"):
+            au = vs.audio
+            spec = replace(spec, notes=spec.notes + (
+                "共用 Whisper 编码器：conv1 和 conv2 的 nn.functional.gelu、每一层 MLP 的 "
+                "ACT2FN['gelu'] 或 nn.GELU() 都是 erf 形式（0.5 * x * (1 + erf(x / sqrt(2)))），"
+                "不是 gelu_pytorch_tanh，也不是 quick_gelu。"
+                "每一层先计注意力前的 LayerNorm，再计 MLP 前的 LayerNorm。"
+                "编码器 LayerNorm：Whisper 在整段编码器位置上；"
+                "Qwen2-Audio 和 Qwen2.5-Omni 在 stride-2 池化之后；"
+                "Step-Audio 的 after_norm 也在池化之后，adaptor 再计 F.gelu 和 nn.ReLU；"
+                "Kimi 的编码器 LayerNorm 在 4 路堆叠之前，VQAdaptor 再计 nn.SiLU 和 LayerNorm；"
+                "Ming 的 ln_post 在投影器之前，投影器再计 nn.GELU()。"
+                f"GELU、SiLU 和 ReLU 不升精度，a_fmt 是 vision 角色的 {au.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 在 fp32 归约。GEMM 的 w_fmt 仍是历史的 bf16，通用 GEMM 尾项不减。"
+                "解码器仍把 GELU 按 SiLU 的逐元素开销计，这次不改。"
+                "eval 的 Dropout 是恒等，不单列。"
+                "fp16 clamp、Omni 乘 long 的 mask、Ming 的 F.normalize 不单列。",))
     return spec
 
 

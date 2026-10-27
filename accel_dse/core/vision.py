@@ -102,6 +102,12 @@ Fun-ASR-Nano (kind ``sanm``) bills each block's input and post LayerNorm, ``ACT2
 LayerNorm runs only on the two published layers. The projector ReLU and the adaptor's
 LayerNorms and ReLU use the same counts. The adaptor has no FSMN. Eval dropout is not an
 op. The ``sqrt(d)`` scale and the sinusoid add are not ops.
+The shared Whisper encoder (kind ``whisper``) bills ``nn.functional.gelu`` / ``ACT2FN["gelu"]``
+/ ``nn.GELU()`` as the erf form, the pre-attention and pre-MLP LayerNorms, and the encoder
+LayerNorm. Step-Audio's adaptor GELU and ReLU, Kimi's adaptor SiLU and LayerNorm, and Ming's
+projector GELU use the same recipes. Those activations follow the vision-role dtype and do
+not follow the requested GEMM activation format. LayerNorm stays fp32. The decoder's
+GELU-as-SiLU approximation is unchanged.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -425,6 +431,10 @@ class AudioSpec:
     # 0.414 Fun-ASR-Nano: encoder layers that construct an output LayerNorm. Empty
     # for every other kind. Identity layers are not in this tuple.
     sanm_final: tuple[int, ...] = ()
+    # 0.415 whisper-family activation dtype from the safetensors vision role
+    # (fp16 / bf16 / fp32). Empty falls back to w_fmt. GEMM w_fmt in _whisper_ops
+    # stays the historical bf16 billing. LayerNorm is fp32 either way.
+    vec_fmt: str = ""
 
     @property
     def samples_per_token(self) -> int:
@@ -949,23 +959,31 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
     if mt == "d1_omni":
         return _d1_audio_spec(cfg)
     if mt == "ming_v3_asr" and ac.get("n_audio_state"):
+        # modeling_whisper_encoder.py hardcodes F.gelu / nn.GELU(). Refuse a contradictory field.
+        _keep_erf_gelu("ming", ac)
         return _whisper_audio_spec(cfg, ac)
     if mt == "whisper":
+        _require_erf_gelu("whisper", cfg.get("activation_function"))
         return _whisper_v3_spec(cfg, cfg["encoder_layers"], cfg["encoder_attention_heads"], cfg["encoder_ffn_dim"],
                                 cfg["num_mel_bins"], cfg["max_source_positions"], cross=True)
     if mt == "qwen2_audio" and ac.get("model_type") == "qwen2_audio_encoder":
+        _require_erf_gelu("qwen2_audio", ac.get("activation_function"))
         out = (cfg.get("text_config") or {}).get("hidden_size") or 4096     # Qwen2Config default (text_config omits it)
         return _whisper_v3_spec({"d_model": ac["d_model"]}, ac["encoder_layers"], ac["encoder_attention_heads"],
                                 ac["encoder_ffn_dim"], ac["num_mel_bins"], ac["max_source_positions"], pool=2,
                                 trunc=True, lin=((ac["d_model"], out),))
     tk = cfg.get("thinker_config") or {}
     if mt == "qwen2_5_omni" and (tk.get("audio_config") or {}).get("model_type") == "qwen2_5_omni_audio_encoder":
+        _require_erf_gelu("qwen2_5_omni", (tk.get("audio_config") or {}).get("activation_function"))
         return _omni_audio_spec(tk["audio_config"])
     kw = cfg.get("_kimi_whisper") or {}
     if kw:
+        # The bundled whisper dict often omits activation_function. The copy is WhisperModel.encoder.
+        _keep_erf_gelu("kimi", kw)
         return _kimi_audio_spec(kw, cfg)
     sa = cfg.get("audio_encoder_config") or {}
     if mt == "step_audio_2" and sa.get("n_audio_state"):
+        _keep_erf_gelu("step_audio", sa)
         return _step_audio_spec(sa)
     if mt == "fun_asr_nano" and ac.get("model_type") == "fun_asr_nano_encoder":
         return _sanm_spec(ac, cfg.get("adaptor_config") or {})
@@ -1058,7 +1076,7 @@ def _omni_audio_spec(ac: dict) -> AudioSpec:
     """0.271 Qwen2.5-Omni audio tower (transformers Qwen2_5OmniAudioEncoder, modeling_qwen2_5_omni.py 「来源」): the
     Whisper-v3 encoder (conv1 k3 + conv2 k3 s2, GELU; L pre-LN blocks, k without bias) run per chunk of 2·n_window =
     200 mel frames (chunk_and_pad_features; attention within a chunk, cu_seqlens); sinusoid positions are a buffer (not
-    in the checkpoint); ln_post, AvgPool1d(2, 2), proj d → output_dim; audio_bos_eos_token Embedding(2, output_dim)
+    in the checkpoint); pair average pool, then ln_post, then proj d → output_dim; audio_bos_eos_token Embedding(2, output_dim)
     stored (looked up for the two marker positions).  Header: 639,647,232 params."""
     d, out = ac["d_model"], ac["output_dim"]
     a = _whisper_v3_spec({"d_model": d}, ac["encoder_layers"], ac["encoder_attention_heads"], ac["encoder_ffn_dim"],
@@ -1404,8 +1422,44 @@ def _aut_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> li
     return ops
 
 
+def _require_erf_gelu(label: str, value: object) -> None:
+    """Shared encoder MLP activation. ``gelu`` is the erf form. Anything else is refused."""
+    if value != "gelu":
+        raise ValueError(f"{label} activation_function is not gelu")
+
+
+def _keep_erf_gelu(label: str, block: dict) -> None:
+    """Step, Ming and Kimi hardcode the erf form. A missing field stays. A different field is refused."""
+    if isinstance(block, dict) and "activation_function" in block:
+        _require_erf_gelu(label, block.get("activation_function"))
+
+
 def _whisper_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
+    """Whisper-family encoder GEMMs plus the activations the published forward actually runs.
+
+    conv1 / conv2 use ``nn.functional.gelu`` (default ``approximate='none'``, the erf form).
+    Each block is pre-LN attention, then pre-LN MLP. The MLP activation is ``ACT2FN['gelu']``
+    (transformers Whisper / Qwen2-Audio / Qwen2.5-Omni) or ``nn.GELU()`` / the same ``F.gelu``
+    (Step-Audio, Ming, and the Kimi copy of WhisperModel.encoder). Both are the erf form,
+    not ``gelu_pytorch_tanh``. The encoder LayerNorm sits after the blocks. Qwen2-Audio and
+    Qwen2.5-Omni run it after the stride-2 pool. Step-Audio's ``after_norm`` does too, then
+    the adaptor is ``F.gelu(conv)``, Linear, ``nn.ReLU``, Linear. Kimi LayerNorm is on the
+    encoder positions, before the 4-wide stack; ``VQAdaptor`` is Linear, ``nn.SiLU``,
+    ``nn.Dropout(0)``, Linear, LayerNorm. Ming's projector is Conv1d, ``nn.GELU()``, Linear.
+    GELU, SiLU and ReLU do not upcast: ``a_fmt`` is ``vec_fmt`` (the vision-role dtype).
+    LayerNorm reduces in fp32. The shared GEMM tail is not reduced. A requested GEMM
+    activation format does not change these vector dtypes. GEMM ``w_fmt`` stays bf16.
+    Eval dropout is not an op. The fp16 clamp, the Omni ``* long`` mask, and Ming
+    ``F.normalize`` are not ops here.
+    """
     d, dh = a.dims[0], a.dims[0] // a.heads
+    ff = a.mlp * d
+    if ff != int(ff):
+        raise ValueError("whisper ffn width is not an integer")
+    ff = int(ff)
+    act = a.vec_fmt or a.w_fmt
+    if act not in ("fp16", "bf16", "fp32"):
+        raise ValueError("whisper activation dtype is not a released float format")
     ops: list[Op] = []
 
     def gemm(name: str, m: int, k: int, n: int, li: int = 0) -> Op:
@@ -1419,38 +1473,76 @@ def _whisper_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -
         t, o = a.chunk_len(n)
         p = f"aud.c{gi}." if gi else "aud."
         rows, ch = cnt * t, cnt * a.heads
-        ops += [gemm(p + "conv1", cnt * n, 3 * a.n_mels, d), gemm(p + "conv2", rows, 3 * d, d)]
-        for li in range(a.depths[0]):
-            ops += [gemm(f"{p}{li}.qkv", rows, d, 3 * d, li), gemm(f"{p}{li}.o", rows, d, d, li),
-                    gemm(f"{p}{li}.fc1", rows, d, int(a.mlp * d), li), gemm(f"{p}{li}.fc2", rows, int(a.mlp * d), d, li),
-                    Op(f"{p}{li}.qk", "attn", li, m=t, k=dh, n=t, count=ch, causal=1.0, act_bytes=ch * t * dh * ab,
+        mel = cnt * n
+        # k3 s1 p1 keeps the mel length. k3 s2 p1 is ``t`` positions.
+        ops.append(gemm(p + "conv1", mel, 3 * a.n_mels, d))
+        ops.append(_gelu_erf_vec(p + "conv1.gelu", 0, mel * d, act))
+        ops.append(gemm(p + "conv2", rows, 3 * d, d))
+        ops.append(_gelu_erf_vec(p + "conv2.gelu", 0, rows * d, act))
+        depth = a.depths[0]
+        for li in range(depth):
+            # Attention pre-norm, then the MLP pre-norm. GELU reads the FFN width.
+            ops.append(_ln_vec(f"{p}{li}.attn_ln", li, rows, d))
+            ops.append(gemm(f"{p}{li}.qkv", rows, d, 3 * d, li))
+            ops += [Op(f"{p}{li}.qk", "attn", li, m=t, k=dh, n=t, count=ch, causal=1.0, act_bytes=ch * t * dh * ab,
                        stream=True, orient=True),
                     Op(f"{p}{li}.pv", "attn", li, m=t, k=t, n=dh, count=ch, causal=1.0, act_bytes=ch * t * dh * ab,
                        orient=True),
                     Op(f"{p}{li}.softmax", "vector", li, vec=ch * t * t * 5.0)]
+            ops.append(gemm(f"{p}{li}.o", rows, d, d, li))
+            ops.append(_ln_vec(f"{p}{li}.mlp_ln", li, rows, d))
+            ops.append(gemm(f"{p}{li}.fc1", rows, d, ff, li))
+            ops.append(_gelu_erf_vec(f"{p}{li}.gelu", li, rows * ff, act))
+            ops.append(gemm(f"{p}{li}.fc2", rows, ff, d, li))
         if a.lin and a.ds:
-            # 0.272 Step-Audio-2: AvgPool1d(pool) → Adaptor conv (k, s) d → d as an implicit GEMM → Linears
-            ops.append(Op(f"{p}pool", "vector", a.depths[0], vec=rows * d * 1.0))
+            # Step-Audio-2: pool, after_norm, adaptor conv + F.gelu, Linear, nn.ReLU, Linear.
+            if len(a.lin) != 2:
+                raise ValueError("step audio adaptor is not conv, gelu, linear, relu, linear")
+            pooled = cnt * (t // a.pool)
+            ops.append(Op(f"{p}pool", "vector", depth, vec=rows * d * 1.0))
+            ops.append(_ln_vec(f"{p}ln", depth, pooled, d))
             (kk, _, _), = a.ds
-            ops.append(gemm(f"{p}proj.conv0", cnt * o, kk * d, d, a.depths[0]))
+            ops.append(gemm(f"{p}proj.conv0", cnt * o, kk * d, d, depth))
+            ops.append(_gelu_erf_vec(f"{p}proj.gelu", depth, cnt * o * d, act))
             for i, (k, n_) in enumerate(a.lin):
-                ops.append(gemm(f"{p}proj.linear{i}", cnt * o, k, n_, a.depths[0]))
+                ops.append(gemm(f"{p}proj.linear{i}", cnt * o, k, n_, depth))
+                if i == 0:
+                    # nn.ReLU is one clip. The width is 2048, not d.
+                    ops.append(_relu_vec(f"{p}proj.relu", depth, cnt * o * n_, act))
             continue
         if a.lin is not None:
-            # 0.270 Whisper-v3 family: AvgPool1d(pool) (Qwen2-Audio; ½ add per pooled input) then the projector Linears
-            # on every padded position (the processor's mask selects the valid ones afterwards)
-            rp = rows // (a.stack or a.pool)       # 0.273 Kimi-Audio: 4 positions stacked per adaptor row
+            # Empty ``lin`` is the bare Whisper encoder (final LayerNorm on ``t``).
+            # Qwen2-Audio / Qwen2.5-Omni: LayerNorm after the pool, then a Linear with no GELU.
+            # Kimi: encoder LayerNorm before the stack. VQAdaptor is Linear, SiLU, Linear, LayerNorm.
+            if a.stack:
+                if len(a.lin) != 2:
+                    raise ValueError("kimi adaptor is not linear, silu, linear, layernorm")
+                (k0, n0), (k1, n1) = a.lin
+                if k0 != a.stack * d or n0 != n1 or k1 != n0:
+                    raise ValueError("kimi adaptor widths do not match the published linears")
+                ops.append(_ln_vec(f"{p}ln", depth, rows, d))
+            rp = rows // (a.stack or a.pool)
             if a.pool > 1:
-                ops.append(Op(f"{p}pool", "vector", a.depths[0], vec=rows * d * 1.0))
+                ops.append(Op(f"{p}pool", "vector", depth, vec=rows * d * 1.0))
+            if not a.stack:
+                ops.append(_ln_vec(f"{p}ln", depth, rp, d))
             for i, (k, n_) in enumerate(a.lin):
-                ops.append(gemm(f"{p}proj.linear{i}", rp, k, n_, a.depths[0]))
+                ops.append(gemm(f"{p}proj.linear{i}", rp, k, n_, depth))
+                if a.stack and i == 0:
+                    ops.append(_silu_vec(f"{p}proj.silu", depth, rp * n_, act))
+                if a.stack and i == len(a.lin) - 1:
+                    ops.append(_ln_vec(f"{p}proj.ln", depth, rp, n_))
             continue
+        # Ming: ln_post, then each downsampler Conv1d + nn.GELU(), then Linear. No ReLU.
+        ops.append(_ln_vec(f"{p}ln", depth, rows, d))
         din, m_ = d, rows
         for i, (k, st, pd) in enumerate(a.ds):
-            m_ = cnt * o if i == len(a.ds) - 1 else m_      # single-stage downsampler in the release
-            ops.append(gemm(f"{p}proj.conv{i}", m_, k * din, a.out, a.depths[0]))
+            m_ = cnt * o if i == len(a.ds) - 1 else m_
+            ops.append(gemm(f"{p}proj.conv{i}", m_, k * din, a.out, depth))
+            gelu_name = f"{p}proj.gelu" if len(a.ds) == 1 else f"{p}proj.gelu{i}"
+            ops.append(_gelu_erf_vec(gelu_name, depth, m_ * a.out, act))
             din = a.out
-        ops.append(gemm(f"{p}proj.linear", cnt * o, a.out, a.out, a.depths[0]))
+        ops.append(gemm(f"{p}proj.linear", cnt * o, a.out, a.out, depth))
     return ops
 
 
