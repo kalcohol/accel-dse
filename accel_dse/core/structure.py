@@ -1076,6 +1076,226 @@ def build_boltz1(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
                  reasons, "boltz1")
 
 
+def _px_affine(sh: dict, name: str, width: int) -> None:
+    _need_vec(sh, "protenix", name + ".weight", width)
+    _need_vec(sh, "protenix", name + ".bias", width)
+
+
+def _px_scale(sh: dict, name: str, width: int) -> None:
+    """create_offset=False LayerNorm: scale only."""
+    _need_vec(sh, "protenix", name + ".weight", width)
+    if name + ".bias" in sh:
+        raise ValueError(f"protenix {name}.bias is not in the published LayerNorm")
+
+
+def _px_adaln_stays(sh: dict, name: str, width: int) -> None:
+    """AdaptiveLayerNorm is sigmoid(scale) * norm(a) + bias. Do not bill it as LayerNorm."""
+    scale = name + ".layernorm_a.weight"
+    if scale in sh:
+        raise ValueError(f"protenix {scale} is not the published scale-free AdaLN")
+    _px_scale(sh, name + ".layernorm_s", width)
+
+
+def _tag_protenix_vectors(pl: list[Layer], sh: dict, c: dict, stacks: dict) -> list[Layer]:
+    """Bill published LayerNorm, Transition SiLU, and ReLU. AdaLN and diffusion SwiGLU stay out.
+
+    TemplateEmbedder.forward returns 0 in v0.5.0, so its stored norms are not executed.
+    """
+    from .ir import (
+        PROTENIX_ATOM_DIT_LINEARS, PROTENIX_CONF_LINEARS, PROTENIX_DIFF_LINEARS, PROTENIX_DIT_LINEARS,
+        PROTENIX_EMBED_LINEARS, PROTENIX_MSA_LAST_LINEARS, PROTENIX_MSA_LINEARS, PROTENIX_MSA_REST,
+        PROTENIX_PAIR_LINEARS, _px_check_conf, _px_check_diff, _px_check_dit, _px_check_embed,
+        _px_check_msa, _px_check_pair, _px_check_recycle,
+    )
+    who = "protenix"
+    if int(c["c_s"]) != 384 or int(c["c_z"]) != 128 or int(c["c_token"]) != 768:
+        raise ValueError(f"{who} channel width is not the published pairformer")
+    if int(c["c_atom"]) != 128 or int(c["c_atompair"]) != 16:
+        raise ValueError(f"{who} atom width is not the published encoder")
+    if c.get("template") is not False:
+        raise ValueError(f"{who} template flag is not the published disabled setting")
+    if c.get("pairformer_blocks") != 48 or stacks.get("pairformer_stack.blocks") != 48:
+        raise ValueError(f"{who} pairformer blocks are not 48")
+    if c.get("msa_blocks") != 4 or stacks.get("msa_module.blocks") != 4:
+        raise ValueError(f"{who} msa blocks are not 4")
+    if c.get("confidence_blocks") != 4 or stacks.get("confidence_head.pairformer_stack.blocks") != 4:
+        raise ValueError(f"{who} confidence blocks are not 4")
+    if c.get("diffusion_blocks") != 24 or stacks.get("diffusion_module.diffusion_transformer.blocks") != 24:
+        raise ValueError(f"{who} diffusion blocks are not 24")
+    atom_stacks = (
+        "input_embedder.atom_attention_encoder.atom_transformer.diffusion_transformer.blocks",
+        "diffusion_module.atom_attention_encoder.atom_transformer.diffusion_transformer.blocks",
+        "diffusion_module.atom_attention_decoder.atom_transformer.diffusion_transformer.blocks",
+    )
+    if c.get("atom_blocks") != 3 or any(stacks.get(name) != 3 for name in atom_stacks):
+        raise ValueError(f"{who} atom transformer blocks are not 3")
+    for layer in pl:
+        for core in layer.pair_cores:
+            if core.kind == "local_att" and core.win != (32, 128):
+                raise ValueError(f"{who} atom window is not 32 x 128")
+
+    def pair_block(prefix: str, last: int) -> None:
+        for idx in (0, last):
+            base = f"{prefix}{idx}."
+            for suffix, width in (
+                ("attention_pair_bias.layernorm_a", 384),
+                ("attention_pair_bias.layernorm_z", 128),
+                ("single_transition.layernorm1", 384),
+                ("pair_transition.layernorm1", 128),
+                ("tri_att_start.layer_norm", 128),
+                ("tri_att_end.layer_norm", 128),
+                ("tri_mul_in.layer_norm_in", 128),
+                ("tri_mul_in.layer_norm_out", 128),
+                ("tri_mul_out.layer_norm_in", 128),
+                ("tri_mul_out.layer_norm_out", 128),
+            ):
+                _px_affine(sh, base + suffix, width)
+
+    pair_block("pairformer_stack.blocks.", 47)
+    pair_block("confidence_head.pairformer_stack.blocks.", 3)
+    msa0 = "msa_module.blocks.0."
+    for suffix, width in (
+        ("msa_stack.msa_pair_weighted_averaging.layernorm_m", 64),
+        ("msa_stack.msa_pair_weighted_averaging.layernorm_z", 128),
+        ("msa_stack.transition_m.layernorm1", 64),
+        ("outer_product_mean_msa.layer_norm", 64),
+        ("pair_stack.pair_transition.layernorm1", 128),
+        ("pair_stack.tri_att_start.layer_norm", 128),
+        ("pair_stack.tri_att_end.layer_norm", 128),
+        ("pair_stack.tri_mul_in.layer_norm_in", 128),
+        ("pair_stack.tri_mul_in.layer_norm_out", 128),
+        ("pair_stack.tri_mul_out.layer_norm_in", 128),
+        ("pair_stack.tri_mul_out.layer_norm_out", 128),
+    ):
+        _px_affine(sh, msa0 + suffix, width)
+    msa3 = "msa_module.blocks.3."
+    for suffix, width in (
+        ("outer_product_mean_msa.layer_norm", 64),
+        ("pair_stack.pair_transition.layernorm1", 128),
+        ("pair_stack.tri_att_start.layer_norm", 128),
+        ("pair_stack.tri_att_end.layer_norm", 128),
+        ("pair_stack.tri_mul_in.layer_norm_in", 128),
+        ("pair_stack.tri_mul_in.layer_norm_out", 128),
+        ("pair_stack.tri_mul_out.layer_norm_in", 128),
+        ("pair_stack.tri_mul_out.layer_norm_out", 128),
+    ):
+        _px_affine(sh, msa3 + suffix, width)
+    if any(k.startswith("msa_module.blocks.3.msa_stack.") for k in sh):
+        raise ValueError(f"{who} last msa block still has an MSA stack")
+    _px_affine(sh, "layernorm_z_cycle", 128)
+    _px_affine(sh, "layernorm_s", 384)
+    for name, width in (
+        ("confidence_head.input_strunk_ln", 384),
+        ("confidence_head.pae_ln", 128),
+        ("confidence_head.pde_ln", 128),
+        ("confidence_head.plddt_ln", 384),
+        ("confidence_head.resolved_ln", 384),
+    ):
+        _px_affine(sh, name, width)
+    for name, width in (
+        ("diffusion_module.diffusion_conditioning.layernorm_z", 256),
+        ("diffusion_module.diffusion_conditioning.layernorm_s", 833),
+        ("diffusion_module.diffusion_conditioning.layernorm_n", 256),
+        ("diffusion_module.atom_attention_encoder.layernorm_s", 384),
+        ("diffusion_module.atom_attention_encoder.layernorm_z", 128),
+        ("diffusion_module.layernorm_s", 384),
+        ("diffusion_module.layernorm_a", 768),
+        ("diffusion_module.atom_attention_decoder.layernorm_q", 128),
+    ):
+        _px_scale(sh, name, width)
+    for name, width in (
+        ("diffusion_module.diffusion_conditioning.transition_z1.layernorm1", 128),
+        ("diffusion_module.diffusion_conditioning.transition_z2.layernorm1", 128),
+        ("diffusion_module.diffusion_conditioning.transition_s1.layernorm1", 384),
+        ("diffusion_module.diffusion_conditioning.transition_s2.layernorm1", 384),
+    ):
+        _px_affine(sh, name, width)
+    _px_dit_norm(sh, "diffusion_module.diffusion_transformer.blocks.", 23, 128, 384)
+    for prefix in atom_stacks:
+        _px_dit_norm(sh, prefix + ".", 2, 16, 128)
+
+    tagged: list[Layer] = []
+    for layer in pl:
+        names = {ln.name for ln in layer.pair_linears}
+        if layer.stack in ("pairformer", "confidence"):
+            if not names:
+                tagged.append(layer)
+            elif names == PROTENIX_PAIR_LINEARS:
+                _px_check_pair(layer)
+                tagged.append(replace(layer, vec_kind="px_pair"))
+            elif layer.stack == "confidence" and names == PROTENIX_CONF_LINEARS:
+                _px_check_conf(layer)
+                tagged.append(replace(layer, vec_kind="px_conf"))
+            else:
+                raise ValueError(f"{who} pairformer linears are not the published set")
+        elif layer.stack == "msa":
+            if names == PROTENIX_MSA_LINEARS:
+                _px_check_msa(layer, False)
+                tagged.append(replace(layer, vec_kind="px_msa"))
+            elif names == PROTENIX_MSA_LAST_LINEARS:
+                _px_check_msa(layer, True)
+                tagged.append(replace(layer, vec_kind="px_msa_last"))
+            elif names == PROTENIX_MSA_REST or not names:
+                tagged.append(layer)
+            else:
+                raise ValueError(f"{who} msa linears are not the published set")
+        elif layer.stack == "recycle":
+            if not names:
+                tagged.append(layer)
+            else:
+                _px_check_recycle(layer)
+                tagged.append(replace(layer, vec_kind="px_recycle"))
+        elif layer.stack == "embed":
+            if names == PROTENIX_EMBED_LINEARS:
+                _px_check_embed(layer)
+                tagged.append(replace(layer, vec_kind="px_embed"))
+            else:
+                tagged.append(layer)
+        elif layer.stack == "diffusion":
+            if names == PROTENIX_DIFF_LINEARS:
+                _px_check_diff(layer)
+                tagged.append(replace(layer, vec_kind="px_diff"))
+            elif names == PROTENIX_DIT_LINEARS:
+                _px_check_dit(layer)
+                tagged.append(replace(layer, vec_kind="px_dit"))
+            else:
+                raise ValueError(f"{who} diffusion linears are not the published set")
+        elif layer.stack in ("atom_embed", "diff_atom_enc", "diff_atom_dec"):
+            if names == PROTENIX_ATOM_DIT_LINEARS:
+                _px_check_dit(layer)
+                tagged.append(replace(layer, vec_kind="px_dit"))
+            else:
+                raise ValueError(f"{who} atom transformer linears are not the published set")
+        else:
+            tagged.append(layer)
+    kinds: dict[str, int] = {}
+    recycle_shapes = []
+    for layer in tagged:
+        if layer.vec_kind:
+            kinds[layer.vec_kind] = kinds.get(layer.vec_kind, 0) + 1
+        if layer.vec_kind == "px_recycle":
+            lin = layer.pair_linears[0]
+            recycle_shapes.append((lin.k, lin.n, lin.rows))
+    if kinds != {
+        "px_pair": 52, "px_msa": 3, "px_msa_last": 1, "px_recycle": 2,
+        "px_embed": 1, "px_diff": 1, "px_conf": 1, "px_dit": 33,
+    }:
+        raise ValueError(f"{who} vector layers are not the published set")
+    if sorted(recycle_shapes) != [(128, 128, "pair"), (384, 384, "res")]:
+        raise ValueError(f"{who} recycle projection shape is not the published pair")
+    return tagged
+
+
+def _px_dit_norm(sh: dict, prefix: str, last: int, c_z: int, c_s: int) -> None:
+    for idx in (0, last):
+        base = f"{prefix}{idx}."
+        _px_scale(sh, base + "attention_pair_bias.layernorm_z", c_z)
+        _px_adaln_stays(sh, base + "attention_pair_bias.layernorm_a", c_s)
+        _px_adaln_stays(sh, base + "conditioned_transition_block.adaln", c_s)
+        if c_z == 16:
+            _px_adaln_stays(sh, base + "attention_pair_bias.layernorm_kv", c_s)
+
+
 def build_protenix(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
     c = rel["config"]
     win = (32, 128)
@@ -1107,6 +1327,7 @@ def build_protenix(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
     pl = [replace(L, pair_linears=tuple(replace(l, rows="spair") if l.rows == "pair" and l.name.endswith(
               ("attention_pair_bias.linear_nobias_z", "atom_attention_encoder.linear_no_bias_z")) else l
               for l in L.pair_linears)) if L.repeat == "diff" else L for L in pl]
+    pl = _tag_protenix_vectors(pl, rel["shapes"], c, rel["stacks"])
     wl = _apply_defaults(wl, msa=c["msa_sample_cutoff_test"], recycles=c["N_cycle"], diff_steps=c["N_step"],
                          samples=c["N_sample"], pair_dim=c["c_z"])
     notes = [f"AF3 复现（v0.5.0）：MSA 模块 {c['msa_blocks']} 块 + Pairformer {c['pairformer_blocks']} 块（每个 cycle 重跑）+ "
@@ -1117,7 +1338,14 @@ def build_protenix(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
              "权重只计存储）",
              "扩散模块按参考实现每步重算 pair 条件（v0.5.0 无跨步缓存），并把 pair 条件沿样本轴展开：每层 pair 偏置投影与原子编码器的 "
              "z → 原子对投影每个样本各算一次；原子数 = 残基 × "
-             f"{wl.atoms_per_res:g}「假设」（仅蛋白质重原子）；原子级输入 / 输出投影按原子行计（部分实为 token 行；每步比参考计数多约 0.6 %）"]
+             f"{wl.atoms_per_res:g}「假设」（仅蛋白质重原子）；原子级输入 / 输出投影按原子行计（部分实为 token 行；每步比参考计数多约 0.6 %）",
+             "0.443：Pairformer 每块计 10 次 LayerNorm，外加 single / pair Transition 的 SiLU 和一次相乘。"
+             "MSA 前 3 块再加 PWA、msa Transition 和 OPM 的 LayerNorm，一共 11 次；最后一块没有 MSAStack，是 8 次。"
+             "recycle 的 layernorm_s / layernorm_z_cycle 每次 cycle 计一次。置信度 input_strunk_ln 在按样本展开之前计一次，"
+             "pae / pde 在 pair 网格上按样本计，plddt / resolved 在原子行上按样本计。"
+             "扩散条件化的 plain LayerNorm 和 Transition、原子编码器的 LayerNorm 和 ReLU、解码器 layernorm_q、"
+             "以及扩散 transformer 的 pair-bias layernorm_z 按发布前向计。AdaLN、扩散 SwiGLU、sigmoid 门不单列。"
+             "逐线性 .ew 不减。mask 乘、OPM 的 mask 归一化除法、input_strunk 前面的 clamp 不单列"]
     reasons = ["只评估神经网络推理：MSA 检索与特征化 / 分子预处理未建模"]
     return _spec(model_id, hf_id, rel, "Protenix（AF3 复现：MSA 模块 + Pairformer + 扩散）", c["c_s"], pl, wl, notes,
                  reasons, "protenix")
