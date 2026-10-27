@@ -6,6 +6,27 @@
 
 
 
+## [0.408.0] — 2026-10-27
+
+### LongCat rope2d 补上已执行的 inv_freq outer 和 cos/sin repeat
+
+- **修正。** `VisionRotaryEmbedding2D.forward_`（`encoders/vision_adaptor.py`，`meituan-longcat/LongCat-Flash-Omni`）在 `LongCatVisionEncoder.forward` 里每个编码器前向调用一次，不在每一层里。构造参数 `dim` 是 `head_dim // 2`（发布的头是 80，所以 dim 是 40）。`inv_freq` 是 `arange(0, dim, 2)`，长度 20，fp32，`persistent=False`。`torch.outer(seq, inv_freq)` 的 `seqlen` 是 `max(t, h, w)`。`VisionProjector` 要求 `t == 1`，所以边长是 `max(ph, pw)`。这张表给后面的层共用，也不随图像张数变大。补 `vis.rope_outer`：`vec` 是边长乘 20，`sfu` 是 0，`a_fmt` 是 fp32，`w_params` 是 0。1024×1024 的网格是 72×72，`vec` 是 1440。不记成 GEMM。`pos_ids` 的 gather 不单列。
+- **修正。** `apply_rotary_pos_emb_vision` 对 `cos` 和 `sin` 做 `unsqueeze(1).repeat(1, 1, 2)`，把最后一维从 `head_dim/2` 复制到 `head_dim`。`unsqueeze` 是 view，不计入。q 和 k 各调用一次，不共用这张表。每一层补 `vis.{层}.rope_repeat`：`vec = 4 * tokens * head_dim`，`sfu` 是 0，`a_fmt` 是 fp32。0.407 的 `vis.{层}.rope` 仍是 cos/sin 加旋转乘，形状不变。softmax 仍是双向分数，`sfu` 仍是 0。Omni 与 Omni-FP8 的 `param_check().rel_err` 仍是 0。请求 fp8 时塔 GEMM 仍是 bf16；outer 和 repeat 仍是 fp32。
+- **不单列。** `emb_mult` 在类里写成 1，前向是乘这个常数。发布的 `dropout` 是 0，`nn.Dropout(0)` 在 eval 是恒等。这两处都不记成算子。
+- **未纳入：**
+  - **LongCat-Flash-Lite-Sparse。** 2026-10-27 再读：sha `35de83a18b5838ec1657edb3f885a59bbdd7888f`，`lastModified` 2026-08-04。根目录有 safetensors，没有 modeling 文件，只有 `tokenization_llama.py`。`architectures` 是 `LongcatCausalLM`，`attention_method` 仍是 LSA。没有已发布的 LSA 前向。不套 MLA，也不套 DSA。
+  - **ERNIE-4.5-21B-A3B、300B-A47B、300B-A47B-Thinking、21B-A3B-Base、VL-424B-A47B-Thinking、0.3B-Thinking。** `config.json` 仍是 401。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 根 `config.json` 仍是 404。同组织的 2.3 fp8 / nvfp4 和 2.5 是 diffusers 或单文件扩散权重。不新写扩散栈。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 的 `lastModified` 是 2026-10-25，根 `config.json` 是 200，内容是空对象。`tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401。
+  - **nvidia Cosmos3。** `nvidia/Cosmos3` 与 `nvidia/Cosmos-3` 的 `config.json` 仍是 401。`nvidia/Cosmos3-Nano` 的类仍是 `Cosmos3ForConditionalGeneration`，配置里有扩散目标和 `qwen3_vl`。这不是已有的条件生成路径。不把内层文本记成 Qwen3-VL，也不新写扩散栈。
+  - **Gemma-4 assistant / QAT。** `google/gemma-4-assistant` 与 `google/gemma-4-E4B-it-qat` 的 `config.json` 仍是 401。`google/gemma-4-12B-it-assistant` 的类仍是 `Gemma4UnifiedAssistantForCausalLM`。这不是已入库的 Gemma-4 栈。不单列。
+  - **2026-10-20 及之后按 `lastModified` 的扫描**（120 个组织，249 条，接口错误 0，2026-10-27）。对得上现有机制、又缺 header 的没有入库。靠近的几条：`MiniMaxAI/MiniMax-M3-MXFP8` 的 `quant_method` 是 `mxfp8`，类是 `MiniMaxM3SparseForConditionalGeneration`；`IFM/K2-Horizon-0.9B` 仍是 `dtype=float32`；`KRAFTON/Raon-1-mini-preview-nvfp4` 的 `quant_method` 仍是 `modelopt_fp4`，`hidden_act` 是 `situ`；`inclusionAI/ZwZ-2B` 是 `qwen3_vl`，`dtype` 是 `float32`，没有新的 header；`tencent/Hy-SimulMT-30B-A3B` 与 FP8 的类仍是 `HYV3SpeechForCausalLM`；`nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Base-BF16` 仍是 `NemotronH_Omni_Reasoning_V3`；`nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB` 的 `config.json` 仍是 404；`inclusionAI/Realtime-Venus` 的根 `config.json` 仍是 zarr 包索引；`meta-models/Muse-Glimmer-30B` 的类是 `MuseGlimmerForConditionalGeneration`，assistant 是 `MuseGlimmerAssistantModel`；`inclusionAI/LBS-27B` 的类是 `Qwen3_5ForConditionalGeneration`，这次没有读 safetensors header，不入库。GGUF / MLX / ONNX / diffusers / tensorrt 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.407.0] — 2026-10-26
 
 ### LongCat 视觉补上已执行的 SiLU、门控乘、两处 erf-GELU 和 rope2d；FSMN 补上 ReLU6、mask 乘和投影器 GELU

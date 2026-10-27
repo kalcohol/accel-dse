@@ -23,7 +23,8 @@ AUDIO_LAYERS = 22
 
 def _block(li: int) -> tuple[str, ...]:
     return (
-        f"vis.{li}.norm1", f"vis.{li}.qkv", f"vis.{li}.rope", f"vis.{li}.q_norm",
+        f"vis.{li}.norm1", f"vis.{li}.qkv", f"vis.{li}.rope", f"vis.{li}.rope_repeat",
+        f"vis.{li}.q_norm",
         f"vis.{li}.k_norm", f"vis.{li}.o", f"vis.{li}.ls1", f"vis.{li}.norm2",
         f"vis.{li}.mlp_in", f"vis.{li}.silu", f"vis.{li}.mlp_mul", f"vis.{li}.mlp_norm",
         f"vis.{li}.mlp_out", f"vis.{li}.ls2",
