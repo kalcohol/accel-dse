@@ -69,6 +69,9 @@ docs/MODEL.md §20):
          GEMM. Resize is PixtralProcessor: the image processor is called with patch_size * spatial_merge_size,
          longest edge is vision_config.image_size, and each merged row adds one break token (the last is
          the end token). Attention is one bidirectional block per image.
+         0.418 bills the weight RMSNorms (ln_pre, per-layer attention and FFN norms, projector norm),
+         ACT2FN["silu"] on the gate, the plain product with up, and ACT2FN["gelu"] (erf) after linear_1.
+         RoPE, the full residual adds, and the block attention mask stay in the tail.
   ernievl ERNIE-4.5-VL DFNRope (ernie4_5_moe_vl): Linear patch embed (3·14² → 1280, no bias),
          32 pre-LN blocks (fused qkv and proj with bias, quick_gelu MLP fc1 / fc2 with bias, not
          gated). attn_sep is stored and is not read by VisionAttention, so there is no second
@@ -118,6 +121,13 @@ projector, and the pre-attention, pre-MLP and encoder LayerNorms. Index-Echo 2B
 also bills ``F.gelu`` on the connector ``w1`` output. Those are the erf form.
 The connector scalars and the 9B projection have no activation. The sinusoid add
 and the plain residual adds are not ops.
+Pixtral (family ``pixtral``) bills ``PixtralRMSNorm`` / ``Mistral3RMSNorm`` (fp32
+``pow(2).mean``, one ``rsqrt``, times the weight) on the conv output, before
+attention, before the SwiGLU, and on the patch sequence before the merger.
+``ACT2FN["silu"]`` is ``x * sigmoid(x)`` on the gate only. The product with ``up``
+is one multiply on that same width. ``ACT2FN["gelu"]`` after ``linear_1`` is the
+erf form, on merged rows and the text width. Those three stay at the vision-role
+dtype. The sinusoid RoPE, the full residual adds, and the block mask are not ops.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -337,6 +347,9 @@ class VisionSpec:
     # 0.366 Qwen3-VL: number of deepstack mergers (len(deepstack_visual_indexes)).  0 for every earlier tower.
     # Each one appends the same two post GEMMs as the final merger; the LLM add is a prefill vector op.
     deepstack: int = 0
+    # 0.418 Pixtral SiLU, the SwiGLU product, and the projector erf-GELU. The one
+    # float safetensors vision role. RMSNorm stays fp32. Empty on every earlier tower.
+    vec_fmt: str = ""
 
     @property
     def head_dim(self) -> int:
@@ -2270,7 +2283,16 @@ def _pixtral_resize(height: int, width: int, longest: int, factor: int) -> tuple
 
 def _pixtral_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
     """PixtralVisionModel + Mistral3MultiModalProjector. All linears in the tower are bias-free.
-    The merger linear is bias-free. The two projector linears follow ``multimodal_projector_bias``."""
+    The merger linear is bias-free. The two projector linears follow ``multimodal_projector_bias``.
+
+    0.418: ``hidden_act`` must be ``silu`` and ``projector_hidden_act`` must be ``gelu``.
+    ``ACT2FN["silu"]`` is ``x * sigmoid(x)``. ``ACT2FN["gelu"]`` is the erf form.
+    Anything else is refused. The RMSNorms are billed in ``_tower_ops``.
+    """
+    if vc.get("hidden_act") != "silu":
+        raise ValueError("pixtral hidden_act is not silu")
+    if cfg.get("projector_hidden_act") != "gelu":
+        raise ValueError("pixtral projector_hidden_act is not gelu")
     h = vc.get("hidden_size")
     inter = vc.get("intermediate_size")
     depth = vc.get("num_hidden_layers")
@@ -3840,6 +3862,15 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     cnt = images * v.heads
     qkv_n = (v.heads + 2 * v.kv_heads) * dh if v.kv_heads else 3 * q
     longcat = v.family == "longcatvit" and v.gated
+    pixtral = v.family == "pixtral"
+    if pixtral:
+        # PixtralVisionModel.ln_pre is PixtralRMSNorm on the flattened patches,
+        # before the block loop. One rsqrt per patch token, width hidden.
+        if v.vec_fmt not in ("fp16", "bf16", "fp32"):
+            raise ValueError("pixtral activation dtype is not a vision-role float")
+        if (not v.gated or len(v.post) != 3 or v.post[1][0] != h):
+            raise ValueError("pixtral projector is not norm, merger, linear, gelu, linear")
+        ops.append(_rms_vec(pfx + "ln_pre", 0, rows, h))
     if longcat and grid is not None:
         # VisionRotaryEmbedding2D(head_dim // 2). inv_freq is arange(0, dim, 2)
         # in fp32 and is not persistent. Encoder.forward calls forward_ once,
@@ -3876,7 +3907,14 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # norm, so the width is embed_dim, not head_dim, and the rsqrt count is
             # tokens rather than tokens * heads.
             ops.append(lc_rms(f"{li}.norm1", li, h, rows))
+        if pixtral:
+            # PixtralAttentionLayer: attention_norm, then q/k/v. Width is hidden.
+            ops.append(_rms_vec(pfx + f"{li}.attn_rms", li, rows, h))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
+        if pixtral:
+            # Attention runs before o_proj. One bidirectional block per image.
+            # The block mask stays inside this softmax. RoPE is not an op here.
+            ops += attn(str(li), li, N, N * N, False)
         if longcat:
             # apply_rotary_pos_emb_vision upcasts q and k to fp32. freqs.cos and
             # freqs.sin run once per call. freqs is [tokens, head_dim/2] (the
@@ -3898,12 +3936,21 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             ops.append(lc_rms(f"{li}.q_norm", li, h, rows))
             ops.append(lc_rms(f"{li}.k_norm", li, h, rows))
         ops.append(gemm(f"{li}.o", rows, q, h, li))
+        if pixtral:
+            # Residual add is the full branch, not 0.5. ffn_norm then SwiGLU.
+            ops.append(_rms_vec(pfx + f"{li}.ffn_rms", li, rows, h))
         if longcat:
             # ls1 / ls2 are Parameter(embed_dim): branch * scale, then the residual add.
             # The class does not upcast. No rsqrt.
             ops.append(Op(pfx + f"{li}.ls1", "vector", li, vec=rows * h * 2, a_fmt="bf16"))
             ops.append(lc_rms(f"{li}.norm2", li, h, rows))
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
+        if pixtral:
+            # PixtralMLP: down(act(gate) * up). ACT2FN["silu"] is x * sigmoid(x)
+            # on the gate only, so the width is intermediate, not the fused 2x GEMM.
+            # The product with up is one multiply. Neither upcasts.
+            ops.append(_silu_vec(pfx + f"{li}.silu", li, rows * v.inter, v.vec_fmt))
+            ops.append(Op(pfx + f"{li}.mlp_mul", "vector", li, vec=rows * v.inter, a_fmt=v.vec_fmt))
         if longcat:
             # SwiGLU.forward is fc2(RMSNorm(silu(fc1(x)) * fc3(x))). ACT2FN["silu"]
             # is x * sigmoid(x): the language-stack count, 4 element ops with exp
@@ -3919,6 +3966,8 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         ops.append(gemm(f"{li}.mlp_out", rows, v.inter, h, li))
         if longcat:
             ops.append(Op(pfx + f"{li}.ls2", "vector", li, vec=rows * h * 2, a_fmt="bf16"))
+        if pixtral:
+            continue
         if v.tile and grid is not None and li not in v.full_idx:
             ops += attn(str(li), li, N, tile_keys(grid[0], grid[1], v.tile), False)
             continue
@@ -3935,10 +3984,18 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # (ph * pw / 2), not on patch tokens. fp32 reduction, one rsqrt per row.
         kn0 = v.post[0]
         ops.append(lc_rms("proj_ln", v.depth, kn0[0], merger_rows(kn0)))
+    if pixtral:
+        # Mistral3MultiModalProjector.norm runs on the patch sequence, before the
+        # unfold. Width is hidden, not the text width, and the row count is not merged.
+        ops.append(_rms_vec(pfx + "proj_rms", v.depth, images * N0, h))
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
         m_ = merger_rows(kn)
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
+        if pixtral and i == 1:
+            # ACT2FN["gelu"] after linear_1, before linear_2. Erf form. Rows are
+            # the merged count. Width is linear_1's N (the text hidden size).
+            ops.append(_gelu_erf_vec(pfx + "proj_gelu", v.depth, m_ * n, v.vec_fmt))
         if longcat and i < 2:
             # VisionProjector.p0 is LayerNorm, Linear, GELU, Linear, GELU.
             # nn.GELU() default is the erf form, not tanh:
