@@ -2067,7 +2067,16 @@ def _full_attn(model: ModelSpec, li: int, core: AttnCore, ph: Phase, sh: Shard, 
            Op(tag + "softmax", "vector", li, vec=cnt * nq * nk * causal * 5, sfu=cnt * nq * nk * causal)]
     t_loc = b * _cdiv(ph.q, sh.sp)
     if not cross:
-        ops.append(Op("qk_norm_rope", "vector", li, vec=t_loc * heads_tp * (core.qk_dim * 2 * 3 + core.rope_dim * 2 * 3)))
+        # qk_norm True (default): the historical lump, QK-norm plus RoPE, 3 element-ops each.
+        # qk_norm False: RoPE only. ESM-2 has no QK-norm (modeling_esm.py EsmSelfAttention).
+        qk_part = core.qk_dim * 2 * 3 if core.qk_norm else 0
+        rope_part = core.rope_dim * 2 * 3
+        if core.qk_norm or rope_part:
+            ops.append(Op("qk_norm_rope" if core.qk_norm else "rope", "vector", li,
+                          vec=t_loc * heads_tp * (qk_part + rope_part)))
+        if core.q_scale:
+            # query * attention_head_size**-0.5, before RoPE. One multiply. The class does not upcast.
+            ops.append(Op("q_scale", "vector", li, vec=t_loc * heads_tp * core.qk_dim, a_fmt=model.act_fmt))
         if sh.sp > 1:
             ops.append(Op("sp_a2a_qkv", "comm", li, comm_kind="alltoall", comm_group=sh.sp,
                           comm_bytes=t_loc * heads_tp * (2 * core.qk_dim + core.v_dim) * ab, comm_stride=sh.tp))
@@ -2257,7 +2266,13 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
     if ph.mreuse and L.core.span == "mode":    # 0.255: only the image mode block runs on a reused step
         t = b * _cdiv(_video_rows(model, ph), sp)
     mod = 4 if model.adaln else 0              # AdaLN: x·(1+scale)+shift, gate (element-ops per element)
-    ops: list[Op] = [Op("attn_norm", "vector", li, vec=t * h * (4 + mod))]
+    if L.vec_kind == "esm2":
+        # nn.LayerNorm before attention. fp32 reduction, one rsqrt per row. Affine is already in misc.
+        if model.adaln or L.ffn.kind != "dense" or L.ffn.gated:
+            raise ValueError("esm2 vector billing is pre-LN dense erf-GELU")
+        ops = [Op("attn_norm", "vector", li, vec=t * h * 4, sfu=float(t), a_fmt="fp32")]
+    else:
+        ops = [Op("attn_norm", "vector", li, vec=t * h * (4 + mod))]
 
     def lin(prefix: str, l: Linear, role: str) -> Op:
         k, n = _lin_local(l, tp)
@@ -2274,7 +2289,10 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         ops += _full_attn(model, li, L.cross, ph, sh, b, cross=True)
         if tp > 1:
             ops.append(Op("cross_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
-    ops.append(Op("ffn_norm", "vector", li, vec=t * h * (4 + mod)))
+    if L.vec_kind == "esm2":
+        ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=float(t), a_fmt="fp32"))
+    else:
+        ops.append(Op("ffn_norm", "vector", li, vec=t * h * (4 + mod)))
     f = L.ffn
     if f.kind == "moe":
         # 0.144 MoE DiT (LingBot-Video LingBotVideoSparseMoeBlock): router + shared expert GEMMs on every local token;
@@ -2324,7 +2342,13 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
     else:
         ops += [lin("mlp", l, l.role if l.role == "mlp_bf16" or l.role.startswith("mtp_") else "mlp")
                 for l in L.ffn_linears]
-        ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))     # GELU (tanh) / SwiGLU 「假设」 8 ops / element
+        if L.vec_kind == "esm2":
+            # modeling_esm.gelu: x * 0.5 * (1 + erf(x / sqrt(2))). Four arithmetic ops and one erf.
+            # The class does not upcast, so a_fmt follows the activation dtype.
+            nact = t * _cdiv(L.ffn.d_ff, tp)
+            ops.append(Op("gelu", "vector", li, vec=nact * 5, sfu=float(nact), a_fmt=model.act_fmt))
+        else:
+            ops.append(Op("act", "vector", li, vec=t * _cdiv(L.ffn.d_ff, tp) * 8))  # GELU (tanh) / SwiGLU 「假设」 8 ops / element
     if L.post_norm:      # 0.144 sandwich norms (RMSNorm on the attention and FFN outputs before the gated residual)
         ops.append(Op("post_norm", "vector", li, vec=2 * t * h * 4))
     if tp > 1:
@@ -2350,7 +2374,11 @@ def _full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
         ops.append(Op("embed_lookup", "lookup", li, kv_read=t * model.hidden * model.fmt("embed").bits / 8,
                       vec=t * model.hidden * 2))
     if side == "post":
-        ops.append(Op("final_norm", "vector", li, vec=t * model.hidden * (4 + (4 if model.adaln else 0))))
+        if model.vec_kind == "esm2":
+            # EsmEncoder.emb_layer_norm_after. Same LayerNorm recipe as the block norms.
+            ops.append(Op("final_norm", "vector", li, vec=t * model.hidden * 4, sfu=float(t), a_fmt="fp32"))
+        else:
+            ops.append(Op("final_norm", "vector", li, vec=t * model.hidden * (4 + (4 if model.adaln else 0))))
     for l in (model.io_pre if side == "pre" else model.io_post):
         k, n = _lin_local(l, sh.tp)
         m = _rows(model, l, ph, b, sh.sp)
@@ -2364,8 +2392,18 @@ def _full_io_ops(model: ModelSpec, ph: Phase, sh: Shard, side: str) -> list[Op]:
         ops += _io_attn_ops(model, ph, sh, b, li)
     if side == "post" and model.vocab and model.vocab_head:     # MLM logits for every token (tied decoder)
         n = _cdiv(model.vocab, sh.tp)
+        if model.vec_kind == "esm2":
+            # EsmLMHead: dense (already emitted) → gelu → LayerNorm → decoder + bias.
+            # GEMM order stays dense then decoder. gelu and the head LayerNorm sit between them.
+            ops.append(Op("lm_gelu", "vector", li, vec=t * model.hidden * 5, sfu=float(t * model.hidden),
+                          a_fmt=model.act_fmt))
+            ops.append(Op("lm_ln", "vector", li, vec=t * model.hidden * 4, sfu=float(t), a_fmt="fp32"))
         ops.append(gemm(model, "mlm_decoder", li, t, model.hidden, n, "embed", stream=True))
-        ops.append(Op("act", "vector", li, vec=t * model.hidden * 8 + t * n * 3))
+        if model.vec_kind == "esm2":
+            # decoder(x) + bias. One add on this rank's vocab columns. No transcendental.
+            ops.append(Op("lm_bias", "vector", li, vec=float(t * n), a_fmt=model.act_fmt))
+        else:
+            ops.append(Op("act", "vector", li, vec=t * model.hidden * 8 + t * n * 3))
     return ops
 
 

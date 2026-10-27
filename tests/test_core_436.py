@@ -3,7 +3,7 @@
 Llama, Qwen2.5-VL, Qwen3 and Qwen3-VL text towers bill fp32 RMSNorm and the
 checkpoint-dtype SiLU plus the gate*up multiply. T5 bills T5LayerNorm as
 RMSNorm and leaves gelu_new unbilled. CLIP bills nn.LayerNorm and leaves
-quick_gelu unbilled. Qwen3.5 bills SiLU only. umT5 stays on the GEMM tail.
+quick_gelu unbilled. Qwen3.5 bills SiLU only. umT5 RMSNorm is billed in 0.437.
 Vector flops stay 0. GEMM tails stay at 3 element-ops per output.
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ def _patch(key: str, edit):
 
 
 def test_version_is_436():
-    assert __version__ == "0.436.0"
+    assert __version__ == "0.437.0"
 
 
 def test_llama_bills_rmsnorm_and_silu_and_keeps_gemm_tail():
@@ -234,16 +234,15 @@ def test_qwen35_bills_silu_and_not_zero_centered_rmsnorm():
     assert g.w_fmt == "bf16" and g.a_fmt == "fp8" and g.vec == rows * g.n * 3.0
 
 
-def test_umt5_stays_on_the_gemm_tail():
+def test_umt5_rms_keeps_the_gemm_flops():
     te = pipeline_for("wan2.1-14b").text[0]
     ops = text_ops(te, 2, "bf16")[0]
     names = [o.name for o in ops]
-    assert not any(n.endswith((".attn_rms", ".mlp_rms", ".silu", ".mlp_mul", ".attn_ln", ".q_rms"))
-                   or n in ("te.final_rms", "te.final_ln") for n in names)
     assert sum(n.endswith(".softmax") for n in names) == 24
     rows, d, f, L, T = 1024, 4096, 10240, 24, 512
     ref = 2 * rows * L * (4 * d * d + 3 * d * f) + L * 2 * 64 * 4 * T * T * 64
     assert abs(sum(o.flops for o in ops) / ref - 1) < 1e-9
+    assert names.count("te.0.attn_rms") == 1 and "te.final_rms" in names
 
 
 def test_text_encoder_flops_stay_the_closed_form():

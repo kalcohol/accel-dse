@@ -734,15 +734,34 @@ def build_moss(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> Mode
 _MOSS_NEG_TOKENS = 10      # chat-templated empty negative prompt (see build_moss)
 
 
+def _require_esm_encoder(c: dict) -> None:
+    """Published ESM-2 encoder (transformers modeling_esm.py). The class hardcodes erf-GELU
+    and nn.LayerNorm. A checkpoint whose config does not match that forward is refused."""
+    if c.get("model_type") != "esm":
+        raise ValueError("esm model_type is not esm")
+    if c.get("hidden_act") != "gelu":
+        raise ValueError("esm hidden_act is not gelu")
+    if c.get("position_embedding_type") != "rotary":
+        raise ValueError("esm position_embedding_type is not rotary")
+    if c.get("emb_layer_norm_before") is not False:
+        raise ValueError("esm emb_layer_norm_before is not false")
+    if c.get("attention_probs_dropout_prob") not in (0, 0.0) or c.get("hidden_dropout_prob") not in (0, 0.0):
+        raise ValueError("esm dropout is not 0")
+    if c.get("is_folding_model"):
+        raise ValueError("esm folding model is not the encoder")
+
+
 # ---------------------------------------------------------------- ESM-2
 def build_esm(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
     c, sh = rel["config"], rel["shapes"]
+    _require_esm_encoder(c)
     d, H, f, L, V = c["hidden_size"], c["num_attention_heads"], c["intermediate_size"], c["num_hidden_layers"], c["vocab_size"]
     hd = d // H
-    alin, core = _mha(d, H, rope=hd if c.get("position_embedding_type") == "rotary" else 0)
+    alin, core = _mha(d, H, rope=hd)
+    core = replace(core, qk_norm=False, q_scale=True)
     ffn, flin = _gelu_ffn(d, f)
     misc = 4 * d + 2 * d + f + d + 2 * d                    # biases + attention LN + output LN
-    layer = Layer(alin, core, ffn, flin, misc)
+    layer = Layer(alin, core, ffn, flin, misc, vec_kind="esm2")
     io_post = (Linear("lm_dense", d, d, "col"),)
     pos = math.prod(sh.get("esm.embeddings.position_embeddings.weight", [0]))
     contact = math.prod(sh.get("esm.contact_head.regression.weight", [0])) + 1
@@ -760,7 +779,11 @@ def build_esm(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> Model
     if pos:
         notes.append(f"绝对位置表（{pos / 1e6:.2f}M 参数）随发布存储，但 ESM-2 用 RoPE，推理不读取：只计存储")
     notes.append("contact head（逻辑回归，各层注意力图 → 接触图）只计参数；默认不输出接触图，其注意力图读写未计")
-    return replace(spec, notes=tuple(notes))
+    notes.append("0.437：块内两处 nn.LayerNorm 与编码器末层 emb_layer_norm_after 按 fp32 归约计"
+                 "（vec = token×hidden×4，每行一次 rsqrt）；MLP 与 MLM 头的 gelu 是 "
+                 "x·0.5·(1+erf(x/√2))（vec = 元素×5，一次 erf）。查询在 RoPE 前乘 head_dim**-0.5。"
+                 "没有 QK-norm。token_dropout 的缩放取决于样本里的 mask 数，工作负载没有 mask 率，不单列")
+    return replace(spec, notes=tuple(notes), vec_kind="esm2")
 
 
 def build_generanno(model_id: str, hf_id: str, rel: dict, wl: NativeWorkload) -> ModelSpec:
