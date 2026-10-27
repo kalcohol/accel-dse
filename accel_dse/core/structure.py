@@ -259,15 +259,75 @@ def _apply_defaults(wl, **kw):
     return replace(wl, **{k: v for k, v in kw.items() if not getattr(wl, k)})
 
 
+def _need_shape(sh: dict, name: str, shape: list) -> None:
+    if list(sh.get(name) or []) != shape:
+        raise ValueError(f"esmfold {name} shape is not {shape}")
+
+
+def _require_esmfold_lm(c: dict, sh: dict) -> tuple[int, int, int, int, int]:
+    """Published ESMFold language tower (transformers modeling_esm.py + modeling_esmfold.py).
+
+    The encoder is the ESM-2 stack (pre-LN, erf-GELU, query scale, RoPE). Its width is
+    ``hidden_size``. The folding trunk's ``sequence_state_dim`` is a different width.
+    """
+    if c.get("model_type") != "esm":
+        raise ValueError("esmfold model_type is not esm")
+    if c.get("is_folding_model") is not True:
+        raise ValueError("esmfold is_folding_model is not true")
+    if c.get("hidden_act") != "gelu":
+        raise ValueError("esmfold hidden_act is not gelu")
+    if c.get("position_embedding_type") != "rotary":
+        raise ValueError("esmfold position_embedding_type is not rotary")
+    if c.get("emb_layer_norm_before") is not False:
+        raise ValueError("esmfold emb_layer_norm_before is not false")
+    if c.get("attention_probs_dropout_prob") not in (0, 0.0) or c.get("hidden_dropout_prob") not in (0, 0.0):
+        raise ValueError("esmfold dropout is not 0")
+    ec = c.get("esmfold_config") or {}
+    if ec.get("esm_type") != "esm2_3B":
+        raise ValueError("esmfold esm_type is not esm2_3B")
+    if ec.get("bypass_lm"):
+        raise ValueError("esmfold bypass_lm is not false")
+    if ec.get("use_esm_attn_map"):
+        raise ValueError("esmfold use_esm_attn_map is not false")
+    if ec.get("fp16_esm"):
+        raise ValueError("esmfold fp16_esm is not false")
+    trunk = ec.get("trunk") or {}
+    d = int(c["hidden_size"])
+    H = int(c["num_attention_heads"])
+    f = int(c["intermediate_size"])
+    L = int(c["num_hidden_layers"])
+    cs = int(trunk.get("sequence_state_dim") or 0)
+    if d <= 0 or H <= 0 or f <= 0 or L <= 0 or d % H or cs <= 0:
+        raise ValueError("esmfold language width does not divide")
+    _need_shape(sh, "esm.encoder.emb_layer_norm_after.weight", [d])
+    _need_shape(sh, "esm.encoder.layer.0.attention.LayerNorm.weight", [d])
+    _need_shape(sh, "esm.encoder.layer.0.LayerNorm.weight", [d])
+    _need_shape(sh, f"esm.encoder.layer.{L - 1}.attention.LayerNorm.weight", [d])
+    _need_shape(sh, f"esm.encoder.layer.{L - 1}.LayerNorm.weight", [d])
+    _need_shape(sh, "esm.encoder.layer.0.intermediate.dense.weight", [f, d])
+    _need_shape(sh, "esm_s_mlp.0.weight", [d])
+    _need_shape(sh, "esm_s_mlp.1.weight", [cs, d])
+    _need_shape(sh, "esm_s_mlp.3.weight", [cs, cs])
+    if any("q_norm" in n or "k_norm" in n for n in sh):
+        raise ValueError("esmfold has q_norm")
+    if any(n.startswith("lm_head.dense") or n.startswith("lm_head.decoder") or n.startswith("lm_head.layer_norm")
+           for n in sh):
+        raise ValueError("esmfold has an ESM-2 MLM head")
+    return d, H, f, L, cs
+
+
 def build_esmfold(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
     from .domain import _gelu_ffn, _mha
     c, sh = rel["config"], rel["shapes"]
-    d, H, f, L = c["hidden_size"], c["num_attention_heads"], c["intermediate_size"], c["num_hidden_layers"]
+    d, H, f, L, cs = _require_esmfold_lm(c, sh)
     t = c["esmfold_config"]["trunk"]
     alin, core = _mha(d, H, rope=d // H)
+    # Same attention as the ESM-2 encoder: RoPE, query scaled by head_dim**-0.5, no QK-norm.
+    core = replace(core, qk_norm=False, q_scale=True)
     ffn, flin = _gelu_ffn(d, f)
     # misc: q/k/v/o biases, 2 layer norms, FFN biases + the rotary inv_freq buffer stored (fp32) in the checkpoint
-    esm_layer = Layer(alin, core, ffn, flin, 4 * d + 2 * d + f + d + 2 * d + (d // H) // 2, stack="esm")
+    esm_layer = Layer(alin, core, ffn, flin, 4 * d + 2 * d + f + d + 2 * d + (d // H) // 2, stack="esm",
+                      vec_kind="esm2", vec_width=d)
     groups = [Group("trunk.blocks.", "trunk", "recycle", blocks=True),
               Group("trunk.structure_module.", "structure", "recycle", iters=t["structure_module"]["num_blocks"]),
               Group("trunk.", "recycle", "recycle"),
@@ -278,21 +338,39 @@ def build_esmfold(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
     sh2 = {k: v for k, v in sh.items() if not k.startswith("esm.encoder.layer.") and k not in ("af2_to_esm",)
            and not k.endswith("position_ids")}
     pl, _ = layers_from({**rel, "shapes": sh2}, groups, {})
+    tagged = []
+    for layer in pl:
+        names = [ln.name for ln in layer.pair_linears]
+        if names == ["mlp.1", "mlp.3"] and layer.stack == "esm_proj":
+            if layer.pair_linears[0].k != d or layer.pair_linears[0].n != cs or layer.pair_linears[1].k != cs \
+                    or layer.pair_linears[1].n != cs:
+                raise ValueError("esmfold projection GEMM shape is not language width to trunk width")
+            tagged.append(replace(layer, vec_kind="esm_proj", vec_width=d))
+        elif any(n.startswith("mlp.") for n in names) and layer.stack == "esm_proj":
+            raise ValueError("esmfold esm_s_mlp GEMMs are not the published pair")
+        else:
+            tagged.append(layer)
+    pl = tagged
+    if sum(1 for layer in pl if layer.vec_kind == "esm_proj") != 1:
+        raise ValueError("esmfold projection layer is missing")
     max_pos = c.get("max_position_embeddings", 1026)
     # 0.61.2: num_recycles=None runs the loop max_recycles times in total (the +1 for the first pass applies only to an
     # explicit num_recycles; esm/esmfold/v1/trunk.py and transformers EsmFoldingTrunk) — 0.43–0.61.1 ran 5 passes
     wl = _apply_defaults(wl, recycles=t["max_recycles"], pair_dim=t["pairwise_state_dim"], max_seq=max_pos - 4,
                          special_tokens=2)
-    notes = [f"ESM-2 3B 语言模型（{L} 层，fp16 发布）每请求一次前向（序列 + <cls>/<eos>），其 37 层隐状态加权求和后进入折叠主干",
-             f"折叠主干 {rel['stacks']['trunk.blocks']} 块（序列 1024 维 + pair {t['pairwise_state_dim']} 维；三角乘法 ×2、三角注意力 ×2、"
+    notes = [f"ESM-2 3B 语言模型（{L} 层，fp16 发布，宽 {d}）每请求一次前向（序列 + <cls>/<eos>），其 37 层隐状态加权求和后进入折叠主干",
+             f"折叠主干 {rel['stacks']['trunk.blocks']} 块（序列 {cs} 维 + pair {t['pairwise_state_dim']} 维；三角乘法 ×2、三角注意力 ×2、"
              "带 pair 偏置的序列注意力），每次 recycle 全部重跑；默认主干前向 "
              f"{t['max_recycles']} 次（esm / HF 参考实现 num_recycles=None → 循环 max_recycles = {t['max_recycles']} 次，"
              "含首次前向；显式传 num_recycles = k 时才是 k + 1 次）",
              f"结构模块（IPA，{t['structure_module']['num_blocks']} 次迭代共享权重）每次 recycle 后运行；IPA 按 qk = 标量 + 点坐标、"
              "v = 标量 + 点 + pair 值的注意力计，刚体帧更新 / 扭转角 / 原子坐标重建的向量运算未计",
-             "无 MSA、无模板（单序列）；chunk_size 128 只降低峰值显存，不改变计算量"]
+             "无 MSA、无模板（单序列）；chunk_size 128 只降低峰值显存，不改变计算量",
+             "0.439：语言层的 LayerNorm 与 erf-GELU 按 ESM-2 宽度计，不用折叠主干的 hidden。"
+             "最后一层之后的 emb_layer_norm_after 计一次。esm_s_mlp 在去掉 <cls>/<eos> 的残基行上计 LayerNorm 和 ReLU。"
+             "没有 ESM-2 的 MLM 头。token_dropout 不单列。主干块里的 LayerNorm 和 ReLU 仍留在逐线性尾项里"]
     return _spec(model_id, hf_id, rel, "ESMFold（ESM-2 3B + 折叠主干 + 结构模块）", t["sequence_state_dim"],
-                 [esm_layer] * L + pl, wl, notes, [], "esmfold")
+                 [esm_layer] * (L - 1) + [replace(esm_layer, emb_ln=True)] + pl, wl, notes, [], "esmfold")
 
 
 def _af2_groups(c: dict) -> list[Group]:
