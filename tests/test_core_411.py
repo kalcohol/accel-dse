@@ -101,9 +101,11 @@ def test_d1_fastconformer_bills_silu_glu_half_and_batchnorm():
                    ".ff1_ln", ".attn_ln", ".conv_ln", ".ff2_ln", ".out_ln"):
         assert sum(1 for name in by if name.endswith(suffix)) == LAYERS
     assert sum(1 for name in by if name.endswith(".gelu")) == 2
-    assert not any("relu" in name or "drop" in name or "mask" in name or "emb_mult" in name for name in by)
-    sub = [name for name in names if name.startswith("aud.sub.")]
-    assert sub == ["aud.sub.0", "aud.sub.dw0", "aud.sub.pw0", "aud.sub.dw1", "aud.sub.pw1", "aud.sub.out"]
+    assert not any("drop" in name or "emb_mult" in name for name in by)
+    # 0.412 bills subsampling ReLU and the time-mask multiply. Conformer layers still have neither.
+    assert not any(("relu" in name or "mask" in name) and not name.startswith("aud.sub.") for name in by)
+    core = [name for name in names if name.startswith("aud.sub.") and "relu" not in name and "mask" not in name]
+    assert core == ["aud.sub.0", "aud.sub.dw0", "aud.sub.pw0", "aud.sub.dw1", "aud.sub.pw1", "aud.sub.out"]
     wide = _by(audio_ops(m.vision.audio, 1.0, 2, "fp32"))
     assert wide["aud.0.ff1_silu"].vec == 2 * silu.vec and wide["aud.0.ff1_silu"].sfu == 2 * silu.sfu
     assert wide["aud.0.glu"].vec == 2 * glu.vec and wide["aud.0.ff1_half"].vec == 2 * half.vec

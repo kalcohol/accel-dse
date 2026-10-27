@@ -90,8 +90,10 @@ encoder bills its ReLU6 calls, the int32 mask multiply, and the projector GELU. 
 positional conv after the even-kernel pad slice, and on each FFN intermediate. Eval dropout is not an op.
 d1 FastConformer (``audio.py`` ``ConformerLayer``) bills each block's LayerNorms, ``F.silu``,
 ``F.glu`` on the kept half, BatchNorm and ``x + ff * 0.5``. The adapter and the residual bill
-``F.gelu`` (the default erf form). Those activations stay fp32. Subsampling ReLU, time-mask
-multiplies, ``masked_fill`` and the plain residual adds stay in the tail.
+``F.gelu`` (the default erf form). Those activations stay fp32. Subsampling bills three
+``nn.ReLU`` calls (one clip, not ReLU6) and the ``_time_mask`` multiplies. The depthwise
+``masked_fill``, the pad and the plain residual adds stay in the tail. The sinusoid table
+is not an op.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -1690,8 +1692,10 @@ def _d1_audio_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
     once per channel. The adapter and the residual run ``F.gelu`` with the default
     ``approximate='none'`` (erf). The class does not cast, so a requested GEMM format
     does not change these ops or the fp32 GEMMs. The shared GEMM tail is not reduced.
-    Subsampling ``nn.ReLU``, the time-mask multiplies, ``masked_fill``, the plain
-    residual adds and the sinusoid table stay in the tail.
+    ``ConvSubsampling`` runs ``nn.ReLU`` three times (one clip; ReLU6 is two) and
+    multiplies by ``_time_mask`` before every subsampling module and once more before
+    the linear. The depthwise ``masked_fill`` is a where, not that multiply, so it
+    stays in the tail with the pad, the plain residual adds and the sinusoid table.
     """
     mel, t = _d1_audio_lens(seconds)
     if t <= 0 or clips <= 0:
@@ -1710,19 +1714,45 @@ def _d1_audio_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
         return Op(name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=32.0, w_fmt="fp32",
                   a_fmt=af, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
 
-    freq = a.n_mels
+    # ConvSubsampling.forward multiplies by _time_mask, then runs the module, and
+    # updates lengths only after a stride-2 Conv2d. nn.ReLU(inplace=True) is
+    # max(x, 0): one clip, no transcendental. ReLU6 is two clips (vec = n * 2).
+    # The mask is one multiply in the activation dtype. Building it (arange, compare,
+    # cast) is not an op. The depthwise masked_fill stays in the tail.
+    def one(name: str, elems: int) -> Op:
+        return Op(name, "vector", 0, vec=elems, a_fmt=af)
+
+    chans = 1
     length = mel
+    freq = a.n_mels
     ops: list[Op] = []
-    length, freq = _d1_conv_len(length), _d1_conv_len(freq)
-    ops.append(gemm("aud.sub.0", length * freq * clips, 9, ch))
-    length, freq = _d1_conv_len(length), _d1_conv_len(freq)
-    ops.append(Op("aud.sub.dw0", "vector", 0, vec=length * freq * clips * ch * 9,
-                  act_bytes=2 * length * freq * clips * ch * ab))
-    ops.append(gemm("aud.sub.pw0", length * freq * clips, ch, ch))
-    length, freq = _d1_conv_len(length), _d1_conv_len(freq)
-    ops.append(Op("aud.sub.dw1", "vector", 0, vec=length * freq * clips * ch * 9,
-                  act_bytes=2 * length * freq * clips * ch * ab))
-    ops.append(gemm("aud.sub.pw1", length * freq * clips, ch, ch))
+    stages = (
+        ("conv", "aud.sub.0"),
+        ("relu", "aud.sub.relu0"),
+        ("dw", "aud.sub.dw0"),
+        ("pw", "aud.sub.pw0"),
+        ("relu", "aud.sub.relu1"),
+        ("dw", "aud.sub.dw1"),
+        ("pw", "aud.sub.pw1"),
+        ("relu", "aud.sub.relu2"),
+    )
+    mask_i = 0
+    for kind, name in stages:
+        ops.append(one(f"aud.sub.mask{mask_i}", clips * chans * length * freq))
+        mask_i += 1
+        if kind == "conv":
+            length, freq = _d1_conv_len(length), _d1_conv_len(freq)
+            ops.append(gemm(name, length * freq * clips, 9, ch))
+            chans = ch
+        elif kind == "dw":
+            length, freq = _d1_conv_len(length), _d1_conv_len(freq)
+            ops.append(Op(name, "vector", 0, vec=length * freq * clips * ch * 9,
+                          act_bytes=2 * length * freq * clips * ch * ab))
+        elif kind == "pw":
+            ops.append(gemm(name, length * freq * clips, ch, ch))
+        else:
+            ops.append(one(name, clips * chans * length * freq))
+    ops.append(one(f"aud.sub.mask{mask_i}", clips * ch * length * freq))
     ops.append(gemm("aud.sub.out", length * clips, ch * freq, d))
     # Released weights are fp32. F.silu, F.glu, the 0.5 scale, BatchNorm and F.gelu do not upcast.
     act = "fp32"
