@@ -4244,7 +4244,10 @@ def _from_granite_speech5_ctc(model_id: str, hf_id: str, cfg: dict, rel: dict) -
             f"Shaw 分块相对位置按 context {au.chunk} 补齐。subsample_layers {list(au.gs_sub)} "
             f"每层把保留的时间长度减半。中间 CTC 的 out 与 out_mid 各跑一次，最终 ctc_head "
             f"与 out 绑在同一份权重上，再读一次。BatchNorm 仿射是 fp32（{fp32} 参数），"
-            "running stats 是 buffer。0.5 残差、dropout、GLU 和 SiLU 不另计 GEMM。")
+            "running stats 是 buffer，rsqrt 每个通道一次，不随 clip 数变。"
+            "SiLU、GLU、0.5 残差、LayerNorm 和时间池化按发布的前向计成向量运算，不是 GEMM。"
+            "卷积上的 SiLU 读 fp32 的 BatchNorm 输出，不另做 cast。FFN 的 SiLU 和 GLU 仍是 bf16。"
+            "activation_dropout 与 attention_dropout 都是 0，不单列。")
     return ModelSpec(
         id=model_id, hf_id=hf_id, arch="GraniteSpeech5ForCTC", hidden=au.dims[0], vocab=au.gs_mid,
         layers=(), tie_embeddings=True, coverage="full", notes=(note,),
@@ -4763,8 +4766,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             au = vs.audio
             note = (f"Granite Speech：Conformer 用 Shaw 分块相对位置（注意力按 context {au.chunk} 补齐），"
                     f"Q-Former 每窗 {au.gs_q} 个查询，交叉注意力 K 宽 {au.gs_cross}。"
-                    "中间层 CTC 的 out 与 out_mid 各跑一次。0.5 残差、dropout、GLU 和 granite 的"
-                    " attention / embedding / residual / logits 标量不另计 GEMM，也不改变 KV 宽度。没有 MTP。")
+                    "中间层 CTC 的 out 与 out_mid 各跑一次。"
+                    "每一层的 SiLU、GLU、BatchNorm、0.5 残差和 LayerNorm 按发布的前向计成向量运算，不是 GEMM。"
+                    "Q-Former 的 GELU 是 erf 形式，行数是查询，宽度是 intermediate。"
+                    "eval 下的 Dropout 是恒等，不单列。"
+                    "granite 的 attention / embedding / residual / logits 标量不另计 GEMM，也不改变 KV 宽度。没有 MTP。")
             if cfg.get("model_type") == "granite_speech_plus":
                 note += (" plus 把 cat_hidden_layers 的隐状态拼在最后一层上，只加宽交叉注意力的 K。"
                          "文本 config dtype 是 float32，safetensors 是 bf16，按 bf16 计。")

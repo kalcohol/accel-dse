@@ -56,6 +56,8 @@ docs/MODEL.md §20):
          mid CTC linears see the unpadded frames. The Q-Former pads to whole windows and emits
          window//downsample queries per window. Speech Plus concatenates selected encoder states
          on the feature axis, which widens only the cross-attention K/V. Weights are bf16 as stored.
+         Each conformer block also bills its LayerNorms, SiLU, GLU, BatchNorm and the 0.5 residual.
+         The Q-Former bills its erf-GELU and the LayerNorms the query path runs. Eval dropout is not an op.
   pixtral Pixtral ViT (Mistral3 vision_config, model_type pixtral): Conv2d patch embed (kernel = stride =
          patch, no bias), RMSNorm, depth pre-norm blocks (separate q / k / v / o, all width hidden, SwiGLU).
          The projector RMSNorms the patch sequence, unfolds spatial_merge_size**2, then Linear(4h -> h),
@@ -1413,11 +1415,52 @@ def _g4conf_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
     return ops
 
 
+def _silu_vec(name: str, layer: int, n: int, af: str) -> Op:
+    """x * sigmoid(x). sigmoid is exp, one add and a reciprocal. The class does not upcast."""
+    return Op(name, "vector", layer, vec=n * 4, sfu=n * 2, a_fmt=af)
+
+
+def _glu_vec(name: str, layer: int, n: int, af: str) -> Op:
+    """a * sigmoid(b) on the kept half. The split is a view. Same sigmoid count as SiLU."""
+    return Op(name, "vector", layer, vec=n * 4, sfu=n * 2, a_fmt=af)
+
+
+def _gelu_erf_vec(name: str, layer: int, n: int, af: str) -> Op:
+    """0.5 * x * (1 + erf(x / sqrt(2))). Four arithmetic ops and one erf."""
+    return Op(name, "vector", layer, vec=n * 5, sfu=float(n), a_fmt=af)
+
+
+def _ln_vec(name: str, layer: int, rows: int, width: int) -> Op:
+    """PyTorch layer_norm reduces in fp32. One rsqrt per row. The affine is already in the parameter total."""
+    return Op(name, "vector", layer, vec=rows * width * 4, sfu=float(rows), a_fmt="fp32")
+
+
+def _half_vec(name: str, layer: int, n: int, af: str) -> Op:
+    """residual + 0.5 * branch. One multiply and one add. No transcendental."""
+    return Op(name, "vector", layer, vec=n * 2, a_fmt=af)
+
+
+def _bn_vec(name: str, layer: int, elems: int, channels: int, af: str) -> Op:
+    """Eval BatchNorm: (x - mean) * rsqrt(var + eps) * weight + bias.
+
+    rsqrt runs once per channel. Running stats do not depend on the batch, so the
+    transcendental does not grow with the clip count. The four arithmetic ops do.
+    """
+    return Op(name, "vector", layer, vec=elems * 4, sfu=float(channels), a_fmt=af)
+
+
 def _gspeech_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
     """Conformer GEMMs at the unpadded frame count. Shaw Q/K and SDPA see the padded blocks.
 
     The Q-Former attends inside one window. Cross-attention K/V see the padded window,
     including a partial last window (the projector passes no encoder mask).
+
+    GraniteSpeechConformerBlock (and the Plus copy) runs LayerNorm, nn.SiLU, nn.GLU,
+    BatchNorm1d and ``0.5 * ff + residual`` on the unpadded frames. Attention's
+    pre-norm is before the context pad. The Q-Former query path runs one erf-GELU
+    per layer (``hidden_act`` is ``gelu``) and the LayerNorms in the query output
+    modules. ``nn.Dropout`` is identity in eval, including when the config probability
+    is not zero, so it is not an op. The shared GEMM tail is not reduced.
     """
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
@@ -1443,10 +1486,21 @@ def _gspeech_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
         return Op(name, "attn", layer, m=m, k=k, n=n, count=count, causal=1.0,
                   act_bytes=count * m * k * ab, stream=True, orient=True)
 
+    # Released conformer weights are bf16. nn.SiLU / nn.GLU / the 0.5 scale do not upcast.
+    # BatchNorm affine is bf16 on these checkpoints (no fp32 parameter role).
+    act = "bf16"
+    inner = a.gs_inner
     ops = [gemm("aud.in", t, a.n_mels, h)]
     for li in range(a.depths[0]):
-        ops += [gemm(f"aud.{li}.ff1_up", t, h, a.gs_ff, li), gemm(f"aud.{li}.ff1_down", t, a.gs_ff, h, li),
-                gemm(f"aud.{li}.ff2_up", t, h, a.gs_ff, li), gemm(f"aud.{li}.ff2_down", t, a.gs_ff, h, li)]
+        # GraniteSpeechConformerFeedForward: LayerNorm, Linear, SiLU, Linear.
+        # The block then does 0.5 * ff + residual. Dropout is eval identity.
+        ops.append(_ln_vec(f"aud.{li}.ff1_ln", li, t, h))
+        ops.append(gemm(f"aud.{li}.ff1_up", t, h, a.gs_ff, li))
+        ops.append(_silu_vec(f"aud.{li}.ff1_silu", li, t * a.gs_ff, act))
+        ops.append(gemm(f"aud.{li}.ff1_down", t, a.gs_ff, h, li))
+        ops.append(_half_vec(f"aud.{li}.ff1_half", li, t * h, act))
+        # pre_norm runs before the context pad, so the reduction is the unpadded length.
+        ops.append(_ln_vec(f"aud.{li}.attn_ln", li, t, h))
         ops += [gemm(f"aud.{li}.q", tp, h, h, li), gemm(f"aud.{li}.kv", tp, h, 2 * h, li),
                 gemm(f"aud.{li}.o", t, h, h, li)]
         # rel_pos_emb is a gather of the (context, context) distance buffer. The einsum
@@ -1456,19 +1510,36 @@ def _gspeech_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
                 attn(f"aud.{li}.qk", a.chunk, hd, a.chunk, cnt, li),
                 attn(f"aud.{li}.pv", a.chunk, a.chunk, hd, cnt, li),
                 Op(f"aud.{li}.softmax", "vector", li, vec=cnt * a.chunk * a.chunk * 5.0)]
-        ops += [gemm(f"aud.{li}.conv_up", t, h, 2 * a.gs_inner, li),
-                Op(f"aud.{li}.dconv", "vector", li, vec=t * a.gs_inner * a.kernel, act_bytes=2 * t * a.gs_inner * ab),
-                gemm(f"aud.{li}.conv_down", t, a.gs_inner, h, li)]
+        # Conv module: LayerNorm, pointwise to 2 * inner, GLU (keeps inner), depthwise,
+        # BatchNorm, SiLU, pointwise back. Stride 1 keeps the unpadded length.
+        ops.append(_ln_vec(f"aud.{li}.conv_ln", li, t, h))
+        ops.append(gemm(f"aud.{li}.conv_up", t, h, 2 * inner, li))
+        ops.append(_glu_vec(f"aud.{li}.glu", li, t * inner, act))
+        ops.append(Op(f"aud.{li}.dconv", "vector", li, vec=t * inner * a.kernel,
+                      act_bytes=2 * t * inner * ab))
+        ops.append(_bn_vec(f"aud.{li}.bn", li, t * inner, inner, act))
+        ops.append(_silu_vec(f"aud.{li}.conv_silu", li, t * inner, act))
+        ops.append(gemm(f"aud.{li}.conv_down", t, inner, h, li))
+        ops.append(_ln_vec(f"aud.{li}.ff2_ln", li, t, h))
+        ops.append(gemm(f"aud.{li}.ff2_up", t, h, a.gs_ff, li))
+        ops.append(_silu_vec(f"aud.{li}.ff2_silu", li, t * a.gs_ff, act))
+        ops.append(gemm(f"aud.{li}.ff2_down", t, a.gs_ff, h, li))
+        ops.append(_half_vec(f"aud.{li}.ff2_half", li, t * h, act))
+        ops.append(_ln_vec(f"aud.{li}.out_ln", li, t, h))
     mid_l = a.depths[0] // 2
     if mid_l >= 1:
         ops += [gemm("aud.mid.out", t, h, a.gs_mid, mid_l),
                 gemm("aud.mid.back", t, a.gs_mid, h, mid_l),
                 Op("aud.mid.softmax", "vector", mid_l, vec=t * a.gs_mid * 5.0)]
+    # Blip2QFormerModel casts queries to the LayerNorm weight dtype (bf16 here) and
+    # normalizes them once. use_qformer_text_input is false, so only the query FFN runs.
+    ops.append(_ln_vec("aud.qf.ln", 0, nq, a.gs_qh))
     for li in range(a.gs_ql):
         ops += [gemm(f"aud.qf.{li}.q", nq, a.gs_qh, a.gs_qh, li),
                 gemm(f"aud.qf.{li}.k", nq, a.gs_qh, a.gs_qh, li),
                 gemm(f"aud.qf.{li}.v", nq, a.gs_qh, a.gs_qh, li),
                 gemm(f"aud.qf.{li}.o", nq, a.gs_qh, a.gs_qh, li)]
+        ops.append(_ln_vec(f"aud.qf.{li}.attn_ln", li, nq, a.gs_qh))
         cnt = a.gs_qheads * nblocks * clips
         ops += [attn(f"aud.qf.{li}.qk", a.gs_q, qhd, a.gs_q, cnt, li),
                 attn(f"aud.qf.{li}.pv", a.gs_q, a.gs_q, qhd, cnt, li),
@@ -1478,11 +1549,15 @@ def _gspeech_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
                     gemm(f"aud.qf.{li}.ck", nk, a.gs_cross, a.gs_qh, li),
                     gemm(f"aud.qf.{li}.cv", nk, a.gs_cross, a.gs_qh, li),
                     gemm(f"aud.qf.{li}.co", nq, a.gs_qh, a.gs_qh, li)]
+            ops.append(_ln_vec(f"aud.qf.{li}.cross_ln", li, nq, a.gs_qh))
             ops += [attn(f"aud.qf.{li}.cqk", a.gs_q, qhd, a.win, cnt, li),
                     attn(f"aud.qf.{li}.cpv", a.gs_q, a.win, qhd, cnt, li),
                     Op(f"aud.qf.{li}.csoftmax", "vector", li, vec=cnt * a.gs_q * a.win * 5.0)]
-        ops += [gemm(f"aud.qf.{li}.fc1", nq, a.gs_qh, a.gs_qff, li),
-                gemm(f"aud.qf.{li}.fc2", nq, a.gs_qff, a.gs_qh, li)]
+        # ACT2FN["gelu"] is the erf form, on the query rows and the intermediate width.
+        ops.append(gemm(f"aud.qf.{li}.fc1", nq, a.gs_qh, a.gs_qff, li))
+        ops.append(_gelu_erf_vec(f"aud.qf.{li}.gelu", li, nq * a.gs_qff, act))
+        ops.append(gemm(f"aud.qf.{li}.fc2", nq, a.gs_qff, a.gs_qh, li))
+        ops.append(_ln_vec(f"aud.qf.{li}.out_ln", li, nq, a.gs_qh))
     ops.append(gemm("aud.proj", nq, a.gs_qh, a.out))
     return ops
 
@@ -1495,6 +1570,15 @@ def _gsctc_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
     conv and pointwise_lin2 see the conv output length; ff2 and the residual see T // 2.
     Mid CTC (out, then out_mid) runs once after layer num_layers // 2. The final CTC
     head is the same tensor as out and is read again.
+
+    GraniteSpeech5EncoderBlock runs five LayerNorms, ``ACT2FN['silu']`` on each FFN,
+    ``F.glu`` on the pointwise output, BatchNorm then ``F.silu`` on the depthwise
+    output, and ``residual + 0.5 * ff``. A subsampling block pools the residual with
+    ``unfold(1, 2, 2).mean`` before adding the conv tail. The masked_fill before the
+    depthwise conv is not a separate op. activation_dropout and attention_dropout are
+    0. The BatchNorm affine is fp32 and ``F.silu`` reads that output with no cast
+    back, so the conv SiLU stays fp32. FFN SiLU and GLU read bf16 linears and stay
+    bf16. The shared GEMM tail is not reduced.
     """
     from .dtypes import fmt as _fmt
     frames = a._gsctc_frames(seconds)
@@ -1515,6 +1599,9 @@ def _gsctc_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
         return Op(name, "attn", layer, m=m, k=k, n=n, count=count, causal=1.0,
                   act_bytes=count * m * k * ab, stream=True, orient=True)
 
+    # FFN SiLU and GLU sit on bf16 linears and do not upcast. BatchNorm affine is fp32.
+    act = "bf16"
+    inner = a.gs_inner
     ops = [gemm("aud.in", frames[0] * clips, a.n_mels, h)]
     for li in range(n_layers):
         t = frames[li]
@@ -1522,7 +1609,12 @@ def _gsctc_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
         pad = blocks * a.chunk
         tp = pad * clips
         tm = t * clips
-        ops += [gemm(f"aud.{li}.ff1_up", tm, h, a.gs_ff, li), gemm(f"aud.{li}.ff1_down", tm, a.gs_ff, h, li)]
+        ops.append(_ln_vec(f"aud.{li}.ff1_ln", li, tm, h))
+        ops.append(gemm(f"aud.{li}.ff1_up", tm, h, a.gs_ff, li))
+        ops.append(_silu_vec(f"aud.{li}.ff1_silu", li, tm * a.gs_ff, act))
+        ops.append(gemm(f"aud.{li}.ff1_down", tm, a.gs_ff, h, li))
+        ops.append(_half_vec(f"aud.{li}.ff1_half", li, tm * h, act))
+        ops.append(_ln_vec(f"aud.{li}.attn_ln", li, tm, h))
         ops += [gemm(f"aud.{li}.q", tp, h, h, li), gemm(f"aud.{li}.k", tp, h, h, li),
                 gemm(f"aud.{li}.v", tp, h, h, li), gemm(f"aud.{li}.o", tm, h, h, li)]
         cnt = a.heads * blocks * clips
@@ -1534,12 +1626,26 @@ def _gsctc_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
         stride = 2 if li in sub else 1
         cout = _conv_same(t, a.kernel, stride) if t else 0
         kept = t // 2 if li in sub else t
-        ops += [gemm(f"aud.{li}.conv_up", tm, h, 2 * a.gs_inner, li),
-                Op(f"aud.{li}.dconv", "vector", li, vec=cout * clips * a.gs_inner * a.kernel,
-                   act_bytes=2 * cout * clips * a.gs_inner * ab),
-                gemm(f"aud.{li}.conv_down", cout * clips, a.gs_inner, h, li),
-                gemm(f"aud.{li}.ff2_up", kept * clips, h, a.gs_ff, li),
-                gemm(f"aud.{li}.ff2_down", kept * clips, a.gs_ff, h, li)]
+        cm = cout * clips
+        km = kept * clips
+        # GLU keeps the pre-conv length. BatchNorm and conv SiLU see the conv output.
+        ops.append(_ln_vec(f"aud.{li}.conv_ln", li, tm, h))
+        ops.append(gemm(f"aud.{li}.conv_up", tm, h, 2 * inner, li))
+        ops.append(_glu_vec(f"aud.{li}.glu", li, tm * inner, act))
+        ops.append(Op(f"aud.{li}.dconv", "vector", li, vec=cm * inner * a.kernel,
+                      act_bytes=2 * cm * inner * ab))
+        ops.append(_bn_vec(f"aud.{li}.bn", li, cm * inner, inner, "fp32"))
+        ops.append(_silu_vec(f"aud.{li}.conv_silu", li, cm * inner, "fp32"))
+        ops.append(gemm(f"aud.{li}.conv_down", cm, inner, h, li))
+        if li in sub:
+            # unfold(1, 2, 2).mean drops a trailing odd frame. Add and multiply by 1/2.
+            ops.append(Op(f"aud.{li}.pool", "vector", li, vec=km * h * 2, a_fmt=act))
+        ops.append(_ln_vec(f"aud.{li}.ff2_ln", li, km, h))
+        ops.append(gemm(f"aud.{li}.ff2_up", km, h, a.gs_ff, li))
+        ops.append(_silu_vec(f"aud.{li}.ff2_silu", li, km * a.gs_ff, act))
+        ops.append(gemm(f"aud.{li}.ff2_down", km, a.gs_ff, h, li))
+        ops.append(_half_vec(f"aud.{li}.ff2_half", li, km * h, act))
+        ops.append(_ln_vec(f"aud.{li}.out_ln", li, km, h))
         if li + 1 == n_layers // 2:
             mid = frames[li + 1] * clips
             ops += [gemm("aud.mid.out", mid, h, a.gs_mid, li + 1),
