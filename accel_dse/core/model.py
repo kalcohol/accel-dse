@@ -4216,7 +4216,10 @@ def _from_omniasr_ctc(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelS
     note = ("OmniASR CTC：只有 Wav2Vec2 编码器，没有 Llama 解码器，也没有 Shaw。"
             "ctc_head 是 Linear(hidden, vocab)，带 bias，每个编码器帧读一次。"
             "注意力是双向的整段方阵，不写 KV。权重和激活都是 fp32。"
-            "dropout、GELU 和最终 argmax 不另计 GEMM。")
+            "ACT2FN['gelu'] 是 erf 形式。特征卷积每一层、位置卷积、以及每一层 FFN 的 intermediate "
+            "各计一次向量运算，不是 GEMM。类不升精度。"
+            "eval 的 Dropout 和 LayerDrop 是恒等，不单列。最终 argmax 不单列。"
+            "LayerNorm 和残差加仍留在 GEMM 尾项。投影器和 CTC 头没有 GELU。")
     return ModelSpec(
         id=model_id, hf_id=hf_id, arch="OmniASRForCTC", hidden=au.dims[0], vocab=au.out,
         layers=(), tie_embeddings=True, coverage="full", notes=(note,),
@@ -4775,6 +4778,14 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 note += (" plus 把 cat_hidden_layers 的隐状态拼在最后一层上，只加宽交叉注意力的 K。"
                          "文本 config dtype 是 float32，safetensors 是 bf16，按 bf16 计。")
             spec = replace(spec, notes=spec.notes + (note,))
+        if (vs is not None and getattr(vs, "audio", None) is not None and vs.audio.kind == "w2v"
+                and not vs.audio.ctc):
+            spec = replace(spec, notes=spec.notes + (
+                "OmniASR 音频塔的 GELU 是 ACT2FN['gelu']，erf 形式，不是 tanh 近似。"
+                "特征卷积每一层、位置卷积、以及每一层 FFN 的 intermediate 各计一次，宽度分别是 conv 通道、"
+                "hidden 和 intermediate。不升精度，dtype 跟随发布的权重格式。"
+                "multi_modal_projector 没有 GELU。eval 的 Dropout 和 LayerDrop 是恒等，不单列。"
+                "LayerNorm 仍留在 GEMM 尾项。",))
     return spec
 
 
