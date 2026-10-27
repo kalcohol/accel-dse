@@ -77,6 +77,13 @@ docs/MODEL.md §20):
          The conformer also bills the subsampling mask multiplies, bias-free LayerNorms and
          ReLUs, the with-scale RMSNorms, SiLU, GLU on the kept half, and the 0.5 residual.
          The scale-free embed norm, the logit softcap, and the plain residual adds stay in the tail.
+  step5  Step-5 Perception Encoder (``perception_encoder``): Conv2d patch embed without
+         bias, an absolute position add, ``ln_pre``, ``depth`` pre-norm blocks (fused
+         qkv, ``quick_gelu`` MLP, LayerScale), then two stride-2 3×3 convolutions and
+         a bias-free projector. 0.430 bills the ``nn.LayerNorm`` calls (fp32 reduction,
+         one rsqrt per row). The released JSON omits ``use_ln_pre``; ``Step5VisionConfig``
+         defaults it to true. ``use_ln_post`` is false, so ``ln_post`` is not built.
+         ``quick_gelu`` and the LayerScale multiply stay in the GEMM tail.
   gspeech Granite Speech (granite_speech / granite_speech_plus): 16 kHz mel, hop 160, pairs stacked
          to input_dim 160. A conformer (two half-residual FFNs, Shaw block attention, GLU depthwise
          conv) then a BLIP-2 Q-Former that does not own text embeddings. Query and key projections
@@ -474,12 +481,18 @@ class VisionSpec:
     # stays PytorchGELUTanh.
     # 0.428: "muse" bills Muse Spark NaViT LayerNorms and ACT2FN["gelu"] (erf)
     # on the MLP and on both adapter linears. Other qwen towers stay empty.
+    # 0.430: "step5" bills Step-5 Perception Encoder nn.LayerNorm calls.
+    # quick_gelu and LayerScale stay in the GEMM tail.
     ln_mode: str = ""
     # 0.419: deepstack block indexes, in merger order. Empty when deepstack is 0.
     ds_idx: tuple[int, ...] = ()
     # 0.425: C-RADIO vision_final_layernorm on patch features. False when the
     # release does not construct that module (Bolt).
+    # 0.430: Step-5 use_ln_post. The releases set it false, so ln_post is not built.
     post_ln: bool = False
+    # 0.430 Step-5: nn.LayerNorm before the blocks when use_ln_pre is true.
+    # The JSON omits the key; Step5VisionConfig's default is True.
+    ln_pre: bool = False
 
     @property
     def head_dim(self) -> int:
@@ -3763,18 +3776,41 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                           ((hm, ph), (ph, ph)), params, tuple(sorted(pre.items())), full_idx=full, tile=tile,
                           perm=2 if tile else 0, audio=au, ln_mode="muse")
     if vc.get("model_type") == "perception_encoder":          # 0.144 Step-5 PE + 2× stride-2 3×3 downsamplers
+        # 0.430: inference/vision_encoder.py. Each block runs nn.LayerNorm before
+        # attention and before the MLP. ln_pre is built when use_ln_pre is true.
+        # The JSON omits that key; Step5VisionConfig defaults it to True.
+        # use_ln_post is false on the releases, so ln_post is Identity and the
+        # forward does not call it. hidden_act is quick_gelu and is not billed.
+        # LayerScale (ls_init_value) is one multiply and is not this recipe.
+        act = vc["hidden_act"] if "hidden_act" in vc else "quick_gelu"
+        if act != "quick_gelu":
+            raise ValueError("step5 vision hidden_act is not quick_gelu")
+        if vc.get("use_cls_token"):
+            raise ValueError("step5 vision use_cls_token is not false")
+        if vc.get("pool_type") not in (None, "none"):
+            raise ValueError("step5 vision pool_type is not none")
+        if "ls_init_value" in vc and vc["ls_init_value"] is None:
+            raise ValueError("step5 vision ls_init_value is missing")
         h, L, nh, p, side = vc["width"], vc["layers"], vc["heads"], vc["patch_size"], vc["image_size"]
         inter = 8960 if h == 1536 else int(h * vc.get("mlp_ratio", 8960 / 1536))
         g = side // p
-        params = (3 * p * p * h + g * g * h + 2 * h
+        ln_pre = vc["use_ln_pre"] if "use_ln_pre" in vc else True
+        ln_post = vc["use_ln_post"] if "use_ln_post" in vc else False
+        if type(ln_pre) is not bool or type(ln_post) is not bool:
+            raise ValueError("step5 vision layernorm flag is not a bool")
+        pre_n = 2 * h if ln_pre else 0
+        post_n = 2 * h if ln_post else 0
+        params = (3 * p * p * h + g * g * h + pre_n
                   + L * (4 * h + 2 * h + _lin(h, 3 * h) + _lin(h, h) + _lin(h, inter) + _lin(inter, h))
-                  + _lin(9 * h, 2 * h) + _lin(9 * 2 * h, 4 * h) + _lin(4 * h, text_h, False))
+                  + _lin(9 * h, 2 * h) + _lin(9 * 2 * h, 4 * h) + _lin(4 * h, text_h, False)
+                  + post_n)
         return VisionSpec("fixed", "Perception Encoder + 下采样卷积", p, 1, h, inter, L, nh, h, False, 4,
                           ((9 * h, 2 * h, 4), (9 * 2 * h, 4 * h, 16), (4 * h, text_h, 16)), params,
                           tuple(sorted(pre.items())),
                           approx="视觉：裁剪规划取自同厂同塔 Step-3.7-Flash 的 transformers Step3p7ImageProcessor（728² 概览 + 504² 滑窗裁剪，"
                                  "「来源」代码）；Step-5-Preview 未随附处理器，套用于 Step-5 为「假设」（vision_config / 169 / 81 / "
-                                 "image_token_id 全同，inference/validate_vision.py 以 configuration_step3p7 加载参考编码器）")
+                                 "image_token_id 全同，inference/validate_vision.py 以 configuration_step3p7 加载参考编码器）",
+                          ln_mode="step5", post_ln=ln_post, ln_pre=ln_pre)
     if mt == "radio" and cfg.get("model_type") == "nemotron_h_omni":
         # 0.278 C-RADIO ViT-H/16 (modeling_radio.py): conv-free patch embedder (Linear 768 → h, no bias) + CPE
         # position grid (16384 × h) + 10 cls / register tokens, 32 pre-LN blocks (biased qkv / proj, GELU MLP 4h); then
@@ -4253,6 +4289,14 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if k25 and v.qkv != h:
             raise ValueError("kimi moonvit qkv width is not hidden")
     muse = v.ln_mode == "muse"
+    step5 = v.ln_mode == "step5"
+    if step5:
+        # EncoderVisionBlock LayerNorms. quick_gelu and LayerScale are not ops.
+        # The two downsamplers and the projector Linear have no activation.
+        if (v.gated or v.kv_heads or v.insert or v.deepstack or v.qkv != h
+                or len(v.post) != 3 or v.post[0][:2] != (9 * h, 2 * h)
+                or v.post[1][:2] != (18 * h, 4 * h) or v.post[2][0] != 4 * h):
+            raise ValueError("step5 vision block is not fused qkv plus two stride-2 convolutions")
     if muse:
         # MuseGlimmerVisionModel: LayerNorms and ACT2FN["gelu"] (erf). The
         # adapter is act(fc2(act(fc1(x)))). RoPE, pixel shuffle, the scale-free
@@ -4313,6 +4357,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # ln_pre is LayerNorm(hidden) on patch rows, before the window gather.
         # Width is hidden, not 4 * hidden. The two gathers stay one win_perm.
         ops.append(_ln_vec(pfx + "ln_pre", 0, rows, h))
+    if step5 and v.ln_pre:
+        # ln_pre is LayerNorm(hidden) on patch rows, after the position add and
+        # before the blocks. The position add is not an op. Width is hidden.
+        ops.append(_ln_vec(pfx + "ln_pre", 0, rows, h))
 
     def lc_rms(name: str, li: int, width: int, n_rows: int) -> Op:
         # RMSNorm.forward / the same 4-elem + 1 rsqrt recipe as attn_norm. fp32 upcast.
@@ -4366,6 +4414,9 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             ops.append(_rms_vec(pfx + f"{li}.norm1", li, rows, h))
         if muse:
             # norm1 is LayerNorm(hidden) on patch tokens, before the fused qkv.
+            ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
+        if step5:
+            # ln_1 is LayerNorm(hidden) on patch tokens, before the fused qkv.
             ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
         if pixtral:
@@ -4432,6 +4483,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             ops.append(lc_rms(f"{li}.norm2", li, h, rows))
         if muse:
             # norm2 is LayerNorm(hidden) before the MLP. The residual add is the full branch.
+            ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
+        if step5:
+            # ln_2 is LayerNorm(hidden) before the MLP. The residual add is the full
+            # branch. LayerScale after attention is not this op. quick_gelu is not billed.
             ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
         if muse:
@@ -4542,6 +4597,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # ln_post is LayerNorm(hidden) on patch rows, after the reverse gather
         # and before pixel shuffle. Width is hidden, not 4 * hidden.
         ops.append(_ln_vec(pfx + "post_ln", v.depth, images * N0, h))
+    if step5 and v.post_ln:
+        # ln_post is LayerNorm(hidden) on patch rows, after the blocks and before
+        # the downsamplers. The releases leave use_ln_post false and skip this call.
+        ops.append(_ln_vec(pfx + "ln_post", v.depth, images * N0, h))
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
         m_ = merger_rows(kn)

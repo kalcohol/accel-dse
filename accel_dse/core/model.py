@@ -5209,6 +5209,17 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "RoPE、位置插值、像素重排、整份残差加、"
                 "没有 scale 的 perception RMSNorm、以及 vision_projection 不单列。"
                 "音频编码器的向量运算这次不改。",))
+        if vs is not None and vs.family == "fixed" and vs.ln_mode == "step5":
+            spec = replace(spec, notes=spec.notes + (
+                "Step-5 Perception Encoder：每一层 ln_1 和 ln_2 是 nn.LayerNorm(hidden)。"
+                "ln_pre 在块之前。发布的 vision_config 省略 use_ln_pre，Step5VisionConfig 的默认是 True。"
+                "use_ln_post 的发布值是 false，ln_post 不建。"
+                "hidden_act 是 quick_gelu，不单列，也不新写算子。"
+                "LayerScale（ls_init_value 0.1）是 hidden 乘 gamma，不单列。"
+                "RoPE、绝对位置加、整份残差加不单列。"
+                "两级 stride-2 下采样卷积和投影 Linear 没有激活。"
+                "LayerNorm 在 fp32 归约，每行一次 rsqrt，仿射已经在参数里。"
+                "通用 GEMM 尾项不减。两份 vision 角色都是单独一份 bf16。",))
     return spec
 
 
