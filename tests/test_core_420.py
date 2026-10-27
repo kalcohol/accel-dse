@@ -3,8 +3,9 @@
 Siglip2EncoderLayer and post_layernorm run on the padded crop. Projector.forward is
 F.gelu (erf) after the 2x2 unshuffle. The tower MLP stays gelu_pytorch_tanh.
 Trunk RMSNorm upcasts to fp32. q/k reduce over head_dim. F.silu(w1) * w3 uses the
-FFN width. The scorer is LayerNorm and nn.GELU() on marker rows. The
-TransformerEncoderLayer default activation stays in the GEMM tail.
+FFN width. The scorer is LayerNorm and nn.GELU() on marker rows. 0.421 bills the
+TransformerEncoderLayer LayerNorms and the default F.relu; this file no longer
+locks their absence.
 """
 from __future__ import annotations
 
@@ -186,7 +187,7 @@ def test_d1_trunk_bills_rmsnorm_silu_and_scorer_gelu():
     assert names.index("trunk.15.w2") < names.index("trunk.out_rms") < names.index("head.type_emb")
     assert names.index("head.scorer.ln") < names.index("head.scorer.1") < names.index("head.scorer.gelu")
     assert names.index("head.scorer.gelu") < names.index("head.scorer.3")
-    assert "head.0.relu" not in by and "head.0.ln" not in by and "head.0.gelu" not in by
+    assert "head.0.ln" not in by and "head.0.gelu" not in by
     assert "head.1.silu" not in by
     rms_names = [name for name in by if name.endswith("_rms")]
     assert len(rms_names) == 16 + 16 + 1 + len(ATTN) + len(ATTN)

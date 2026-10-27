@@ -4313,7 +4313,10 @@ def _from_d1_omni(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelSpec:
             "DecisionHead.scorer 是 LayerNorm、Linear、nn.GELU()、Linear，只看标记位。"
             "nn.GELU() 是 erf。"
             "前面的 TransformerEncoderLayer 没有传入 activation，PyTorch 2.6 的默认是 F.relu。"
-            "这一层的 LayerNorm 和 F.relu 这次不拆。"
+            "norm_first 为真：注意力前和 FFN 前各一次 LayerNorm，宽度是 hidden，行数是文本位置。"
+            "F.relu 是 max(x, 0)，一次截断，不是 relu6。它在 linear1 之后，宽度是 4 * hidden，不是 hidden。"
+            "dropout 是 0.0，是恒等。整份残差加不单列。padding mask 留在原来的 softmax 里。"
+            "TransformerEncoder 的 norm 是 None，没有第三份 LayerNorm。"
             "RoPE 的 cos/sin、整份残差加和位置插值不单列。通用 GEMM 尾项不减。")
     return ModelSpec(
         id=model_id, hf_id=hf_id, arch="D1OmniModel", hidden=int(pr["trunk"]), vocab=int(pr["vocab"]),
