@@ -185,7 +185,9 @@ def test_muse_navit_bills_layernorm_and_erf_gelu():
 
     aud = audio_ops(vs.audio, 60, 1)
     assert vs.audio.params == 117840384 and vs.audio.tokens(60) == 750
-    assert not any("gelu" in op.name or "rms" in op.name for op in aud)
+    assert vs.audio.vec_fmt == "bf16"
+    assert any(op.name == "aud.0.0.gelu" for op in aud)
+    assert any(op.name == "aud.dual_rms" for op in aud)
 
 
 def test_muse_video_slice_has_no_temporal_pool():

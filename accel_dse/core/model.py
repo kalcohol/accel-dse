@@ -4343,7 +4343,8 @@ def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
     DeepSeek RMSNorm stays fp32.
     Kimi projector ``nn.GELU()`` uses it. Kimi LayerNorm and RMSNorm stay fp32.
     Muse Spark NaViT ``ACT2FN["gelu"]`` uses it the same way. Those LayerNorms
-    stay fp32.
+    stay fp32. Muse Spark audio ``nn.GELU()`` uses the same float. Those
+    RMSNorms stay fp32.
     Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp merger ``nn.GELU()`` uses it the same way.
     Those LayerNorms stay fp32. A vision role with more than one dtype is not
     given this value.
@@ -4938,8 +4939,10 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "kimi"))
         if vs is not None and vs.ln_mode == "muse":
             # 0.428: MLP and adapter ACT2FN["gelu"] follow the one vision-role float.
-            # GEMM w_fmt stays bf16. LayerNorm stays fp32. A tower stored as more
-            # than one vision dtype is not assigned a vector dtype and is not billed.
+            # 0.432: the waveform AutoEncoder's nn.GELU() uses the same float.
+            # GEMM w_fmt stays bf16. LayerNorm and audio RMSNorm stay fp32.
+            # A tower stored as more than one vision dtype is not assigned a
+            # vector dtype and is not billed.
             if rel is None:
                 raise ValueError("muse vision role is missing")
             vr = (rel.get("roles") or {}).get("vision") or {}
@@ -4947,7 +4950,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             if len(keys) > 1:
                 vs = replace(vs, ln_mode="")
             else:
-                vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "muse"))
+                fmt = _whisper_vision_fmt(rel, "muse")
+                audio = vs.audio
+                if audio is not None:
+                    audio = replace(audio, vec_fmt=fmt)
+                vs = replace(vs, vec_fmt=fmt, audio=audio)
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -5233,7 +5240,16 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "GEMM 的 w_fmt 仍是 bf16，通用 GEMM 尾项不减。"
                 "RoPE、位置插值、像素重排、整份残差加、"
                 "没有 scale 的 perception RMSNorm、以及 vision_projection 不单列。"
-                "音频编码器的向量运算这次不改。",))
+                "音频 AutoEncoder：每个 Patchifier 的 Linear 之后一次 RMSNorm，"
+                "每个 depthwise conv 之后一次 RMSNorm。"
+                "块内两级 Linear 之间是 nn.GELU()，默认 approximate='none'，erf 形式，"
+                "宽度是 hidden * mlp_ratio。"
+                "级联之后、o_proj 之前一次 RMSNorm，o_proj 之后的 dual_norm 再一次。"
+                "音频 GELU 不升精度，a_fmt 跟视觉塔同一份 vision 角色浮点。"
+                "音频 RMSNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
+                "整份残差加、pad 和 patchify view 不单列。"
+                "语言侧 tok_embeddings_norm 不是编码器运算。"
+                "音频 GEMM 的 w_fmt 仍是 bf16，通用 GEMM 尾项不减。",))
         if vs is not None and vs.family == "fixed" and vs.ln_mode == "step5":
             spec = replace(spec, notes=spec.notes + (
                 "Step-5 Perception Encoder：每一层 ln_1 和 ln_2 是 nn.LayerNorm(hidden)。"

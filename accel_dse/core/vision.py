@@ -249,6 +249,13 @@ each MLP intermediate and after both adapter linears (the adapter is
 stays fp32. The fused qkv GEMM is not split into three. RoPE, position
 interpolation, the pixel shuffle, the full residual adds, the scale-free
 perception norm, and the text projection stay out of these ops.
+The waveform AutoEncoder (vLLM ``audio.py``, kind ``muse``) bills one
+``RMSNorm`` after each patchifier Linear, one after each depthwise conv,
+one before ``o_proj``, and one after it (``dual_norm``). ``nn.GELU()``
+between the block linears is the erf form, on ``hidden * mlp_ratio``.
+GELU follows the one vision-role float. RMSNorm stays fp32. The full
+residual add, the pad, and the patchify view are not ops. The language
+``tok_embeddings_norm`` is not an encoder op.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -516,7 +523,8 @@ class VisionSpec:
 class AudioSpec:
     """0.175 Muse Spark audio encoder (vLLM PR #61879 audio.py AutoEncoder): raw 24 kHz mono → 4 stages of
     [Patchifier (patchify p, Linear+bias, RMSNorm) + n × Block (depthwise causal conv k, RMSNorm, Linear d→4d GELU →
-    d)], RMSNorm, o_proj → out (+ dual RMSNorm).  One LLM token per Π patch_sizes samples (1920 = 80 ms)."""
+    d)], RMSNorm, o_proj → out (+ dual RMSNorm).  One LLM token per Π patch_sizes samples (1920 = 80 ms).
+    0.432 bills those RMSNorms and the block ``nn.GELU()`` when ``vec_fmt`` is one vision float."""
     rate: int
     patches: tuple[int, ...]
     dims: tuple[int, ...]
@@ -1214,6 +1222,10 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
         return _granite_speech5_ctc_audio_spec(cfg)
     if ac.get("model_type") != "muse_spark_audio":
         return None
+    # AutoEncoder hardcodes nn.GELU() and does not read hidden_act. The released
+    # value is gelu, which is that constructor. A different value is not this module.
+    if ac.get("hidden_act", "gelu") != "gelu":
+        raise ValueError("muse audio hidden_act is not gelu")
     pt, dm, dp, k, r = tuple(ac["patch_sizes"]), tuple(ac["hidden_sizes"]), tuple(ac["depths"]), ac["conv_kernel_size"], ac["mlp_ratio"]
     out = ac["out_hidden_size"]
     fe = cfg.get("_feature_extractor") or {}
@@ -2397,23 +2409,59 @@ def audio_ops(a: AudioSpec, seconds: float, clips: int, af: str = "bf16") -> lis
         return _sanm_ops(a, seconds, clips, ab, af)
     if a.kind == "w2v":
         return _w2v_ops(a, seconds, clips, ab, af)
+    if a.kind != "muse":
+        raise ValueError("audio kind is not modelled")
+    return _muse_audio_ops(a, seconds, clips, ab, af)
+
+
+def _muse_audio_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
+    """Muse Spark AutoEncoder GEMMs plus the RMSNorms and nn.GELU() the forward runs.
+
+    vLLM ``audio.py`` (``6ab6bff``, on main ``803bc13``): each stage is Patchifier (Linear, then
+    ``RMSNorm``) and ``depths`` Blocks (depthwise conv, ``RMSNorm``, Linear,
+    ``nn.GELU()``, Linear, full residual). After the stages: ``RMSNorm``,
+    ``o_proj``, ``dual_norm``. ``ir.ops.rms_norm`` upcasts to fp32, does
+    ``pow(2).mean``, one ``rsqrt``, and multiplies the weight. ``nn.GELU()``
+    does not pass ``approximate``, so it is the erf form on ``hidden * mlp_ratio``.
+    GELU does not upcast: ``a_fmt`` is ``vec_fmt``. An empty ``vec_fmt`` (a vision
+    role with more than one dtype) leaves these vectors unbilled. GEMM ``w_fmt``
+    stays bf16. The shared GEMM tail is not reduced. The residual add, the pad,
+    and the patchify view are not ops.
+    """
+    act = a.vec_fmt
+    bill = bool(act)
+    if bill and act not in ("fp16", "bf16", "fp32"):
+        raise ValueError("muse audio activation dtype is not a vision float")
     t = a.tokens(seconds) * a.samples_per_token * clips       # padded samples (all clips)
     ops: list[Op] = []
     din = 1
     for i, (pt, d, n) in enumerate(zip(a.patches, a.dims, a.depths)):
         t //= pt
-        k_, hd = din * pt, int(d * a.mlp)
+        width = d * a.mlp
+        if bill and width != int(width):
+            raise ValueError("muse audio mlp width is not an integer")
+        k_, hd = din * pt, int(width)
         ops.append(Op(f"aud.{i}.patch", "gemm", 0, m=t, k=k_, n=d, role="vision", w_params=k_ * d, w_bits=16.0, w_fmt="bf16",
                       a_fmt=af, act_bytes=t * (k_ + d) * ab, stream=True, vec=t * d * VEC_PER_OUT))
+        if bill:
+            ops.append(_rms_vec(f"aud.{i}.patch_rms", 0, t, d))
         for j in range(n):
             ops.append(Op(f"aud.{i}.{j}.conv", "vector", 0, vec=t * d * 2 * a.kernel, act_bytes=2 * t * d * ab))
+            if bill:
+                ops.append(_rms_vec(f"aud.{i}.{j}.rms", 0, t, d))
             ops.append(Op(f"aud.{i}.{j}.fc1", "gemm", 0, m=t, k=d, n=hd, role="vision", w_params=d * hd, w_bits=16.0,
                           w_fmt="bf16", a_fmt=af, act_bytes=t * (d + hd) * ab, stream=True, vec=t * hd * VEC_PER_OUT))
+            if bill:
+                ops.append(_gelu_erf_vec(f"aud.{i}.{j}.gelu", 0, t * hd, act))
             ops.append(Op(f"aud.{i}.{j}.fc2", "gemm", 0, m=t, k=hd, n=d, role="vision", w_params=d * hd, w_bits=16.0,
                           w_fmt="bf16", a_fmt=af, act_bytes=t * (d + hd) * ab, stream=True, vec=t * d * VEC_PER_OUT))
         din = d
+    if bill:
+        ops.append(_rms_vec("aud.norm", 0, t, din))
     ops.append(Op("aud.o_proj", "gemm", 0, m=t, k=din, n=a.out, role="vision", w_params=din * a.out, w_bits=16.0,
                   w_fmt="bf16", a_fmt=af, act_bytes=t * (din + a.out) * ab, stream=True, vec=t * a.out * VEC_PER_OUT))
+    if bill:
+        ops.append(_rms_vec("aud.dual_rms", 0, t, a.out))
     return ops
 
 
