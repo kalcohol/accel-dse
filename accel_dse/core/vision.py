@@ -49,6 +49,9 @@ docs/MODEL.md §20):
          then Linear into the text embedder. Each block's content scores use the chunk context;
          every padded query also dots the context//2+1 relative keys. Prompt tokens follow the
          processor formula; the tower GEMMs see the waveform padded to a multiple of 128.
+         The conformer also bills the subsampling mask multiplies, bias-free LayerNorms and
+         ReLUs, the with-scale RMSNorms, SiLU, GLU on the kept half, and the 0.5 residual.
+         The scale-free embed norm, the logit softcap, and the plain residual adds stay in the tail.
   gspeech Granite Speech (granite_speech / granite_speech_plus): 16 kHz mel, hop 160, pairs stacked
          to input_dim 160. A conformer (two half-residual FFNs, Shaw block attention, GLU depthwise
          conv) then a BLIP-2 Q-Former that does not own text embeddings. Query and key projections
@@ -643,6 +646,15 @@ def _gemma4_audio_spec(cfg: dict, ac: dict) -> AudioSpec | None:
         return None
     if h % heads or not ac.get("use_clipped_linears"):
         return None
+    # Released hidden_act is silu. residual_weight is the FFN branch scale; the class
+    # default is 0.5 and every catalogued gemma4_audio checkpoint stores 0.5.
+    # A different activation or scale is not the SiLU / half-residual recipe.
+    act = ac.get("hidden_act", "silu")
+    scale = ac.get("residual_weight", 0.5)
+    if act != "silu":
+        raise ValueError("gemma4_audio hidden_act is not silu")
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)) or float(scale) != 0.5:
+        raise ValueError("gemma4_audio residual_weight is not 0.5")
     if len(chans) != 2 or int(chans[0]) != _G4_AUDIO_MELS:
         return None
     c0, c1 = int(chans[0]), int(chans[1])
@@ -1378,7 +1390,21 @@ def _whisper_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -
 
 
 def _g4conf_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
-    """Conformer GEMMs at the padded tower length. Attention is on chunk-padded blocks."""
+    """Conformer GEMMs at the padded tower length. Attention is on chunk-padded blocks.
+
+    Gemma4AudioSubSampleConvProjectionLayer (transformers ``modular_gemma4.py``,
+    sha ``2df500f``) multiplies by the feature mask, then Conv2d, then
+    ``nn.ReLU(LayerNorm(..., bias=False))``. Gemma4AudioFeedForward is RMSNorm,
+    ``ACT2FN['silu']``, RMSNorm, then ``*= residual_weight`` (0.5) and the residual
+    add. Gemma4AudioLightConv1d is RMSNorm, ``F.glu`` on the kept half, the causal
+    depthwise conv, RMSNorm, SiLU, then a full residual add. The block adds three
+    more with-scale RMSNorms (pre-attn, post-attn, out). ``Gemma4RMSNorm`` is
+    ``Gemma3nRMSNorm``: fp32, ``pow(2).mean``, one ``pow(-0.5)``, times the weight.
+    ``embed_audio`` uses ``with_scale=False`` and is not that op. The logit softcap,
+    ``softplus(per_dim_scale)``, the clamps, and the sinusoid table are not ops
+    here. The shared GEMM tail is not reduced. A requested GEMM activation format
+    does not change these vector dtypes.
+    """
     from .dtypes import fmt as _fmt
     ab = _fmt(af).bytes
     tower, _prompt = a._g4_audio_lens(seconds)
@@ -1407,20 +1433,43 @@ def _g4conf_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
                   vec=m * n * count * VEC_PER_OUT)
 
     t = tower * clips
+    # Released weights are bf16. SiLU, GLU, ReLU and the 0.5 scale do not upcast.
+    # The first mask multiply reads the feature extractor's float32 mel, before the
+    # conv casts to the weight dtype. The second multiply reads the bf16 ReLU output.
+    act = a.w_fmt
+
+    def one(name: str, n: int, fmt: str) -> Op:
+        return Op(name, "vector", 0, vec=n, a_fmt=fmt)
+
+    # Channel 1 on the way in. nn.ReLU is one clip (max(x, 0)), not ReLU6.
+    # LayerNorm has no bias. The reduction is one row per time-frequency cell.
     ops = [
+        one("aud.sub.mask0", clips * mel * a.n_mels, "fp32"),
         gemm("aud.conv0", t0 * f0 * clips, 9, c0),
+        _ln_vec("aud.sub.ln0", 0, t0 * f0 * clips, c0),
+        one("aud.sub.relu0", t0 * f0 * clips * c0, act),
+        one("aud.sub.mask1", t0 * f0 * clips * c0, act),
         gemm("aud.conv1", tower * f1 * clips, 9 * c0, c1),
+        _ln_vec("aud.sub.ln1", 0, tower * f1 * clips, c1),
+        one("aud.sub.relu1", tower * f1 * clips * c1, act),
         gemm("aud.sub_proj", t, f1 * c1, h),
     ]
     for li in range(a.depths[0]):
-        ops += [gemm(f"aud.{li}.ff1_up", t, h, 4 * h, li), gemm(f"aud.{li}.ff1_down", t, 4 * h, h, li),
-                gemm(f"aud.{li}.ff2_up", t, h, 4 * h, li), gemm(f"aud.{li}.ff2_down", t, 4 * h, h, li)]
+        # Feed-forward: pre RMSNorm, Linear, SiLU, Linear, post RMSNorm, *= 0.5, add.
+        # SiLU width is 4h. The scale width is h.
+        ops.append(_rms_vec(f"aud.{li}.ff1_rms", li, t, h))
+        ops.append(gemm(f"aud.{li}.ff1_up", t, h, 4 * h, li))
+        ops.append(_silu_vec(f"aud.{li}.ff1_silu", li, t * 4 * h, act))
+        ops.append(gemm(f"aud.{li}.ff1_down", t, 4 * h, h, li))
+        ops.append(_rms_vec(f"aud.{li}.ff1_post", li, t, h))
+        ops.append(_half_vec(f"aud.{li}.ff1_half", li, t * h, act))
+        ops.append(_rms_vec(f"aud.{li}.attn_rms", li, t, h))
         ops += [gemm(f"aud.{li}.q", t, h, h, li), gemm(f"aud.{li}.k", t, h, h, li),
-                gemm(f"aud.{li}.v", t, h, h, li), gemm(f"aud.{li}.post", t, h, h, li)]
+                gemm(f"aud.{li}.v", t, h, h, li)]
         # relative_k_proj is one Linear on the batch-1 sinusoid (context//2+1, h). Gemma4AudioAttention
         # then does queries_flat @ relative_keys: every padded query dots those rel keys (matrix_bd).
         # rel_shift reindexes that score to context and does not matmul again. The projection does not
-        # grow with the clip batch; the query-key matmul does.
+        # grow with the clip batch; the query-key matmul does. The sin/cos table is not an op.
         ops.append(gemm(f"aud.{li}.rel", rel, h, h, li))
         ops += [Op(f"aud.{li}.qk", "attn", li, m=q_pad, k=hd, n=context, count=a.heads * clips, causal=1.0,
                    act_bytes=a.heads * clips * q_pad * hd * ab, stream=True, orient=True),
@@ -1429,11 +1478,27 @@ def _g4conf_ops(a: AudioSpec, seconds: float, clips: int, af: str) -> list[Op]:
                 Op(f"aud.{li}.pv", "attn", li, m=q_pad, k=context, n=hd, count=a.heads * clips, causal=1.0,
                    act_bytes=a.heads * clips * q_pad * hd * ab, orient=True),
                 Op(f"aud.{li}.softmax", "vector", li, vec=a.heads * clips * q_pad * context * 5.0)]
-        ops.append(Op(f"aud.{li}.lconv", "vector", li, vec=t * h * a.kernel, act_bytes=2 * t * h * ab))
+        # post linear, then norm_post_attn. The following residual add is a full add, not * 0.5.
+        ops.append(gemm(f"aud.{li}.post", t, h, h, li))
+        ops.append(_rms_vec(f"aud.{li}.attn_out", li, t, h))
+        # GLU keeps h, not the 2h pointwise width. SiLU reads the depthwise output.
+        ops.append(_rms_vec(f"aud.{li}.lconv_rms", li, t, h))
         ops.append(gemm(f"aud.{li}.lconv_start", t, h, 2 * h, li))
+        ops.append(_glu_vec(f"aud.{li}.glu", li, t * h, act))
+        ops.append(Op(f"aud.{li}.lconv", "vector", li, vec=t * h * a.kernel, act_bytes=2 * t * h * ab))
+        ops.append(_rms_vec(f"aud.{li}.lconv_norm", li, t, h))
+        ops.append(_silu_vec(f"aud.{li}.lconv_silu", li, t * h, act))
         ops.append(gemm(f"aud.{li}.lconv_end", t, h, h, li))
+        ops.append(_rms_vec(f"aud.{li}.ff2_rms", li, t, h))
+        ops.append(gemm(f"aud.{li}.ff2_up", t, h, 4 * h, li))
+        ops.append(_silu_vec(f"aud.{li}.ff2_silu", li, t * 4 * h, act))
+        ops.append(gemm(f"aud.{li}.ff2_down", t, 4 * h, h, li))
+        ops.append(_rms_vec(f"aud.{li}.ff2_post", li, t, h))
+        ops.append(_half_vec(f"aud.{li}.ff2_half", li, t * h, act))
+        ops.append(_rms_vec(f"aud.{li}.out_rms", li, t, h))
     ops.append(gemm("aud.out", t, h, out_d, a.depths[0]))
-    # embed_audio sees the tower rows. The prompt mask is applied after this Linear.
+    # embed_audio sees the tower rows. Its pre-norm has with_scale=False, so it is
+    # not the weight-multiplying RMSNorm. The prompt mask is applied after this Linear.
     ops.append(gemm("aud.embed", t, out_d, a.out, a.depths[0]))
     return ops
 
@@ -1455,6 +1520,15 @@ def _gelu_erf_vec(name: str, layer: int, n: int, af: str) -> Op:
 
 def _ln_vec(name: str, layer: int, rows: int, width: int) -> Op:
     """PyTorch layer_norm reduces in fp32. One rsqrt per row. The affine is already in the parameter total."""
+    return Op(name, "vector", layer, vec=rows * width * 4, sfu=float(rows), a_fmt="fp32")
+
+
+def _rms_vec(name: str, layer: int, rows: int, width: int) -> Op:
+    """Gemma3nRMSNorm with a weight, the same count as LongCat RMSNorm.
+
+    The forward upcasts to fp32, does ``pow(2).mean``, one ``pow(-0.5)`` (the rsqrt),
+    and multiplies the weight. ``with_scale=False`` skips that multiply and is not this op.
+    """
     return Op(name, "vector", layer, vec=rows * width * 4, sfu=float(rows), a_fmt="fp32")
 
 

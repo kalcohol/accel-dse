@@ -4800,6 +4800,18 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "hidden 和 intermediate。不升精度，dtype 跟随发布的权重格式。"
                 "multi_modal_projector 没有 GELU。eval 的 Dropout 和 LayerDrop 是恒等，不单列。"
                 "LayerNorm 仍留在 GEMM 尾项。",))
+        if (vs is not None and getattr(vs, "audio", None) is not None and vs.audio.kind == "g4conf"):
+            spec = replace(spec, notes=spec.notes + (
+                "gemma4_audio 的 hidden_act 是 silu，residual_weight 是 0.5。"
+                "下采样两层各有一次 mask 乘、一次 bias=False 的 LayerNorm 和一次 nn.ReLU。"
+                "第一次 mask 读特征提取器的 fp32，在卷积 cast 到权重 dtype 之前。"
+                "第二次 mask 读 bf16 的 ReLU 输出。"
+                "每一层 FFN 的 SiLU 宽度是 4*hidden。LightConv 的 GLU 和卷积 SiLU 宽度是 hidden，不是 2*hidden。"
+                "0.5 残差在 FFN 的 post RMSNorm 之后，宽度是 hidden。"
+                "带 weight 的 RMSNorm 升到 fp32，pow(2).mean 再一次 pow(-0.5)，乘 weight，每行一次。"
+                "embed_audio 的 RMSNorm 没有 scale，不单列。"
+                "softcap、softplus、clamp、整份残差加和正弦表不单列。"
+                "视觉 hidden_activation 仍是 gelu_pytorch_tanh。通用 GEMM 尾项不减。",))
     return spec
 
 
