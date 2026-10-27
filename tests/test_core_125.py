@@ -114,4 +114,4 @@ def test_fingerprints_change_only_v4():
     # 0.200 rebaseline (were 3e753f36c5bcdb36 / fefb5b23fdf2782c): custom all-reduce α
     # 0.201 rebaseline (were ba49c208f61b306c / 9bb4812eed9b116a): GPU all-reduce latency no longer on NPU links (= 0.198 values)
     # 0.202 rebaseline (were 4aa21d67471fd69e / a3548246a90a9ceb): WIDE_WAVES refill GPU-only (GPU_WAVES_ONLY)
-    assert fpx({"exec_overlap": "stage"}) == "dee4a1703e8fab85" and fpx({}) == "9982d6b04e230874"   # 0.210 re-baseline (pipe KV/state split; fpx({}) was a148b9cd855d95fc) ← 0.209 re-baseline (STATE_SPLIT; fpx({}) was 8220364829b88de3; was 5b3efea75e12245d)
+    assert fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e" and fpx({}) == "8a5fa1d0881da387"   # 0.437 re-baseline (umT5 RMSNorm; was dee4a1703e8fab85 / 9982d6b04e230874) ← 0.210 re-baseline (pipe KV/state split; fpx({}) was a148b9cd855d95fc) ← 0.209 re-baseline (STATE_SPLIT; fpx({}) was 8220364829b88de3; was 5b3efea75e12245d)

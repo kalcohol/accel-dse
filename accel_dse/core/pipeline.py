@@ -331,9 +331,40 @@ def _norm_width(pairs: list, suffix: str, what: str, h: int) -> None:
         raise ValueError(f"text encoder {what} width is not hidden size")
 
 
+def _umt5_rms_plan(d: dict, rows: int, layers: set) -> dict:
+    """Wan umT5 encoder RMSNorm (Wan-Video/Wan2.1 wan/modules/t5.py T5LayerNorm).
+
+    The checkpoint config is empty. The header has blocks.*.norm1 / norm2 and a final
+    norm, each a 4096-vector, matching the published class: fp32 pow(2).mean, one rsqrt,
+    times the weight. The FFN gate is tanh-GELU and is not billed.
+    """
+    if d.get("config"):
+        raise ValueError("umt5 config is not empty")
+    _stored_act(d)
+    if set(layers) != set(range(24)):
+        raise ValueError("umt5 layer ids are not 0..23")
+    h = 4096
+    grouped = _by_layer(d["tensors"])
+    pre_post = {}
+    for li in range(24):
+        pairs = grouped.get(li, [])
+        _norm_width(pairs, "norm1.weight", "norm1", h)
+        _norm_width(pairs, "norm2.weight", "norm2", h)
+        gate = _one_tensor(pairs, "ffn.gate.0.weight", "ffn gate")[1]
+        if list(gate) != [10240, 4096]:
+            raise ValueError("umt5 ffn gate shape is not 10240 x 4096")
+        pre_post[li] = ([_te_rms(f"te.{li}.attn_rms", li, rows, h)],
+                        [_te_rms(f"te.{li}.mlp_rms", li, rows, h)])
+    if _final_norm_width(d["tensors"]) != h:
+        raise ValueError("umt5 final norm width is not 4096")
+    return {"layers": pre_post, "final": [_te_rms("te.final_rms", 24, rows, h)]}
+
+
 def _text_vector_plan(d: dict, rows: int, layers: set) -> dict | None:
     """Per-layer (pre, post) vector ops plus the final norm. None keeps the previous GEMM-only tail."""
     cfg = _decoder_cfg(d.get("config") or {})
+    if d.get("key") == "umt5-xxl":
+        return _umt5_rms_plan(d, rows, layers)
     kind = _TE_KIND.get(cfg.get("model_type") or "")
     if kind is None:
         return None
