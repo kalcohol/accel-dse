@@ -273,9 +273,11 @@ def test_lfm2_vl_bills_layernorm_and_projector_erf_gelu():
     _gelu(tops["vis.pgelu"], 64, 2048, 12, "bf16")
     assert tops["vis.pgelu"].vec != 64 * 1024 * 5
     assert len([name for name in tops if name.endswith(".attn_ln")]) == 12
+    # 0.420 bills d1-omni's own SigLIP2 LayerNorms and projector F.gelu under these names.
+    # The Qwen merger names stay off this tower.
     d1 = get_model("d1-omni-600m")
     dnames = [op.name for op in vision_ops(d1.vision, image_grid(d1.vision, 1024, 1024), 1)]
-    for needle in ("vis.post_ln", "vis.pgelu", "vis.0.attn_ln", "vis.mgelu", "vis.pre_ln"):
+    for needle in ("vis.mgelu", "vis.pre_ln"):
         assert needle not in dnames, needle
     pre = evaluate(Scenario(model="lfm2.5-vl-1.6b", serving=Serving(phase="prefill", batch=1, prompt=16, images=1)))
     assert pre.vision["image_tokens"] == 1287 and pre.step > 0

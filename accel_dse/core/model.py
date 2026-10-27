@@ -4299,7 +4299,22 @@ def _from_d1_omni(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelSpec:
             "时间 mask 是激活乘同 dtype 的 0/1，一次乘，比较不另计。"
             "深度卷积前的 masked_fill 是 where，不是乘法，也不走 ReLU，不单列。"
             "pad、整份残差加和位置正弦表不单列。"
-            "视觉塔的 hidden_act 是 gelu_pytorch_tanh，不单列。")
+            "视觉塔的 hidden_act 是 gelu_pytorch_tanh，MLP 不单列。"
+            "Siglip2EncoderLayer 在注意力前和 MLP 前各做一次 LayerNorm，post_layernorm 在补齐后的序列上。"
+            "vision_use_head 是 false，pooling head 不跑。"
+            "Projector.forward 在 2×2 unshuffle 之后是 linear_2(F.gelu(linear_1(x)))。"
+            "F.gelu 默认是 erf。行数是 unshuffle 之后的有效位置，宽度是 projector_hidden_size，不是塔的 hidden。"
+            "类不升精度，这次 GELU 的 a_fmt 是 fp32。"
+            "trunk 的 operator_norm、ffn_norm、embedding_norm 以及 q/k 的 RMSNorm 都升到 fp32："
+            "pow(2).mean，一次 rsqrt，再乘 weight。"
+            "q/k 的归约宽度是 head_dim，不是把多头展成 hidden。"
+            "MLP 是 w2(F.silu(w1(x)) * w3(x))。SiLU 和乘积的宽度是 FFN，不是 hidden，也不是 2 倍 FFN。"
+            "F.silu 不升精度。"
+            "DecisionHead.scorer 是 LayerNorm、Linear、nn.GELU()、Linear，只看标记位。"
+            "nn.GELU() 是 erf。"
+            "前面的 TransformerEncoderLayer 没有传入 activation，PyTorch 2.6 的默认是 F.relu。"
+            "这一层的 LayerNorm 和 F.relu 这次不拆。"
+            "RoPE 的 cos/sin、整份残差加和位置插值不单列。通用 GEMM 尾项不减。")
     return ModelSpec(
         id=model_id, hf_id=hf_id, arch="D1OmniModel", hidden=int(pr["trunk"]), vocab=int(pr["vocab"]),
         layers=(), tie_embeddings=True, coverage="full", notes=(note,),

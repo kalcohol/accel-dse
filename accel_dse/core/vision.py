@@ -143,6 +143,13 @@ attention, before the MLP, and after the blocks, all on the padded patch rows.
 ``ACT2FN["gelu"]`` sits between the projector linears on the unshuffled valid
 rows. The tower MLP stays ``gelu_pytorch_tanh`` and is not billed. A projector
 LayerNorm is billed only when ``projector_use_layernorm`` is true.
+d1-omni (family ``d1omni``) bills the same SigLIP2 ``nn.LayerNorm`` calls on the
+padded crop, and ``F.gelu`` (the default erf form) after the 2x2 unshuffle, on
+the valid rows and ``projector_hidden_size``. The tower MLP stays
+``gelu_pytorch_tanh``. The trunk bills fp32 RMSNorm (operator, FFN, embedding,
+and per-head q/k) and ``F.silu(w1) * w3``. The decision scorer bills LayerNorm
+and ``nn.GELU()`` (erf) on marker rows. The head's ``TransformerEncoderLayer``
+keeps its constructor-default activation inside the GEMM tail.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -2896,6 +2903,10 @@ def _d1_vision_spec(cfg: dict) -> VisionSpec | None:
         return None
     if text_h != au.out or au.out != tc.get("hidden_size"):
         return None
+    # Siglip2MLP reads hidden_act. The released value is gelu_pytorch_tanh and is not billed.
+    # Projector.forward hardcodes F.gelu (erf). There is no projector_hidden_act field.
+    if vc.get("hidden_act") != "gelu_pytorch_tanh":
+        raise ValueError("d1_omni hidden_act is not gelu_pytorch_tanh")
     block = (4 * h + 4 * _lin(h, h, True) + _lin(h, inter, True) + _lin(inter, h, True))
     tower = _lin(channels * patch * patch, h, True) + npos * h + depth * block + 2 * h
     in_ch = h * 2 * 2
@@ -2974,7 +2985,17 @@ def _d1_image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
 
 
 def _d1_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> list[Op]:
-    """Padded SigLIP2 square, then the projector on the valid unshuffled rows. Weights and activations are fp32."""
+    """Padded SigLIP2 square, then the projector on the valid unshuffled rows.
+
+    ``Siglip2EncoderLayer`` runs LayerNorm before attention and before the MLP.
+    ``post_layernorm`` runs on the padded sequence. ``vision_use_head`` is false,
+    so the pooling head does not run. The MLP activation is ``gelu_pytorch_tanh``
+    and is not an op. ``Projector.forward`` is ``linear_2(F.gelu(linear_1(x)))``
+    after the 2x2 unshuffle. ``F.gelu`` defaults to the erf form. It reads the
+    valid unshuffled rows, at ``projector_hidden_size``, and does not upcast.
+    Weights and these activations are fp32. The requested GEMM activation format
+    is ignored. Position interpolation and the full residual adds are not ops.
+    """
     del af
     from .dtypes import fmt as _fmt
     ab = _fmt("fp32").bytes
@@ -2984,6 +3005,8 @@ def _d1_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> list[Op
     qf = {k: (f, b, a) for k, f, b, a in v.wfmt}
     h = v.hidden
     dh = v.head_dim
+    if len(v.post) != 2:
+        raise ValueError("d1 projector is not unshuffle, linear, gelu, linear")
     ops: list[Op] = []
 
     def gemm(pfx: str, name: str, m: int, k: int, n: int, layer: int, kind: str) -> Op:
@@ -2999,21 +3022,28 @@ def _d1_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> list[Op
         heads = images * cnt * v.heads
         ops.append(gemm(pfx, "patch_embed", rows, 3 * v.patch * v.patch, h, 0, "patch"))
         for li in range(v.depth):
+            # layer_norm1, attention, residual, layer_norm2, MLP, residual.
+            # The residual adds are the full branch. The MLP activation is gelu_pytorch_tanh.
+            ops.append(_ln_vec(f"{pfx}{li}.attn_ln", li, rows, h))
             ops += [gemm(pfx, f"{li}.q", rows, h, h, li, "attn"),
                     gemm(pfx, f"{li}.k", rows, h, h, li, "attn"),
                     gemm(pfx, f"{li}.v", rows, h, h, li, "attn"),
-                    gemm(pfx, f"{li}.o", rows, h, h, li, "attn"),
-                    gemm(pfx, f"{li}.fc1", rows, h, v.inter, li, "mlp"),
+                    gemm(pfx, f"{li}.o", rows, h, h, li, "attn")]
+            ops.append(_ln_vec(f"{pfx}{li}.mlp_ln", li, rows, h))
+            ops += [gemm(pfx, f"{li}.fc1", rows, h, v.inter, li, "mlp"),
                     gemm(pfx, f"{li}.fc2", rows, v.inter, h, li, "mlp")]
             ops += [Op(f"{pfx}{li}.qk", "attn", li, m=pad, k=dh, n=pad, count=heads, causal=1.0,
                        act_bytes=heads * pad * dh * ab, stream=True, orient=True),
                     Op(f"{pfx}{li}.pv", "attn", li, m=pad, k=pad, n=dh, count=heads, causal=1.0,
                        act_bytes=heads * pad * dh * ab, orient=True),
                     Op(f"{pfx}{li}.softmax", "vector", li, vec=heads * pad * pad * 5.0)]
+        # post_layernorm runs before the caller slices to the valid patches.
+        ops.append(_ln_vec(pfx + "post_ln", v.depth, rows, h))
         m_proj = images * cnt * (ph // factor) * (pw // factor)
-        for i, kn in enumerate(v.post):
-            k, n = kn[:2]
-            ops.append(gemm(pfx, f"merger.{i}", m_proj, k, n, v.depth, "merger"))
+        ops.append(gemm(pfx, "merger.0", m_proj, v.post[0][0], v.post[0][1], v.depth, "merger"))
+        # F.gelu default approximate is 'none'. Width is projector_hidden_size, not the tower hidden size.
+        ops.append(_gelu_erf_vec(pfx + "pgelu", v.depth, m_proj * v.post[0][1], "fp32"))
+        ops.append(gemm(pfx, "merger.1", m_proj, v.post[1][0], v.post[1][1], v.depth, "merger"))
     return ops
 
 
@@ -3041,6 +3071,17 @@ def d1_trunk_ops(v: VisionSpec, sequences: int, text: int, prefix: int, labels: 
     Attention is the full square (the additive mask is still scored). The centered 3-tap is a
     vector op, not a recurrent state. The scorer gathers marker rows only. Type embedding is a
     lookup, not a GEMM.
+
+    ``RMSNorm`` upcasts to fp32, does ``pow(2).mean``, one ``rsqrt``, and multiplies the
+    weight. Each block runs ``operator_norm`` and ``ffn_norm`` on the full sequence.
+    ``embedding_norm`` runs after the blocks, still on the full sequence. q and k are
+    normalized per head at ``head_dim``; the weight is not the flattened hidden size.
+    ``MLP.forward`` is ``w2(F.silu(w1(x)) * w3(x))``. SiLU and the product use the FFN
+    width. ``F.silu`` does not upcast. The scorer is LayerNorm, Linear, ``nn.GELU()``,
+    Linear on marker rows. ``nn.GELU()`` is the erf form. The two
+    ``TransformerEncoderLayer`` blocks keep the constructor default (``F.relu``) inside
+    the GEMM tail. RoPE and the full residual adds are not ops. The requested GEMM
+    activation format is ignored; released weights are fp32.
     """
     del af
     if sequences <= 0 or text < 0 or prefix < 0:
@@ -3068,6 +3109,7 @@ def d1_trunk_ops(v: VisionSpec, sequences: int, text: int, prefix: int, labels: 
     if text:
         ops.append(Op("trunk.embed", "lookup", -1, kv_read=m_text * h * ab, vec=m_text * h))
     for i, kind in enumerate(types):
+        ops.append(_rms_vec(f"trunk.{i}.op_rms", i, m_trunk, h))
         if kind == "conv":
             ops.append(gemm(f"trunk.{i}.in", m_trunk, h, 3 * h, i))
             # Three taps at 2 flops each, plus the B*x and C*y gates.
@@ -3076,8 +3118,12 @@ def d1_trunk_ops(v: VisionSpec, sequences: int, text: int, prefix: int, labels: 
             ops.append(gemm(f"trunk.{i}.out", m_trunk, h, h, i))
         else:
             ops += [gemm(f"trunk.{i}.q", m_trunk, h, nq * hd, i),
-                    gemm(f"trunk.{i}.k", m_trunk, h, nkv * hd, i),
-                    gemm(f"trunk.{i}.v", m_trunk, h, nkv * hd, i),
+                    gemm(f"trunk.{i}.k", m_trunk, h, nkv * hd, i)]
+            # view is (batch, length, heads, head_dim). mean is over head_dim, so one
+            # rsqrt per head, not one per token of the flattened hidden size.
+            ops.append(_rms_vec(f"trunk.{i}.q_rms", i, m_trunk * nq, hd))
+            ops.append(_rms_vec(f"trunk.{i}.k_rms", i, m_trunk * nkv, hd))
+            ops += [gemm(f"trunk.{i}.v", m_trunk, h, nkv * hd, i),
                     gemm(f"trunk.{i}.o", m_trunk, h, h, i)]
             cnt = sequences * nq
             if length:
@@ -3086,9 +3132,14 @@ def d1_trunk_ops(v: VisionSpec, sequences: int, text: int, prefix: int, labels: 
                         Op(f"trunk.{i}.pv", "attn", i, m=length, k=length, n=hd, count=cnt, causal=1.0,
                            act_bytes=cnt * length * hd * ab, orient=True),
                         Op(f"trunk.{i}.softmax", "vector", i, vec=cnt * length * length * 5.0)]
+        ops.append(_rms_vec(f"trunk.{i}.ffn_rms", i, m_trunk, h))
         ops += [gemm(f"trunk.{i}.w1", m_trunk, h, ff, i),
-                gemm(f"trunk.{i}.w3", m_trunk, h, ff, i),
-                gemm(f"trunk.{i}.w2", m_trunk, ff, h, i)]
+                gemm(f"trunk.{i}.w3", m_trunk, h, ff, i)]
+        # F.silu(w1) * w3. Width is the FFN, not hidden and not 2 * FFN.
+        ops.append(_silu_vec(f"trunk.{i}.silu", i, m_trunk * ff, "fp32"))
+        ops.append(Op(f"trunk.{i}.mlp_mul", "vector", i, vec=m_trunk * ff, a_fmt="fp32"))
+        ops.append(gemm(f"trunk.{i}.w2", m_trunk, ff, h, i))
+    ops.append(_rms_vec("trunk.out_rms", len(types), m_trunk, h))
     hl = int(pr["hl"])
     hh = int(pr["hh"])
     hff = int(pr["hff"])
@@ -3096,6 +3147,7 @@ def d1_trunk_ops(v: VisionSpec, sequences: int, text: int, prefix: int, labels: 
     if text:
         ops.append(Op("head.type_emb", "lookup", -1, kv_read=sequences * h * ab, vec=sequences * h))
         for j in range(hl):
+            # norm_first TransformerEncoderLayer. Its LayerNorm and default F.relu stay in the tail.
             ops += [gemm(f"head.{j}.in", m_text, h, 3 * h, j),
                     gemm(f"head.{j}.o", m_text, h, h, j)]
             cnt = sequences * hh
@@ -3108,8 +3160,11 @@ def d1_trunk_ops(v: VisionSpec, sequences: int, text: int, prefix: int, labels: 
                     gemm(f"head.{j}.fc2", m_text, hff, h, j)]
     if labels > 0 and text:
         m_score = sequences * labels
-        ops += [gemm("head.scorer.1", m_score, h, h, hl),
-                gemm("head.scorer.3", m_score, h, 1, hl)]
+        # Sequential: LayerNorm, Linear, nn.GELU(), Linear. Marker rows only.
+        ops.append(_ln_vec("head.scorer.ln", hl, m_score, h))
+        ops.append(gemm("head.scorer.1", m_score, h, h, hl))
+        ops.append(_gelu_erf_vec("head.scorer.gelu", hl, m_score * h, "fp32"))
+        ops.append(gemm("head.scorer.3", m_score, h, 1, hl))
     return ops
 
 
