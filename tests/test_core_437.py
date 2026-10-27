@@ -53,7 +53,7 @@ def _bad(edit):
 
 
 def test_version_is_437():
-    assert __version__ == "0.438.0"
+    assert __version__ == "0.439.0"
 
 
 def test_esm2_650m_bills_layernorm_and_erf_gelu():
@@ -140,9 +140,10 @@ def test_other_full_forwards_keep_the_assumed_tail():
     assert w["attn_norm"].sfu == 0.0 and w["attn_norm"].a_fmt == "bf16"
     assert "gelu" not in w and "qk_norm_rope" in w
     fold = get_model("esmfold")
-    assert fold.vec_kind == "" and fold.layers[0].vec_kind == ""
+    assert fold.vec_kind == "" and fold.hidden == 1024
+    assert fold.layers[0].vec_kind == "esm2" and fold.layers[0].vec_width == 2560
     f = _by(build_rank_ops(fold, 0, Phase("full", 1, 8, 0), Shard()))
-    assert "gelu" not in f and f["act"].sfu == 0.0 and "qk_norm_rope" in f
+    assert "act" not in f and "qk_norm_rope" not in f and f["gelu"].vec == 8 * 10240 * 5
 
 
 def test_umt5_bills_rmsnorm_and_not_tanh_gelu():

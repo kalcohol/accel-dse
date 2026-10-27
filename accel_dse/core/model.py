@@ -384,8 +384,12 @@ class Layer:
     ple_in: int = 0                          # 0.369 Gemma-4 per-layer input width (gate h→ple, proj ple→h). 0 = none.
     # 0.437 ESM-2 encoder: published pre-LN + erf-GELU.
     # 0.438 Carbon-A: published RMSNorm + SiLU SwiGLU.
+    # 0.439 ESMFold language layers use the same esm2 recipe at vec_width
+    # (the ESM-2 hidden size). ModelSpec.hidden stays the folding trunk.
     # "" keeps the shared full-forward assumption.
     vec_kind: str = ""
+    vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
+    emb_ln: bool = False                     # last ESMFold language layer: EsmEncoder.emb_layer_norm_after
 
     def expert_params(self, hidden: int) -> int:
         f = self.ffn

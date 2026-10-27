@@ -2235,13 +2235,25 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         rep_tok = dap * s_loc / s
         s = s_loc
     ops: list[Op] = []
+    if L.vec_kind == "esm_proj":
+        # modeling_esmfold.py EsmForProteinFolding.esm_s_mlp: LayerNorm(language width),
+        # Linear to the trunk width, nn.ReLU, Linear. Rows are residues (bos/eos already stripped).
+        if [l.name for l in L.pair_linears] != ["mlp.1", "mlp.3"]:
+            raise ValueError("esmfold projection GEMMs are not mlp.1 then mlp.3")
+        if L.vec_width <= 0 or L.pair_linears[0].k != L.vec_width:
+            raise ValueError("esmfold projection LayerNorm width is not the language width")
     for l in L.pair_linears:
         m = _pair_rows(l.rows, pd, b, s, ps, dap)
         if m <= 0:
             continue
         rep = 1 if l.rows in _DAP_SPLIT else rep_tok
+        if L.vec_kind == "esm_proj" and l.name == "mlp.1":
+            ops.append(Op("esm_s_ln", "vector", li, vec=m * l.k * 4, sfu=float(m), a_fmt="fp32", replicated=rep))
         o = gemm(model, f"{L.stack}.{l.name}", li, m, l.k, l.n, l.role or "pair", stream=True, replicated=rep)
         ops.append(o)
+        if L.vec_kind == "esm_proj" and l.name == "mlp.1":
+            # nn.ReLU is max(x, 0). One clip, no transcendental, no upcast.
+            ops.append(Op("esm_s_relu", "vector", li, vec=float(m * l.n), a_fmt=model.act_fmt, replicated=rep))
         ops.append(Op(f"{L.stack}.{l.name}.ew", "vector", li, vec=m * (l.k + l.n) * 4, replicated=rep))
     has_col = any(c.kind == "col_att" for c in L.pair_cores)
     for i, c in enumerate(L.pair_cores):
@@ -2264,7 +2276,9 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         # 0.75: a parameter-holder layer (misc_params only — e.g. ESMFold's esm_s combine / esm I/O norms, read with
         # the hot set by memplan) has no block: it emitted a phantom pre-norm / FFN-norm / residual (+ TP all-reduces)
         return []
-    h = model.hidden
+    # 0.439: an ESMFold language layer's vectors use the ESM-2 width, not the trunk width
+    # stored on ModelSpec.hidden. Every other full-forward layer keeps model.hidden.
+    h = L.vec_width if L.vec_kind == "esm2" and L.vec_width else model.hidden
     ab = _fmt(model.act_fmt).bytes
     rb = red_bytes(model)
     tp, sp = sh.tp, sh.sp
@@ -2277,6 +2291,8 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         # nn.LayerNorm before attention. fp32 reduction, one rsqrt per row. Affine is already in misc.
         if model.adaln or L.ffn.kind != "dense" or L.ffn.gated:
             raise ValueError("esm2 vector billing is pre-LN dense erf-GELU")
+        if L.vec_width and L.attn_linears and L.vec_width != L.attn_linears[0].k:
+            raise ValueError("esm2 vector width is not the layer width")
         ops = [Op("attn_norm", "vector", li, vec=t * h * 4, sfu=float(t), a_fmt="fp32")]
     elif L.vec_kind == "generanno":
         # GenerannoRMSNorm before attention. fp32 pow(2).mean, one rsqrt, times weight.
@@ -2376,6 +2392,12 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
     if tp > 1:
         ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     ops.append(Op("residual", "vector", li, vec=t * h * (2 + (2 if model.adaln else 0))))
+    if L.emb_ln:
+        # EsmEncoder.emb_layer_norm_after, once, on the last language layer's output.
+        # ESMFold does not run EsmLMHead, so this is not the MLM-head LayerNorm.
+        if L.vec_kind != "esm2":
+            raise ValueError("emb_layer_norm_after is an esm2 vector")
+        ops.append(Op("emb_ln", "vector", li, vec=t * h * 4, sfu=float(t), a_fmt="fp32"))
     return ops
 
 
