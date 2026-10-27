@@ -116,6 +116,13 @@ docs/MODEL.md §20):
          half the rows. Resize is the processor smart_resize (factor 28). Image limits are min
          3136 px and max 6177·28². Video limits are min 299·28² and max 1196·28². LLM positions
          are the rows that enter the language model plus the start and end markers.
+         0.433 bills the ``nn.LayerNorm`` calls the tower runs (before attention,
+         before the MLP, and after the blocks on the patch rows) and the
+         resampler's ``nn.GELU()`` (the erf form), ``nn.LayerNorm``, and
+         ``RMSNorm``. The block MLP stays ``quick_gelu`` and is not billed.
+         Resampler GELU follows the bf16 resampler bucket, or the single
+         bf16 vision bucket on Thinking. LayerNorm and RMSNorm stay fp32.
+         GEMM labels stay bf16.
 
 Counted per image (all images of a request share the size): every GEMM above at M = patches (tower) or merged rows
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
@@ -256,6 +263,14 @@ between the block linears is the erf form, on ``hidden * mlp_ratio``.
 GELU follows the one vision-role float. RMSNorm stays fp32. The full
 residual add, the pad, and the patchify view are not ops. The language
 ``tok_embeddings_norm`` is not an encoder op.
+ERNIE-4.5-VL (family ``ernievl``) bills ``nn.LayerNorm`` before attention,
+before the MLP, and after the blocks on the patch rows. The resampler's
+``spatial_linear`` and ``temporal_linear`` each bill ``nn.GELU()`` (the erf
+form, hardcoded, not ``ACT2FN``) and one ``nn.LayerNorm`` on the spatial
+width. ``after_norm`` is ``RMSNorm`` on the text width. The tower MLP stays
+``quick_gelu`` and is not billed. GELU follows the bf16 resampler bucket,
+or the single bf16 vision bucket on Thinking. LayerNorm and RMSNorm stay
+fp32. The pair ``index_select``, RoPE, and the full residual adds are not ops.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -2713,6 +2728,19 @@ def _ernie_smart_resize(height: int, width: int, factor: int, min_pixels: int, m
     return hb, wb
 
 
+def ernie_resampler_params(h: int, spatial: int, temporal: int, text_h: int) -> int:
+    """Parameter count of ``VariableResolutionResamplerModel`` (bias on every Linear).
+
+    Two spatial linears, one temporal linear from ``2 * spatial``, one more spatial
+    linear, two LayerNorms, the projector Linear, and the RMSNorm weight.
+    ``nn.GELU()`` has no parameters.
+    """
+    sd = h * spatial * spatial
+    td = sd * temporal
+    return (2 * _lin(sd, sd) + 2 * sd + _lin(td, sd) + _lin(sd, sd) + 2 * sd
+            + _lin(sd, text_h) + text_h)
+
+
 def _ernie_vl_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
     """DFNRope vision tower plus the variable-resolution resampler.
 
@@ -2723,7 +2751,14 @@ def _ernie_vl_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
     and concatenated before the temporal linear, so the row count does not change.
     Video is a separate grid (_ernie_video): frames are paired and the temporal GEMMs
     see half as many rows.
+
+    0.433: ``DFNRopeVisionBlock`` uses ``nn.LayerNorm``. ``VisionMlp`` reads
+    ``ACT2FN[hidden_act]``. The released value is ``quick_gelu``, which is not
+    the SiLU or erf-GELU recipe. The resampler hardcodes ``nn.GELU()`` (erf)
+    and does not read ``hidden_act``.
     """
+    if vc.get("hidden_act") != "quick_gelu":
+        raise ValueError("ernie vision hidden_act is not quick_gelu")
     h = int(vc.get("embed_dim") or vc.get("hidden_size") or 0)
     if h < 1 or int(vc.get("hidden_size") or h) != h:
         return None
@@ -4304,6 +4339,7 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     mimo = v.ln_mode == "mimo"
     radio = v.family == "radio"
     dseek = v.family == "ds"
+    ernie = v.family == "ernievl"
     if glm:
         # Glm5NextVisionBlock + Glm5NextVisionPatchMerger. Hidden RMSNorms, per-head
         # q/k RMSNorms, gate SiLU, merger LayerNorm and nn.GELU(). The clamps are not ops.
@@ -4368,6 +4404,19 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
                 or len(v.post) != 3 or v.post[0][:2] != (9 * h, 2 * h)
                 or v.post[1][:2] != (18 * h, 4 * h) or v.post[2][0] != 4 * h):
             raise ValueError("step5 vision block is not fused qkv plus two stride-2 convolutions")
+    if ernie:
+        # DFNRopeVisionBlock LayerNorms, plus the resampler's nn.GELU(), LayerNorm
+        # and RMSNorm. The tower MLP stays quick_gelu. An empty post is the video
+        # path: it bills the resampler vectors next to its own GEMMs.
+        if v.vec_fmt not in ("fp16", "bf16", "fp32"):
+            raise ValueError("ernie vision activation dtype is not a vision float")
+        sd = h * v.merge * v.merge
+        bad = v.gated or v.kv_heads or v.qkv != h
+        if v.post and (bad or len(v.post) != 5 or v.post[0] != (sd, sd) or v.post[1] != (sd, sd)
+                       or v.post[2] != (sd * 2, sd) or v.post[3] != (sd, sd) or v.post[4][0] != sd):
+            raise ValueError("ernie vision block is not fused qkv plus the resampler")
+        if not v.post and bad:
+            raise ValueError("ernie vision block is not fused qkv plus the resampler")
     if muse:
         # MuseGlimmerVisionModel: LayerNorms and ACT2FN["gelu"] (erf). The
         # adapter is act(fc2(act(fc1(x)))). RoPE, pixel shuffle, the scale-free
@@ -4502,6 +4551,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if step5:
             # ln_1 is LayerNorm(hidden) on patch tokens, before the fused qkv.
             ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
+        if ernie:
+            # norm1 is LayerNorm(embed_dim) on patch tokens, before the fused qkv.
+            # The residual add is the full branch. quick_gelu is not this op.
+            ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
         if pixtral:
             # Attention runs before o_proj. One bidirectional block per image.
@@ -4572,6 +4625,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if step5:
             # ln_2 is LayerNorm(hidden) before the MLP. The residual add is the full
             # branch. LayerScale after attention is not this op. quick_gelu is not billed.
+            ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
+        if ernie:
+            # norm2 is LayerNorm(embed_dim) before the MLP. The residual add is the
+            # full branch. VisionMlp reads ACT2FN[hidden_act] (quick_gelu) and is not billed.
             ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
         if muse:
@@ -4687,6 +4744,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # ln_post is LayerNorm(hidden) on patch rows, after the blocks and before
         # the downsamplers. The releases leave use_ln_post false and skip this call.
         ops.append(_ln_vec(pfx + "ln_post", v.depth, images * N0, h))
+    if ernie:
+        # self.ln is LayerNorm(hidden) on patch tokens, after the blocks and before
+        # the resampler view. Width is embed_dim, not the merged width.
+        ops.append(_ln_vec(pfx + "out_ln", v.depth, images * N0, h))
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
         m_ = merger_rows(kn)
@@ -4704,6 +4765,12 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # Width is hidden, not 4 * hidden. On a still those rows are the patches.
             ops.append(_ln_vec(pfx + "proj_ln", v.depth, m_ * v.merge * v.merge, h))
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
+        if ernie:
+            # spatial_linear / temporal_linear: nn.GELU() then, after the next linear,
+            # nn.LayerNorm. The projector linear is followed by RMSNorm. nn.GELU()
+            # does not pass approximate, so it is the erf form. Width is that
+            # linear's N (spatial dim, or the text hidden size on the projector).
+            _ernie_resampler_vecs(ops, pfx, v, i, m_, n)
         if muse and i == 0:
             # First adapter GELU, after fc1. Width is projector_hidden_size, not
             # 4 * hidden and not the text hidden size.
@@ -4790,6 +4857,24 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     return ops
 
 
+def _ernie_resampler_vecs(ops: list[Op], pfx: str, v: VisionSpec, i: int, m_: int, n: int) -> None:
+    """Vectors ``VariableResolutionResamplerModel`` runs after linear ``i``.
+
+    ``spatial_linear`` and ``temporal_linear`` are Linear, ``nn.GELU()``, Linear,
+    ``nn.LayerNorm``. The projector is Linear then ``RMSNorm``. ``nn.GELU()`` does
+    not pass ``approximate``, so it is the erf form. The tower MLP's ``quick_gelu``
+    is not this op. GELU stays at ``vec_fmt`` (the bf16 resampler). Norms stay fp32.
+    """
+    if i in (0, 2):
+        name = "sp_gelu" if i == 0 else "tm_gelu"
+        ops.append(_gelu_erf_vec(pfx + name, v.depth, m_ * n, v.vec_fmt))
+    elif i in (1, 3):
+        name = "sp_ln" if i == 1 else "tm_ln"
+        ops.append(_ln_vec(pfx + name, v.depth, m_, n))
+    elif i == 4:
+        ops.append(_rms_vec(pfx + "after_rms", v.depth, m_, n))
+
+
 def _ernie_vl_video_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> list[Op]:
     """ERNIE-4.5-VL video resampler (VariableResolutionResamplerModel).
 
@@ -4819,6 +4904,9 @@ def _ernie_vl_video_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> li
         ops.append(Op(f"vis.merger.{i}", "gemm", v.depth, m=m_, k=k, n=n, role="vision",
                       w_params=k * n, w_bits=16.0, w_fmt="bf16", a_fmt=af,
                       act_bytes=m_ * (k + n) * ab, stream=True, vec=m_ * n * VEC_PER_OUT))
+        # Same nn.GELU() / LayerNorm / RMSNorm as the still-image resampler.
+        # Spatial ops see every frame. Temporal ops and the projector see the pairs.
+        _ernie_resampler_vecs(ops, "vis.", v, i, m_, n)
     return ops
 
 
