@@ -4315,8 +4315,11 @@ def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
     ``config.torch_dtype`` is not the source. Distil-Whisper large-v2 says float32 and
     stores fp16. GEMM ``w_fmt`` stays the historical bf16 billing; this value is only
     the vector ``a_fmt`` for GELU, SiLU and ReLU. LayerNorm stays fp32. AuT uses the
-    same rule. Pixtral uses it for SiLU, the SwiGLU product, and the projector
-    erf-GELU. Pixtral RMSNorm stays fp32.
+    same rule.     Pixtral uses it for SiLU, the SwiGLU product, and the projector
+    erf-GELU. Pixtral RMSNorm stays fp32. Qwen3-VL merger ``nn.GELU()`` and
+    LFM2.5-VL projector ``ACT2FN["gelu"]`` use it the same way. A Qwen3-VL
+    tower stored entirely as fp32 keeps the model activation format instead
+    (WeVisOne). LayerNorm stays fp32.
     """
     vr = (rel.get("roles") or {}).get("vision") or {}
     keys = [k for k, v in vr.items() if isinstance(v, dict) and v.get("params")]
@@ -4814,6 +4817,24 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             if rel is None:
                 raise ValueError("pixtral tower vision role is missing")
             vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "pixtral"))
+        if vs is not None and vs.ln_mode == "qwen3vl":
+            # 0.419: merger nn.GELU() does not upcast. A fp32 vision role is the
+            # WeVisOne storage dtype; those activations stay the model format.
+            if rel is None:
+                raise ValueError("qwen3vl tower vision role is missing")
+            vr = (rel.get("roles") or {}).get("vision") or {}
+            if set(vr) == {"fp32"}:
+                act = spec.act_fmt
+                if act not in ("fp16", "bf16", "fp32"):
+                    raise ValueError("qwen3vl activation dtype is not a vision float")
+                vs = replace(vs, vec_fmt=act)
+            else:
+                vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "qwen3vl"))
+        if vs is not None and vs.family == "lfm2vl":
+            # 0.419: projector ACT2FN["gelu"] follows the vision role. LayerNorm stays fp32.
+            if rel is None:
+                raise ValueError("lfm2_vl tower vision role is missing")
+            vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "lfm2_vl"))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -4917,6 +4938,31 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
                 "GEMM 的 w_fmt 仍是 bf16，通用 GEMM 尾项不减。"
                 "RoPE 的 sin/cos、整份残差加、块状注意力 mask 不单列。",))
+        if vs is not None and vs.ln_mode == "qwen3vl":
+            spec = replace(spec, notes=spec.notes + (
+                "Qwen3-VL 视觉塔：每一层注意力前和 MLP 前各一次 nn.LayerNorm(hidden)。"
+                "最终 merger 在 view 之前对 patch 序列做 LayerNorm(hidden)。"
+                "每个 deepstack merger 先 view 到 4*hidden，再做 LayerNorm(4*hidden)。"
+                "merger 的激活是 nn.GELU()，默认 approximate='none'，erf 形式，"
+                "行数是合并后的位置，宽度是 4*hidden，不是文本 hidden。"
+                "块内 MLP 的 hidden_act 仍是 gelu_pytorch_tanh，不单列。"
+                f"GELU 不升精度，a_fmt 是 {vs.vec_fmt}。"
+                "权重是单独一份 fp32 时，这个 a_fmt 跟模型激活格式，不跟权重 dtype。"
+                "其余塔跟 vision 角色。都不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 在 fp32 归约。通用 GEMM 尾项不减。"
+                "RoPE、位置插值、整份残差加不单列。",))
+        if vs is not None and vs.family == "lfm2vl":
+            spec = replace(spec, notes=spec.notes + (
+                "LFM2.5-VL 的 SigLIP2：每一层注意力前和 MLP 前各一次 nn.LayerNorm(hidden)，"
+                "块之后还有 post_layernorm。行数是补齐后的 patch，不是 unshuffle 之后的有效行。"
+                "vision_use_head 是 false，pooling head 的 LayerNorm 不跑。"
+                "投影器在 linear_1 和 linear_2 之间是 ACT2FN['gelu']，erf 形式，"
+                "行数是 unshuffle 之后的有效位置，宽度是 projector_hidden_size。"
+                "塔内 MLP 的 hidden_act 仍是 gelu_pytorch_tanh，不单列。"
+                f"GELU 不升精度，a_fmt 是 vision 角色的 {vs.vec_fmt}，"
+                "不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 在 fp32 归约。projector_use_layernorm 为 false 时不另计投影器 LayerNorm。"
+                "通用 GEMM 尾项不减。位置插值和整份残差加不单列。",))
     return spec
 
 
