@@ -237,7 +237,8 @@ def test_other_towers_do_not_gain_the_whisper_names():
         assert other is not None and other.kind != "whisper", mid
         names = [op.name for op in audio_ops(other, 1.0, 1)]
         assert "aud.conv1.gelu" not in names and "aud.conv2.gelu" not in names, mid
-        if mid != "d1-omni-600m":
+        # 0.416 AuT bills its own pre-attention LayerNorm under the same name.
+        if mid not in ("d1-omni-600m", "qwen3-asr-1.7b"):
             assert "aud.0.attn_ln" not in names, mid
 
 

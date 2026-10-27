@@ -108,6 +108,12 @@ LayerNorm. Step-Audio's adaptor GELU and ReLU, Kimi's adaptor SiLU and LayerNorm
 projector GELU use the same recipes. Those activations follow the vision-role dtype and do
 not follow the requested GEMM activation format. LayerNorm stays fp32. The decoder's
 GELU-as-SiLU approximation is unchanged.
+The AuT encoder (kind ``aut``: Qwen3-ASR, Qwen3-Omni, Index-Echo) bills ``F.gelu`` on
+each padded Conv2d output, ``ACT2FN["gelu"]`` on each FFN intermediate and on the
+projector, and the pre-attention, pre-MLP and encoder LayerNorms. Index-Echo 2B
+also bills ``F.gelu`` on the connector ``w1`` output. Those are the erf form.
+The connector scalars and the 9B projection have no activation. The sinusoid add
+and the plain residual adds are not ops.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -434,7 +440,11 @@ class AudioSpec:
     # 0.415 whisper-family activation dtype from the safetensors vision role
     # (fp16 / bf16 / fp32). Empty falls back to w_fmt. GEMM w_fmt in _whisper_ops
     # stays the historical bf16 billing. LayerNorm is fp32 either way.
+    # 0.416 AuT uses the same field for GELU. LayerNorm stays fp32.
     vec_fmt: str = ""
+    # 0.416 AuT projector-linear indices followed by erf GELU. Index 0 is proj1.
+    # Index-Echo 2B also lists the connector w1 index. Empty on every other kind.
+    gelu_lin: tuple[int, ...] = ()
 
     @property
     def samples_per_token(self) -> int:
@@ -994,14 +1004,25 @@ def audio_spec(cfg: dict) -> AudioSpec | None:
         return _aut_spec(tk["audio_config"])
     if mt == "index_echo_s2st" and ac.get("model_type") == "qwen3_omni_moe_audio_encoder":
         # 0.279 Index-Echo ST LM (code/stlm/audio_model.py 「来源」): the Qwen3-Omni AuT (same encoder as Qwen3-ASR:
-        # WhisperFeatureExtractor 128 mel with n_samples raised to 300 s, only the valid frames encoded) → connector:
-        # 2B h + β·W₂ GELU(W₁ h), scaled by exp(log α) (2 × Linear 2048 → 2048, no bias, + 2 scalars); 9B one Linear
-        # 2048 → 4096 (no bias) — shapes from the release (stlm_ckpt), costed as projector GEMMs
+        # WhisperFeatureExtractor 128 mel with n_samples raised to 300 s, only the valid frames encoded) → connector.
+        # 2B AudioConnector.forward is exp(log_alpha) * (h + beta * w2(F.gelu(w1(h)))). F.gelu is the erf form.
+        # The two scalars and the plain residual add are not ops. 9B AudioConnector9B.forward is proj(h) only;
+        # the gain is folded into the stored weight. Shapes come from the release (stlm_ckpt).
         a = _aut_spec(ac)
         ct = cfg.get("_echo_connector") or {}
-        mats = tuple((sh[1], sh[0]) for n_, sh in sorted(ct.items()) if len(sh) == 2)
+        pairs = [(n, sh) for n, sh in sorted(ct.items()) if len(sh) == 2]
+        names = [n for n, _sh in pairs]
+        mats = tuple((sh[1], sh[0]) for _n, sh in pairs)
+        extra: tuple[int, ...] = ()
+        if names == ["w1.weight", "w2.weight"]:
+            extra = (len(a.lin),)
+        elif names == ["proj.weight"] or not names:
+            extra = ()
+        else:
+            raise ValueError("index echo connector is not w1/w2 or proj")
         return replace(a, lin=a.lin + mats, out=mats[-1][1] if mats else a.out,
-                       params=a.params + sum(math.prod(sh) for sh in ct.values()))
+                       params=a.params + sum(math.prod(sh) for sh in ct.values()),
+                       gelu_lin=a.gelu_lin + extra)
     if mt in ("omniasr", "omniasr_ctc") and ac.get("model_type") == "omniasr_audio":
         # 0.336 OmniASR LLM / CTC (bezzam/*-v2 HF ports of facebook/omniASR): Wav2Vec2-style audio_tower +
         # multi_modal_projector (LLM) or CTC lm_head (CTC — encoder only; language decode not modelled as asr)
@@ -1090,7 +1111,12 @@ def _aut_spec(ac: dict) -> AudioSpec:
     chunks of 2·n_window (100 frames = 1 s); per chunk three Conv2d (k3, s2, p1; 1 → C → C → C channels, GELU) over
     (mel, time), conv_out Linear C·⌈⌈⌈mel/2⌉/2⌉/2⌉ → d (no bias), sinusoid positions; only the valid post-CNN positions
     (13 per full chunk) enter the L blocks (q / k / v / o with bias, GELU fc1 / fc2), attention within windows of
-    13 · n_window_infer / (2·n_window) positions (cu_seqlens), ln_post; projector Linear d → d, GELU, Linear d → out."""
+    13 · n_window_infer / (2·n_window) positions (cu_seqlens), ln_post; projector Linear d → d, GELU, Linear d → out.
+
+    0.416: ``activation_function`` must be ``gelu``. Conv ``F.gelu`` and ``ACT2FN['gelu']`` are the erf form.
+    A different value is refused. The projector GELU is linear index 0.
+    """
+    _require_erf_gelu("aut", ac.get("activation_function"))
     d, L, nh, ffn, mel = ac["d_model"], ac["encoder_layers"], ac["encoder_attention_heads"], ac["encoder_ffn_dim"], ac["num_mel_bins"]
     C, nw = ac["downsample_hidden_size"], ac["n_window"]
     f = mel
@@ -1100,7 +1126,7 @@ def _aut_spec(ac: dict) -> AudioSpec:
     lin = ((d, d), (d, ac["output_dim"]))
     params = (_lin(9, C) + 2 * _lin(9 * C, C) + C * f * d + L * blk + 2 * d + sum(_lin(k, n) for k, n in lin))
     a = AudioSpec(16000, (160,), (d,), (L,), 3, ffn / d, ac["output_dim"], params, kind="aut", heads=nh, n_mels=mel,
-                  chunk=2 * nw, lin=lin, ch=C)
+                  chunk=2 * nw, lin=lin, ch=C, gelu_lin=(0,))
     return replace(a, win=a.aut_len(2 * nw) * (ac["n_window_infer"] // (2 * nw)))
 
 
@@ -1385,9 +1411,38 @@ def _sanm_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> l
 
 
 def _aut_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
-    """0.270 Qwen3-ASR AuT encoder ops (see _aut_spec): Conv2d as implicit GEMMs over every padded chunk; blocks on
-    the valid positions; attention per window (full windows + the tail window)."""
+    """AuT encoder GEMMs plus the activations the published forward actually runs.
+
+    Qwen3ASREncoder and Qwen3OmniMoeAudioEncoder (transformers main ``c0d024f``) run
+    ``F.gelu`` on each of the three padded Conv2d outputs, then the conv_out linear
+    with no activation. Each block is pre-LN attention, then pre-LN MLP. The MLP
+    activation is ``ACT2FN['gelu']``. ``ln_post`` follows the blocks. The projector
+    is Linear, the same activation, Linear. ``F.gelu`` and ``ACT2FN['gelu']`` are the
+    erf form, not ``gelu_pytorch_tanh``. Conv GELU reads the padded chunk grid. The
+    LayerNorms, the FFN GELU and the projector read the valid encoder positions.
+    Index-Echo 2B's ``AudioConnector.forward`` is ``F.gelu`` on ``w1``; 9B's connector
+    is one linear. GELU does not upcast: ``a_fmt`` is ``vec_fmt`` (the vision-role
+    dtype). LayerNorm reduces in fp32. The shared GEMM tail is not reduced. A
+    requested GEMM activation format does not change these vector dtypes. GEMM
+    ``w_fmt`` stays bf16. Eval dropout is not an op. The sinusoid add, the fp16
+    clamp, the connector scalars and the plain residual adds are not ops.
+    """
     d, dh, C = a.dims[0], a.dims[0] // a.heads, a.ch
+    ff = a.mlp * d
+    if ff != int(ff):
+        raise ValueError("aut ffn width is not an integer")
+    ff = int(ff)
+    if not a.lin or len(a.lin) < 2:
+        raise ValueError("aut projector is missing")
+    (k0, n0), (k1, _n1) = a.lin[0], a.lin[1]
+    if k0 != d or n0 != d or k1 != d:
+        raise ValueError("aut projector is not linear, gelu, linear")
+    gelu_at = tuple(a.gelu_lin)
+    if 0 not in gelu_at or any(i < 0 or i >= len(a.lin) for i in gelu_at):
+        raise ValueError("aut projector gelu is missing")
+    act = a.vec_fmt or a.w_fmt
+    if act not in ("fp16", "bf16", "fp32"):
+        raise ValueError("aut activation dtype is not a released float format")
     ops: list[Op] = []
 
     def gemm(name: str, m: int, k: int, n: int, li: int = 0, w: int | None = None) -> Op:
@@ -1398,17 +1453,21 @@ def _aut_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> li
     k_in = 1
     for i in range(3):
         f, t = (f + 1) // 2, (t + 1) // 2
-        ops.append(gemm(f"aud.conv2d{i + 1}", nch * f * t, 9 * k_in, C))
+        rows = nch * f * t
+        ops.append(gemm(f"aud.conv2d{i + 1}", rows, 9 * k_in, C))
+        # F.gelu on the padded conv output. The class does not upcast.
+        ops.append(_gelu_erf_vec(f"aud.conv2d{i + 1}.gelu", 0, rows * C, act))
         k_in = C
     P = a.enc_positions(seconds) * clips
     ops.append(gemm("aud.conv_out", nch * t, C * f, d))
     wins = []
     for _ in range(clips):
-        full, rem = divmod(a.enc_positions(seconds), a.win)
-        wins += [a.win] * full + ([rem] if rem else [])
-    for li in range(a.depths[0]):
-        ops += [gemm(f"aud.{li}.qkv", P, d, 3 * d, li), gemm(f"aud.{li}.o", P, d, d, li),
-                gemm(f"aud.{li}.fc1", P, d, int(a.mlp * d), li), gemm(f"aud.{li}.fc2", P, int(a.mlp * d), d, li)]
+        _full, rem = divmod(a.enc_positions(seconds), a.win)
+        wins += [a.win] * _full + ([rem] if rem else [])
+    depth = a.depths[0]
+    for li in range(depth):
+        ops.append(_ln_vec(f"aud.{li}.attn_ln", li, P, d))
+        ops.append(gemm(f"aud.{li}.qkv", P, d, 3 * d, li))
         for wi, w in enumerate(sorted(set(wins), reverse=True)):
             cnt = wins.count(w) * a.heads
             sfx = f".w{wi}" if wi else ""
@@ -1417,8 +1476,18 @@ def _aut_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> li
                     Op(f"aud.{li}.pv{sfx}", "attn", li, m=w, k=w, n=dh, count=cnt, causal=1.0, act_bytes=cnt * w * dh * ab,
                        orient=True),
                     Op(f"aud.{li}.softmax{sfx}", "vector", li, vec=cnt * w * w * 5.0)]
+        ops.append(gemm(f"aud.{li}.o", P, d, d, li))
+        ops.append(_ln_vec(f"aud.{li}.mlp_ln", li, P, d))
+        ops.append(gemm(f"aud.{li}.fc1", P, d, ff, li))
+        ops.append(_gelu_erf_vec(f"aud.{li}.gelu", li, P * ff, act))
+        ops.append(gemm(f"aud.{li}.fc2", P, ff, d, li))
+    ops.append(_ln_vec("aud.ln", depth, P, d))
     for i, (k, n) in enumerate(a.lin):
-        ops.append(gemm(f"aud.proj.linear{i}", P, k, n, a.depths[0]))
+        ops.append(gemm(f"aud.proj.linear{i}", P, k, n, depth))
+        if i in gelu_at:
+            # proj1 is aud.proj.gelu. The 2B connector w1 is the only other site.
+            name = "aud.proj.gelu" if i == 0 else "aud.conn.gelu"
+            ops.append(_gelu_erf_vec(name, depth, P * n, act))
     return ops
 
 
