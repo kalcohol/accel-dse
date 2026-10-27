@@ -4335,9 +4335,11 @@ def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
     the vector ``a_fmt`` for GELU, SiLU and ReLU. LayerNorm stays fp32. AuT uses the
     same rule.     Pixtral uses it for SiLU, the SwiGLU product, and the projector
     erf-GELU. Pixtral RMSNorm stays fp32. Qwen3-VL merger ``nn.GELU()`` and
-    LFM2.5-VL projector ``ACT2FN["gelu"]`` use it the same way. A Qwen3-VL
+    LFM2.5-VL projector ``ACT2FN["gelu"]`` use it the same way. GLM-5.3-Flash
+    uses it for gate SiLU, the SwiGLU product, and merger ``nn.GELU()``.
+    A Qwen3-VL
     tower stored entirely as fp32 keeps the model activation format instead
-    (WeVisOne). LayerNorm stays fp32.
+    (WeVisOne). LayerNorm and GLM RMSNorm stay fp32.
     """
     vr = (rel.get("roles") or {}).get("vision") or {}
     keys = [k for k, v in vr.items() if isinstance(v, dict) and v.get("params")]
@@ -4853,6 +4855,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             if rel is None:
                 raise ValueError("lfm2_vl tower vision role is missing")
             vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "lfm2_vl"))
+        if vs is not None and vs.family == "glm":
+            # 0.422: gate SiLU, the product, and merger nn.GELU() follow the vision role.
+            # GEMM w_fmt stays bf16. RMSNorm and LayerNorm stay fp32.
+            if rel is None:
+                raise ValueError("glm5 vision role is missing")
+            vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "glm5"))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -4981,6 +4989,21 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "不跟请求里的 GEMM 激活格式走。"
                 "LayerNorm 在 fp32 归约。projector_use_layernorm 为 false 时不另计投影器 LayerNorm。"
                 "通用 GEMM 尾项不减。位置插值和整份残差加不单列。",))
+        if vs is not None and vs.family == "glm":
+            spec = replace(spec, notes=spec.notes + (
+                "GLM-5.3-Flash 视觉塔：每一层 norm1 和 norm2 是带 weight 的 RMSNorm(hidden)。"
+                "q_norm 和 k_norm 做在 (token, head, head_dim) 的最后一维，"
+                "每头一次 rsqrt，不是把多头展成 hidden 再做一次。q 和 k 的头数相同。"
+                "MLP 是 ACT2FN['silu']（x * sigmoid(x)）再乘 up。宽度是 intermediate，不是 2*intermediate。"
+                "块之后 post_layernorm 仍在 patch 行上，宽度是 hidden，不是 out_hidden_size。"
+                "merger 在 proj 之后是 nn.LayerNorm(out_hidden_size) 和 nn.GELU()，"
+                "默认 approximate='none'，erf 形式。行数是合并后的位置。"
+                "gate 上再跑一次 ACT2FN['silu']，宽度是 projection_intermediate_size，不是 2 倍。"
+                f"SiLU、乘积和 GELU 不升精度，a_fmt 是 vision 角色的 {vs.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "RMSNorm 和 LayerNorm 在 fp32 归约。仿射已经在参数里。"
+                "swiglu_limit 的 clamp、轴向 RoPE 的 cos/sin、整份残差加、"
+                "eval 的 attention dropout 不单列。通用 GEMM 尾项不减。",))
     return spec
 
 
