@@ -69,6 +69,16 @@ def test_tower_formats_and_bytes():
             assert abs(m.vision.params * m.vision.w_Bpp - vb) < 1
             assert rel["roles"]["vision"]["fp32"]["params"] > 0
             continue
+        if m.vision.family == "minimax":
+            # Conv3d patch_embedding is fp32. The rest of the tower and the projector are bf16.
+            # patch_merge_mlp stays in the language role. wfmt stays empty; the patch GEMM
+            # overrides w_fmt. Storage uses the mixed byte count.
+            assert m.vision.wfmt == (), e["id"]
+            rel = json.loads((ROOT / "accel_dse/data/releases" / (e["hf_id"].replace("/", "__") + ".json")).read_text())
+            vb = sum(x["bytes"] for x in rel["roles"]["vision"].values())
+            assert abs(m.vision.params * m.vision.w_Bpp - vb) < 1, e["id"]
+            assert set(rel["roles"]["vision"]) == {"bf16", "fp32"}, e["id"]
+            continue
         if m.vision.family == "qwen" and m.vision.w_Bpp == 4.0:
             fm = {k: (f, b, a) for k, f, b, a in m.vision.wfmt}
             assert fm == {k: ("fp32", 32.0, "bf16") for k in ("attn", "merger", "mlp", "patch")}, e["id"]

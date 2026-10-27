@@ -4426,6 +4426,30 @@ def _ernie_vision_fmt(rel: dict, cfg: dict, vision_params: int) -> str:
     return "bf16"
 
 
+def _minimax_vision_fmt(rel: dict, patch_params: int, vision_params: int) -> tuple[str, float]:
+    """Activation dtype of MiniMax-M3 ``ACT2FN["gelu"]``, and bytes per vision parameter.
+
+    The bf16 vision role is the tower except the conv, plus the two projector
+    linears. The fp32 role is only ``patch_embedding`` (Conv3d, no bias).
+    GELU follows the bf16 weights. LayerNorm stays fp32. The conv GEMM's
+    ``w_fmt`` is fp32. ``patch_merge_mlp`` is the language ``other`` role.
+    """
+    vr = (rel.get("roles") or {}).get("vision") or {}
+    keys = [k for k, v in vr.items() if isinstance(v, dict) and v.get("params")]
+    if sorted(keys) != ["bf16", "fp32"]:
+        raise ValueError("minimax vision role is not bf16 plus the conv")
+    fp = vr["fp32"]
+    bf = vr["bf16"]
+    if fp.get("params") != patch_params or fp.get("bytes") != patch_params * 4:
+        raise ValueError("minimax vision fp32 role is not the conv")
+    bits = 8.0 * bf["bytes"] / bf["params"]
+    if abs(bits - 16.0) > 1e-3:
+        raise ValueError(f"minimax vision bf16 role is {bits} bits")
+    if bf["params"] + fp["params"] != vision_params:
+        raise ValueError("minimax vision role params do not match the tower")
+    return "bf16", (bf["bytes"] + fp["bytes"]) / vision_params
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -4999,6 +5023,14 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             if rel is None:
                 raise ValueError("ernie vision role is missing")
             vs = replace(vs, vec_fmt=_ernie_vision_fmt(rel, cfg, vs.params))
+        if vs is not None and vs.family == "minimax":
+            # 0.434: ACT2FN["gelu"] follows the bf16 tower weights. The fp32
+            # bucket is the conv. GEMM labels stay bf16 except that conv.
+            if rel is None:
+                raise ValueError("minimax vision role is missing")
+            patch = 3 * vs.tpatch * vs.patch * vs.patch * vs.hidden
+            fmt, bpp = _minimax_vision_fmt(rel, patch, vs.params)
+            vs = replace(vs, vec_fmt=fmt, w_Bpp=bpp)
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -5322,6 +5354,25 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 和 RMSNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "拼帧的 index_select、RoPE 的 cos/sin、整份残差加不单列。"
                 "塔的 GEMM 标签仍是 bf16。通用 GEMM 尾项不减。",))
+        if vs is not None and vs.family == "minimax":
+            spec = replace(spec, notes=spec.notes + (
+                "MiniMax-M3 视觉塔：pre_layrnorm 和每一层的 layer_norm1、layer_norm2 是 nn.LayerNorm(hidden)。"
+                "CLIPMLP 读 ACT2FN[hidden_act]，发布值是 gelu，erf 形式，宽度是 intermediate。"
+                "投影器写死 ACT2FN['gelu']：linear_1 之后一次，merge_linear_1 之后再一次。"
+                "linear_1 看到 patch 行，K 是视觉 hidden，N 是 projector_hidden_size。"
+                "linear_2 仍是 patch 行，K 和 N 是 projector_hidden_size 与文本 hidden。"
+                "merge 先把 spatial_merge_size**2 个文本宽度的 patch 拼到特征轴上，"
+                "所以 merge_linear_1 的行数是合并后的位置，K 是文本 hidden 乘 merge 的平方。"
+                "发布的 q/k/v 仍是一份融合 GEMM，不拆成三份。"
+                "patch_embedding 是 Conv3d，无 bias，safetensors 是 fp32，GEMM 的 w_fmt 是 fp32。"
+                "其余视觉 GEMM 的 w_fmt 仍是 bf16。"
+                f"GELU 不升精度，a_fmt 是 vision 角色里塔权重的 {vs.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
+                "patch_merge_mlp 的参数在语言侧 other 角色里，不重复计入 vision.params。"
+                "文本激活是 swigluoai，不单列。"
+                "3D RoPE、整份残差加、图像的 mean/std 归一化不单列。"
+                "通用 GEMM 尾项不减。",))
     return spec
 
 

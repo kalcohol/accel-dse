@@ -123,6 +123,21 @@ docs/MODEL.md §20):
          Resampler GELU follows the bf16 resampler bucket, or the single
          bf16 vision bucket on Thinking. LayerNorm and RMSNorm stay fp32.
          GEMM labels stay bf16.
+  minimax MiniMax-M3 / M3.1-Flash (clip_vision_model inside minimax_m3_vl): Conv3d patch embed
+         (kernel = stride = [temporal_patch_size, patch, patch], no bias, stored fp32),
+         pre_layrnorm, then depth CLIP encoder layers (separate q / k / v / o, all width hidden,
+         LayerNorm before attention and before the MLP, ACT2FN[hidden_act] on the MLP). The
+         released hidden_act is gelu, the erf form. There is no post LayerNorm. The projector
+         hardcodes ACT2FN["gelu"] after linear_1 (hidden to projector_hidden_size) and again
+         after the merge linear (text_hidden * merge^2 to projector_hidden_size). linear_2 and
+         the second merge linear have no activation. Resize is MiniMaxM3VLImageProcessor.smart_resize
+         (factor = patch * spatial_merge_size, min_pixels 4*28*28, max_pixels 672^2). A still is
+         repeated to temporal_patch_size inside the conv, so the tower row count stays the spatial
+         patches. LLM tokens are the merged rows plus the start and end markers.
+         0.434 bills those LayerNorms and the three erf-GELU sites (block MLP, projector, merge).
+         The text activation stays swigluoai and is not billed. 3D RoPE, the full residual adds,
+         and the image mean/std normalize are not ops. patch_merge_mlp parameters stay in the
+         language role. The conv GEMM weight is fp32. Other GEMM labels stay bf16.
 
 Counted per image (all images of a request share the size): every GEMM above at M = patches (tower) or merged rows
 (merger / aligner); bidirectional attention within the image (QKᵀ and PV, ``heads`` × patches²); norm / activation /
@@ -271,6 +286,12 @@ width. ``after_norm`` is ``RMSNorm`` on the text width. The tower MLP stays
 ``quick_gelu`` and is not billed. GELU follows the bf16 resampler bucket,
 or the single bf16 vision bucket on Thinking. LayerNorm and RMSNorm stay
 fp32. The pair ``index_select``, RoPE, and the full residual adds are not ops.
+MiniMax-M3 / M3.1-Flash (family ``minimax``) bills ``nn.LayerNorm`` on the patch
+rows before the blocks, before attention, and before the MLP. ``ACT2FN["gelu"]``
+is the erf form on each MLP intermediate and after the first linear of the
+projector and of the patch-merge MLP. GELU follows the bf16 tower weights.
+The fp32 vision role is only the conv. LayerNorm stays fp32. Text
+``swigluoai``, 3D RoPE, and the full residual adds are not ops.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -338,10 +359,10 @@ _PREPROC = {
     # checked; v1.2 / Flash = decision_config max_pixels 1638400 (card: 1.6 MP); v1.1 4194304; v1 262144 (512 × 512)
     **{f"perplexity-ai/pplx-decider-{v}": {"min_px": 65536, "max_px": x} for v, x in (
         ("v1.2", 1638400), ("flash-v1.2", 1638400), ("v1.1-27b", 4194304), ("v1-27b", 262144))},
-    # 0.355 MiniMax M3.1-Flash: patch_merge spatial 2 / temporal 2, image 672, patch 14 → 1296 base patches (48×27), merged to 576
-    "MiniMaxAI/MiniMax-M3.1-Flash": {"min_px": 65536, "max_px": 16777216},
-    # 0.356 MiniMax M3 (non-Flash): same vision config as M3.1-Flash (image 2016, patch 14, merged to 576)
-    "MiniMaxAI/MiniMax-M3": {"min_px": 65536, "max_px": 16777216},
+    # 0.434 MiniMaxM3VLImageProcessor.smart_resize: factor 28, function-default min_pixels
+    # 4*28*28 (the processor does not pass min_pixels), class max_pixels 672*672.
+    "MiniMaxAI/MiniMax-M3.1-Flash": {"min_px": 3136, "max_px": 451584},
+    "MiniMaxAI/MiniMax-M3": {"min_px": 3136, "max_px": 451584},
     "zai-org/GLM-5.3-Flash": {"min_tok": 16, "max_tok": 8000},
     "moonshotai/Kimi-K2.5": {"in_patch_limit": 16384, "side": 512},
     "moonshotai/Kimi-K2.7-Code": {"in_patch_limit": 16384, "side": 512},   # same vision_config / image processor as K2.5
@@ -505,6 +526,9 @@ class VisionSpec:
     # 0.423: "mimo" bills MiMo-V2.6 RMSNorm, gate SiLU, ln_q and merger nn.GELU().
     # 0.424: "qwen35" bills Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp LayerNorms and the
     # merger nn.GELU(). The block MLP stays gelu_pytorch_tanh. Other qwen towers stay empty.
+    # 0.434: "minimax" bills MiniMax-M3 / M3.1-Flash LayerNorms and ACT2FN["gelu"]
+    # (erf) on the block MLP and on the two projector linears. Text swigluoai
+    # stays out. The family is already minimax.
     # 0.427: "k25" bills Kimi-K2.5 / K2.7-Code LayerNorms and projector nn.GELU().
     # "k3" bills Kimi-K3 RMSNorms and the same projector nn.GELU(). The tower MLP
     # stays PytorchGELUTanh.
@@ -3840,19 +3864,37 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                           win=vc.get("visual_token_window_size") or 0, full_idx=tuple(vc["fullatt_block_indexes"]),
                           sink=bool(vc.get("use_sink")), perm=perm, ln_mode="mimo")
     if mt == "clip_vision_model" and cfg.get("model_type") == "minimax_m3_vl":    # 0.355 MiniMax M3.1-Flash
+        # 0.434: CLIPEncoderLayer + CLIPMLP. hidden_act gelu is the erf form.
+        # The projector hardcodes ACT2FN["gelu"] and does not read projector_hidden_act.
+        # The released value of that key is also gelu. patch_merge_mlp is stored with
+        # the language role, so its parameters are not in this total.
+        if vc.get("hidden_act") != "gelu":
+            raise ValueError("minimax vision hidden_act is not gelu")
+        if cfg.get("projector_hidden_act") != "gelu":
+            raise ValueError("minimax projector activation is not gelu")
+        if cfg.get("multimodal_projector_bias", True) is not True:
+            raise ValueError("minimax projector bias is not true")
         h, inter, L, nh = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"]
-        p, img_size = vc["patch_size"], vc["image_size"]
-        mk_s = cfg.get("img_token_compression_config", {}).get("spatial_merge_size", 2)
-        mk_t = cfg.get("img_token_compression_config", {}).get("temporal_patch_size", 2)
-        mk = mk_s  # spatial merge
+        p = vc["patch_size"]
+        comp = cfg.get("img_token_compression_config") or {}
+        mk = comp.get("spatial_merge_size", 2)
+        mk_t = comp.get("temporal_patch_size", 2)
         proj_h = cfg.get("projector_hidden_size", text_h)
-        # Conv2d patch embed + 3D RoPE + LN blocks (qkv / proj, GELU MLP) + LN + projector (h → proj_h, bias) + patch_merge MLP
-        hm = h * mk * mk
-        params = (3 * p * p * h + L * (2 * h + _lin(h, 3 * h) + _lin(h, h) + _lin(h, inter) + _lin(inter, h))
-                  + h + _lin(h, proj_h) + _lin(hm, hm) + _lin(hm, hm))
+        if (type(h) is not int or type(inter) is not int or type(L) is not int or type(nh) is not int
+                or type(p) is not int or type(mk) is not int or type(mk_t) is not int
+                or type(proj_h) is not int or type(text_h) is not int):
+            raise ValueError("minimax vision shapes are not integers")
+        if min(h, inter, L, nh, p, mk, mk_t, proj_h, text_h) < 1 or h % nh:
+            raise ValueError("minimax vision shapes are not positive")
+        # Conv3d (fp32, no bias) + pre_layrnorm + per-layer LayerNorms and separate
+        # q/k/v/o + fc1/fc2, all with bias, + projector linear_1 / linear_2 with bias.
+        params = (3 * mk_t * p * p * h + 2 * h
+                  + L * (4 * h + 4 * _lin(h, h) + _lin(h, inter) + _lin(inter, h))
+                  + _lin(h, proj_h) + _lin(proj_h, text_h))
         pre["factor"] = p * mk
+        post = ((h, proj_h), (proj_h, text_h), (text_h * mk * mk, proj_h), (proj_h, text_h))
         return VisionSpec("minimax", "MiniMax ViT (3D RoPE) + patch merger", p, mk_t, h, inter, L, nh, h, False, mk,
-                          ((h, proj_h), (hm, hm), (hm, hm)), params, tuple(sorted(pre.items())))
+                          post, params, tuple(sorted(pre.items())), ln_mode="minimax")
     if mt == "muse_spark_vision":                         # 0.174 vLLM PR #61879 vision.py NaViT
         # 0.428: transformers modeling_muse_glimmer.py (main bd5411001f80).
         # MuseGlimmerVisionMLP and MuseGlimmerVisionAdapter both read ACT2FN[...].
@@ -3984,6 +4026,27 @@ def _muse_resize(h: int, w: int, f: int, max_tok: int) -> tuple[int, int]:
     # min() keeps the first of equal keys; set order is unspecified upstream, so ties break (a, b) ascending here
     a, b = min(sorted(cand), key=lambda g: abs(g[0] / g[1] - h / w))
     return a * f, b * f
+
+
+_MINIMAX_MAX_RATIO = 200
+
+
+def _minimax_resize(h: int, w: int, f: int, lo: int, hi: int) -> tuple[int, int]:
+    """MiniMaxM3VLImageProcessor.smart_resize.
+
+    The processor passes ``max_pixels`` and leaves ``min_pixels`` at the function
+    default ``4 * 28 * 28``. ``factor`` is ``patch_size * merge_size``.
+    """
+    if min(h, w) <= 0 or max(h, w) / min(h, w) > _MINIMAX_MAX_RATIO:
+        raise ValueError("minimax image aspect ratio exceeds 200")
+    hb, wb = max(f, round(h / f) * f), max(f, round(w / f) * f)
+    if hb * wb > hi:
+        beta = math.sqrt((h * w) / hi)
+        hb, wb = math.floor(h / beta / f) * f, math.floor(w / beta / f) * f
+    elif hb * wb < lo:
+        beta = math.sqrt(lo / (h * w))
+        hb, wb = math.ceil(h * beta / f) * f, math.ceil(w * beta / f) * f
+    return hb, wb
 
 
 def _qwen_resize(h: int, w: int, f: int, lo: int, hi: int) -> tuple[int, int]:
@@ -4222,6 +4285,14 @@ def image_grid(v: VisionSpec, width: int, height: int) -> ImageGrid:
         rows, cols = ph // v.merge, pw // v.merge
         m = rows * cols
         return ImageGrid(ph, pw, m, (cols + 1) * rows, (wb, hb))
+    if v.family == "minimax":
+        # MiniMaxVLProcessor: VISION_START + merged image tokens + VISION_END.
+        hb, wb = _minimax_resize(height, width, pr["factor"], pr["min_px"], pr["max_px"])
+        ph, pw = hb // v.patch, wb // v.patch
+        if ph % v.merge or pw % v.merge:
+            raise ValueError("minimax patch grid is not divisible by the spatial merge")
+        m = ph * pw // (v.merge * v.merge)
+        return ImageGrid(ph, pw, m, m + 2, (wb, hb))
     ph, pw, gh, gw = _ds_grid(height, width, v.patch, pr["ratio"], pr["min_pixels"], pr["max_tok"])
     return ImageGrid(ph, pw, gh * gw, gh * (gw + 1) + 2, (pw * v.patch, ph * v.patch))
 
@@ -4327,6 +4398,9 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
                 Op(f"{pfx}{tag}.softmax", "vector", li, vec=cnt * keys * (5.0 + (1.0 if sink else 0.0)))]
 
     ops.append(gemm("patch_embed", rows, 3 * v.tpatch * v.patch * v.patch, v.hidden))
+    if v.family == "minimax":
+        # patch_embedding is Conv3d, stored fp32, no bias. Activations still follow the request.
+        ops[-1] = replace(ops[-1], w_fmt="fp32", w_bits=32.0)
     h, q, dh = v.hidden, v.qkv, v.head_dim
     cnt = images * v.heads
     qkv_n = (v.heads + 2 * v.kv_heads) * dh if v.kv_heads else 3 * q
@@ -4340,6 +4414,7 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     radio = v.family == "radio"
     dseek = v.family == "ds"
     ernie = v.family == "ernievl"
+    minimax = v.family == "minimax"
     if glm:
         # Glm5NextVisionBlock + Glm5NextVisionPatchMerger. Hidden RMSNorms, per-head
         # q/k RMSNorms, gate SiLU, merger LayerNorm and nn.GELU(). The clamps are not ops.
@@ -4417,6 +4492,20 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             raise ValueError("ernie vision block is not fused qkv plus the resampler")
         if not v.post and bad:
             raise ValueError("ernie vision block is not fused qkv plus the resampler")
+    if minimax:
+        # CLIPEncoderLayer LayerNorms and CLIPMLP ACT2FN["gelu"]. The projector
+        # hardcodes the same gelu after linear_1 and after merge_linear_1.
+        # Text swigluoai, 3D RoPE, and the full residual are not ops. q/k/v stay one GEMM.
+        if v.vec_fmt not in ("fp16", "bf16", "fp32"):
+            raise ValueError("minimax vision activation dtype is not a vision float")
+        if (v.gated or v.kv_heads or v.qkv != h or v.deepstack or v.merge < 1 or len(v.post) != 4):
+            raise ValueError("minimax vision block is not fused qkv plus the projector")
+        proj_n = v.post[0][1]
+        text_n = v.post[1][1]
+        wide = text_n * v.merge * v.merge
+        if (v.post[0] != (h, proj_n) or v.post[1] != (proj_n, text_n)
+                or v.post[2] != (wide, proj_n) or v.post[3] != (proj_n, text_n)):
+            raise ValueError("minimax vision block is not fused qkv plus the projector")
     if muse:
         # MuseGlimmerVisionModel: LayerNorms and ACT2FN["gelu"] (erf). The
         # adapter is act(fc2(act(fc1(x)))). RoPE, pixel shuffle, the scale-free
@@ -4493,6 +4582,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # ln_pre is LayerNorm(hidden) on patch rows, after the position add and
         # before the blocks. The position add is not an op. Width is hidden.
         ops.append(_ln_vec(pfx + "ln_pre", 0, rows, h))
+    if minimax:
+        # pre_layrnorm is LayerNorm(hidden) on patch tokens, before the blocks.
+        # The checkpoint spells it pre_layrnorm. Width is hidden, not the text width.
+        ops.append(_ln_vec(pfx + "pre_ln", 0, rows, h))
 
     def lc_rms(name: str, li: int, width: int, n_rows: int) -> Op:
         # RMSNorm.forward / the same 4-elem + 1 rsqrt recipe as attn_norm. fp32 upcast.
@@ -4554,6 +4647,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if ernie:
             # norm1 is LayerNorm(embed_dim) on patch tokens, before the fused qkv.
             # The residual add is the full branch. quick_gelu is not this op.
+            ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
+        if minimax:
+            # layer_norm1 is LayerNorm(hidden) on patch tokens, before q/k/v.
+            # The residual add is the full branch. 3D RoPE is not this op.
             ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
         if pixtral:
@@ -4630,7 +4727,15 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # norm2 is LayerNorm(embed_dim) before the MLP. The residual add is the
             # full branch. VisionMlp reads ACT2FN[hidden_act] (quick_gelu) and is not billed.
             ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
+        if minimax:
+            # layer_norm2 is LayerNorm(hidden) before the MLP. The residual add is the full branch.
+            ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
+        if minimax:
+            # CLIPMLP reads ACT2FN[hidden_act]. The released value is gelu: the erf
+            # form. Width is intermediate, not hidden. The class does not upcast.
+            # The separate q/k/v linears stay one GEMM.
+            ops.append(_gelu_erf_vec(pfx + f"{li}.gelu", li, rows * v.inter, v.vec_fmt))
         if muse:
             # ACT2FN["gelu"] is nn.functional.gelu (default approximate 'none', the erf
             # form). Width is intermediate, not hidden. The class does not upcast.
@@ -4751,6 +4856,9 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
         m_ = merger_rows(kn)
+        if minimax and i < 2:
+            # linear_1 and linear_2 see patch tokens. The merge MLP sees the grouped rows.
+            m_ = images * N0
         if q3 and i % 2 == 0 and i > 0:
             # Deepstack merger, use_postshuffle_norm true: view to 4h, then LayerNorm(4h).
             slot = i // 2 - 1
@@ -4765,6 +4873,11 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # Width is hidden, not 4 * hidden. On a still those rows are the patches.
             ops.append(_ln_vec(pfx + "proj_ln", v.depth, m_ * v.merge * v.merge, h))
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
+        if minimax and i in (0, 2):
+            # ACT2FN["gelu"] is hardcoded after linear_1 and after merge_linear_1.
+            # The erf form. Width is that linear's N (projector_hidden_size).
+            # The following linear has no activation. The reshape is a view.
+            ops.append(_gelu_erf_vec(pfx + ("proj_gelu" if i == 0 else "mgelu"), v.depth, m_ * n, v.vec_fmt))
         if ernie:
             # spatial_linear / temporal_linear: nn.GELU() then, after the next linear,
             # nn.LayerNorm. The projector linear is followed by RMSNorm. nn.GELU()
