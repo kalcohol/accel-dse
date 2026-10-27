@@ -268,7 +268,7 @@ ESM-2 3B 的 main 分支只有 `pytorch_model.bin`；参数取自同仓库 `refs
 
 覆盖「部分」的原因：只评估神经网络推理——MSA / 模板检索（jackhmmer / HHblits / MMseqs2，CPU 或检索服务）与特征化、AMBER 松弛不在范围内。ESMFold 是单序列模型，没有这些步骤（「完整」）。AlphaFold 2 monomer 预设跑 5 个模型：这里评估一个模型的一次预测。
 
-**表示与 GEMM 行数**：结构模型同时维护几种网格——单一表示（N 个残基 / token）、pair 表示（N² 个位置）、MSA 表示（行数 S × N）、模板（T × N²）、原子（A ≈ 8N）与原子对（局部窗口 A/32 × 32 × 128）。每个权重 GEMM 按名字归到一种网格，行数即该网格大小（AF2 的 `msa_att_row.linear_z` 是 pair 行，`outer_product_mean.linear_out` 是 pair 行，模板 pair 栈是 T·N² 行……）；每个线性层另计 LayerNorm / 门控 / 偏置的逐元素工作（「假设」每输入、输出元素各 4 次）。0.441：OpenFold 与 AlphaFold 2 把发布前向里已经执行的 LayerNorm 和 ReLU 按现成配方另计。LayerNorm 在 fp32 归约，`vec = 行 × 宽 × 4`，每行一次 `rsqrt`。ReLU 是 `max(x, 0)`，`vec = 元素`，`a_fmt` 跟激活 dtype。逐线性 `.ew` 尾项不减。0.442：Boltz-1 把发布前向里的 LayerNorm（fp32 归约）和 Transition 的 SiLU 与一次相乘按现成配方另计。AdaLN、sigmoid 门、mask 乘、OPM 的除法，以及 Protenix，仍只用这份 `.ew` 假设。mask 乘、sigmoid 门、IPA 的 softplus 和扭转角 clamp 不单列。
+**表示与 GEMM 行数**：结构模型同时维护几种网格——单一表示（N 个残基 / token）、pair 表示（N² 个位置）、MSA 表示（行数 S × N）、模板（T × N²）、原子（A ≈ 8N）与原子对（局部窗口 A/32 × 32 × 128）。每个权重 GEMM 按名字归到一种网格，行数即该网格大小（AF2 的 `msa_att_row.linear_z` 是 pair 行，`outer_product_mean.linear_out` 是 pair 行，模板 pair 栈是 T·N² 行……）；每个线性层另计 LayerNorm / 门控 / 偏置的逐元素工作（「假设」每输入、输出元素各 4 次）。0.441：OpenFold 与 AlphaFold 2 把发布前向里已经执行的 LayerNorm 和 ReLU 按现成配方另计。LayerNorm 在 fp32 归约，`vec = 行 × 宽 × 4`，每行一次 `rsqrt`。ReLU 是 `max(x, 0)`，`vec = 元素`，`a_fmt` 跟激活 dtype。逐线性 `.ew` 尾项不减。0.442：Boltz-1 把发布前向里的 LayerNorm（fp32 归约）和 Transition 的 SiLU 与一次相乘按现成配方另计。0.443：Protenix 把发布前向里已经执行的 plain LayerNorm、Transition 的 SiLU 与一次相乘、以及原子编码器的 ReLU 按同一套现成配方另计。AdaLN、扩散 SwiGLU、sigmoid 门、mask 乘、OPM 的除法仍只用这份 `.ew` 假设。mask 乘、sigmoid 门、IPA 的 softplus 和扭转角 clamp 不单列。
 
 **激活 × 激活的核**（按模块名检测，头数 / 维度取自张量形状）：
 - 三角乘法（outgoing / incoming）：c 个 N×N×N 批矩阵乘，`2·N³·c` FLOPs；

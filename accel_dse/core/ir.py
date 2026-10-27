@@ -2650,6 +2650,454 @@ def _bz_check_diff(layer: Layer) -> None:
     _bz_lin(by, "out_token_feat_update.transition_block.a_to_b", 768, 1536, "res")
 
 
+# Protenix v0.5.0. Plain LayerNorm is OpenFoldLayerNorm / F.layer_norm (fp32 reduction).
+# Transition is layernorm, then silu(a) * b. AtomAttentionEncoder uses F.relu / nn.ReLU.
+# AdaLN and ConditionedTransitionBlock (diffusion SwiGLU + sigmoid) are not this recipe.
+_PX_N_QUERIES = 32
+_PX_N_KEYS = 128
+
+
+def _px_leaves(prefix: str) -> str:
+    return f"{prefix}." if prefix else ""
+
+
+def _px_mha(prefix: str) -> tuple[str, ...]:
+    return tuple(f"{prefix}.linear_{leaf}" for leaf in ("g", "k", "o", "q", "v"))
+
+
+def _px_tri(prefix: str) -> tuple[str, ...]:
+    p = _px_leaves(prefix)
+    names: list[str] = []
+    for side in ("end", "start"):
+        names.append(f"{p}tri_att_{side}.linear")
+        names.extend(_px_mha(f"{p}tri_att_{side}.mha"))
+    for side in ("in", "out"):
+        for leaf in ("a_g", "a_p", "b_g", "b_p", "g", "z"):
+            names.append(f"{p}tri_mul_{side}.linear_{leaf}")
+    return tuple(names)
+
+
+def _px_trans(prefix: str) -> tuple[str, ...]:
+    return (f"{prefix}.linear_no_bias", f"{prefix}.linear_no_bias_a", f"{prefix}.linear_no_bias_b")
+
+
+def _px_dit_names(atom: bool) -> tuple[str, ...]:
+    names = [f"attention_pair_bias.attention.linear_{leaf}" for leaf in ("g", "k", "o", "q", "v")]
+    names += [
+        "attention_pair_bias.layernorm_a.linear_nobias_s",
+        "attention_pair_bias.layernorm_a.linear_s",
+    ]
+    if atom:
+        names += [
+            "attention_pair_bias.layernorm_kv.linear_nobias_s",
+            "attention_pair_bias.layernorm_kv.linear_s",
+        ]
+    names += [
+        "attention_pair_bias.linear_a_last",
+        "attention_pair_bias.linear_nobias_z",
+        "conditioned_transition_block.adaln.linear_nobias_s",
+        "conditioned_transition_block.adaln.linear_s",
+        "conditioned_transition_block.linear_nobias_a1",
+        "conditioned_transition_block.linear_nobias_a2",
+        "conditioned_transition_block.linear_nobias_b",
+        "conditioned_transition_block.linear_s",
+    ]
+    return tuple(names)
+
+
+_PX_PAIR_BODY = (
+    "attention_pair_bias.attention.linear_g", "attention_pair_bias.attention.linear_k",
+    "attention_pair_bias.attention.linear_o", "attention_pair_bias.attention.linear_q",
+    "attention_pair_bias.attention.linear_v", "attention_pair_bias.linear_nobias_z",
+) + _px_trans("pair_transition") + _px_trans("single_transition") + _px_tri("")
+PROTENIX_PAIR_LINEARS = frozenset(_PX_PAIR_BODY)
+PROTENIX_MSA_LINEARS = frozenset(
+    ("msa_stack.msa_pair_weighted_averaging.linear_no_bias_mg",
+     "msa_stack.msa_pair_weighted_averaging.linear_no_bias_mv",
+     "msa_stack.msa_pair_weighted_averaging.linear_no_bias_out",
+     "msa_stack.msa_pair_weighted_averaging.linear_no_bias_z")
+    + _px_trans("msa_stack.transition_m")
+    + ("outer_product_mean_msa.linear_1", "outer_product_mean_msa.linear_2", "outer_product_mean_msa.linear_out")
+    + _px_trans("pair_stack.pair_transition")
+    + _px_tri("pair_stack")
+)
+PROTENIX_MSA_LAST_LINEARS = frozenset(
+    ("outer_product_mean_msa.linear_1", "outer_product_mean_msa.linear_2", "outer_product_mean_msa.linear_out")
+    + _px_trans("pair_stack.pair_transition")
+    + _px_tri("pair_stack")
+)
+PROTENIX_MSA_REST = frozenset({"linear_no_bias_m", "linear_no_bias_s"})
+PROTENIX_CONF_LINEARS = frozenset({
+    "linear_no_bias_d", "linear_no_bias_pae", "linear_no_bias_pde",
+    "linear_no_bias_s1", "linear_no_bias_s2",
+})
+PROTENIX_EMBED_LINEARS = frozenset({
+    "atom_attention_encoder.linear_no_bias_cl", "atom_attention_encoder.linear_no_bias_cm",
+    "atom_attention_encoder.linear_no_bias_d", "atom_attention_encoder.linear_no_bias_f",
+    "atom_attention_encoder.linear_no_bias_q", "atom_attention_encoder.linear_no_bias_ref_pos",
+    "atom_attention_encoder.small_mlp.1", "atom_attention_encoder.small_mlp.3",
+    "atom_attention_encoder.small_mlp.5",
+})
+PROTENIX_DIFF_LINEARS = frozenset({
+    "atom_attention_decoder.linear_no_bias_a", "atom_attention_decoder.linear_no_bias_out",
+    "atom_attention_encoder.linear_no_bias_cl", "atom_attention_encoder.linear_no_bias_cm",
+    "atom_attention_encoder.linear_no_bias_d", "atom_attention_encoder.linear_no_bias_f",
+    "atom_attention_encoder.linear_no_bias_q", "atom_attention_encoder.linear_no_bias_r",
+    "atom_attention_encoder.linear_no_bias_ref_pos", "atom_attention_encoder.linear_no_bias_s",
+    "atom_attention_encoder.linear_no_bias_z",
+    "atom_attention_encoder.small_mlp.1", "atom_attention_encoder.small_mlp.3",
+    "atom_attention_encoder.small_mlp.5",
+    "diffusion_conditioning.linear_no_bias_n", "diffusion_conditioning.linear_no_bias_s",
+    "diffusion_conditioning.linear_no_bias_z", "diffusion_conditioning.relpe.linear_no_bias",
+    "diffusion_conditioning.transition_s1.linear_no_bias",
+    "diffusion_conditioning.transition_s1.linear_no_bias_a",
+    "diffusion_conditioning.transition_s1.linear_no_bias_b",
+    "diffusion_conditioning.transition_s2.linear_no_bias",
+    "diffusion_conditioning.transition_s2.linear_no_bias_a",
+    "diffusion_conditioning.transition_s2.linear_no_bias_b",
+    "diffusion_conditioning.transition_z1.linear_no_bias",
+    "diffusion_conditioning.transition_z1.linear_no_bias_a",
+    "diffusion_conditioning.transition_z1.linear_no_bias_b",
+    "diffusion_conditioning.transition_z2.linear_no_bias",
+    "diffusion_conditioning.transition_z2.linear_no_bias_a",
+    "diffusion_conditioning.transition_z2.linear_no_bias_b",
+    "linear_no_bias_s",
+})
+PROTENIX_DIT_LINEARS = frozenset(_px_dit_names(False))
+PROTENIX_ATOM_DIT_LINEARS = frozenset(_px_dit_names(True))
+_PX_PAIR_LN = {
+    "attention_pair_bias.attention.linear_q": "attn_s_ln",
+    "attention_pair_bias.linear_nobias_z": "attn_z_ln",
+    "single_transition.linear_no_bias_a": "trans_s_ln",
+    "pair_transition.linear_no_bias_a": "trans_z_ln",
+    "tri_att_start.linear": "tri_att_start_ln",
+    "tri_att_end.linear": "tri_att_end_ln",
+    "tri_mul_in.linear_a_p": "tri_mul_in_ln_in",
+    "tri_mul_out.linear_a_p": "tri_mul_out_ln_in",
+    "tri_mul_in.linear_z": "tri_mul_in_ln_out",
+    "tri_mul_out.linear_z": "tri_mul_out_ln_out",
+}
+_PX_PAIR_SILU = {
+    "single_transition.linear_no_bias_a": "trans_s_silu",
+    "pair_transition.linear_no_bias_a": "trans_z_silu",
+}
+_PX_PAIR_MUL = {
+    "single_transition.linear_no_bias_b": "trans_s_mul",
+    "pair_transition.linear_no_bias_b": "trans_z_mul",
+}
+_PX_MSA_LN = {
+    "msa_stack.transition_m.linear_no_bias_a": "msa_trans_ln",
+    "msa_stack.msa_pair_weighted_averaging.linear_no_bias_mv": "pwa_m_ln",
+    "msa_stack.msa_pair_weighted_averaging.linear_no_bias_z": "pwa_z_ln",
+    "outer_product_mean_msa.linear_1": "opm_ln",
+    "pair_stack.pair_transition.linear_no_bias_a": "pair_trans_ln",
+    "pair_stack.tri_att_start.linear": "tri_att_start_ln",
+    "pair_stack.tri_att_end.linear": "tri_att_end_ln",
+    "pair_stack.tri_mul_in.linear_a_p": "tri_mul_in_ln_in",
+    "pair_stack.tri_mul_out.linear_a_p": "tri_mul_out_ln_in",
+    "pair_stack.tri_mul_in.linear_z": "tri_mul_in_ln_out",
+    "pair_stack.tri_mul_out.linear_z": "tri_mul_out_ln_out",
+}
+_PX_MSA_SILU = {
+    "msa_stack.transition_m.linear_no_bias_a": "msa_trans_silu",
+    "pair_stack.pair_transition.linear_no_bias_a": "pair_trans_silu",
+}
+_PX_MSA_MUL = {
+    "msa_stack.transition_m.linear_no_bias_b": "msa_trans_mul",
+    "pair_stack.pair_transition.linear_no_bias_b": "pair_trans_mul",
+}
+_PX_DIFF_LN = {
+    "diffusion_conditioning.transition_z1.linear_no_bias_a": "z1_ln",
+    "diffusion_conditioning.transition_z2.linear_no_bias_a": "z2_ln",
+    "diffusion_conditioning.transition_s1.linear_no_bias_a": "s1_ln",
+    "diffusion_conditioning.transition_s2.linear_no_bias_a": "s2_ln",
+}
+_PX_DIFF_SILU = {
+    "diffusion_conditioning.transition_z1.linear_no_bias_a": "z1_silu",
+    "diffusion_conditioning.transition_z2.linear_no_bias_a": "z2_silu",
+    "diffusion_conditioning.transition_s1.linear_no_bias_a": "s1_silu",
+    "diffusion_conditioning.transition_s2.linear_no_bias_a": "s2_silu",
+}
+_PX_DIFF_MUL = {
+    "diffusion_conditioning.transition_z1.linear_no_bias_b": "z1_mul",
+    "diffusion_conditioning.transition_z2.linear_no_bias_b": "z2_mul",
+    "diffusion_conditioning.transition_s1.linear_no_bias_b": "s1_mul",
+    "diffusion_conditioning.transition_s2.linear_no_bias_b": "s2_mul",
+}
+_PX_MLP_RELU = {
+    "atom_attention_encoder.small_mlp.1": "mlp_relu_1",
+    "atom_attention_encoder.small_mlp.3": "mlp_relu_2",
+    "atom_attention_encoder.small_mlp.5": "mlp_relu_3",
+}
+
+
+def _px_ln(name: str, rows: int, width: int, li: int, rep: float) -> Op:
+    return _esm_ln(name, rows, width, li, rep, "protenix")
+
+
+def _px_silu(name: str, n: int, li: int, rep: float, af: str) -> Op:
+    """Transition SiLU is x * sigmoid(x). Four element-ops, two of them on the SFU."""
+    if n <= 0:
+        raise ValueError(f"protenix {name} has no elements")
+    return Op(name, "vector", li, vec=float(n * 4), sfu=float(n * 2), a_fmt=af, replicated=rep)
+
+
+def _px_mul(name: str, n: int, li: int, rep: float, af: str) -> Op:
+    """silu(linear_a) * linear_b. One multiply, no transcendental."""
+    if n <= 0:
+        raise ValueError(f"protenix {name} has no elements")
+    return Op(name, "vector", li, vec=float(n), a_fmt=af, replicated=rep)
+
+
+def _px_window_rows(atoms: int, width: int) -> int:
+    """AtomAttentionEncoder dense trunks. Query width is 32, key width is 128."""
+    if atoms <= 0:
+        return 0
+    trunks = (atoms + _PX_N_QUERIES - 1) // _PX_N_QUERIES
+    return trunks * width
+
+
+def _px_by(layer: Layer) -> dict:
+    return {ln.name: ln for ln in layer.pair_linears}
+
+
+def _px_lin(by: dict, name: str, k: int, n: int, rows: str) -> None:
+    lin = by.get(name)
+    if lin is None or (lin.k, lin.n, lin.rows) != (k, n, rows):
+        raise ValueError(f"protenix {name} shape is not [{k}, {n}] on {rows}")
+
+
+def _px_transition(by: dict, prefix: str, k: int, hidden: int, rows: str) -> None:
+    _px_lin(by, f"{prefix}.linear_no_bias_a", k, hidden, rows)
+    _px_lin(by, f"{prefix}.linear_no_bias_b", k, hidden, rows)
+    _px_lin(by, f"{prefix}.linear_no_bias", hidden, k, rows)
+
+
+def _px_triangle(by: dict, prefix: str) -> None:
+    p = _px_leaves(prefix)
+    for side in ("in", "out"):
+        _px_lin(by, f"{p}tri_mul_{side}.linear_a_p", 128, 128, "pair")
+        hidden = by[f"{p}tri_mul_{side}.linear_z"]
+        if (hidden.k, hidden.n, hidden.rows) != (128, 128, "pair"):
+            raise ValueError(f"protenix {p}tri_mul_{side}.linear_z shape is not the published hidden")
+    for side in ("start", "end"):
+        _px_lin(by, f"{p}tri_att_{side}.linear", 128, 4, "pair")
+
+
+def _px_check_pair(layer: Layer) -> None:
+    if {ln.name for ln in layer.pair_linears} != PROTENIX_PAIR_LINEARS:
+        raise ValueError("protenix pairformer linears are not the published set")
+    by = _px_by(layer)
+    _px_lin(by, "attention_pair_bias.attention.linear_q", 384, 384, "res")
+    _px_lin(by, "attention_pair_bias.linear_nobias_z", 128, 16, "pair")
+    _px_transition(by, "single_transition", 384, 1536, "res")
+    _px_transition(by, "pair_transition", 128, 512, "pair")
+    _px_triangle(by, "")
+
+
+def _px_check_msa(layer: Layer, last: bool) -> None:
+    want = PROTENIX_MSA_LAST_LINEARS if last else PROTENIX_MSA_LINEARS
+    if {ln.name for ln in layer.pair_linears} != want:
+        raise ValueError("protenix msa linears are not the published set")
+    by = _px_by(layer)
+    if not last:
+        _px_transition(by, "msa_stack.transition_m", 64, 256, "msa")
+        _px_lin(by, "msa_stack.msa_pair_weighted_averaging.linear_no_bias_mv", 64, 64, "msa")
+        _px_lin(by, "msa_stack.msa_pair_weighted_averaging.linear_no_bias_z", 128, 8, "pair")
+    _px_lin(by, "outer_product_mean_msa.linear_1", 64, 32, "msa")
+    _px_transition(by, "pair_stack.pair_transition", 128, 512, "pair")
+    _px_triangle(by, "pair_stack")
+
+
+def _px_check_recycle(layer: Layer) -> None:
+    if len(layer.pair_linears) != 1:
+        raise ValueError("protenix recycle projection is not one linear")
+    lin = layer.pair_linears[0]
+    if (lin.k, lin.n, lin.rows) not in ((384, 384, "res"), (128, 128, "pair")):
+        raise ValueError("protenix recycle projection shape is not the published pair")
+
+
+def _px_check_embed(layer: Layer) -> None:
+    if {ln.name for ln in layer.pair_linears} != PROTENIX_EMBED_LINEARS:
+        raise ValueError("protenix input embedder linears are not the published set")
+    by = _px_by(layer)
+    _px_lin(by, "atom_attention_encoder.linear_no_bias_cl", 128, 16, "atom")
+    _px_lin(by, "atom_attention_encoder.linear_no_bias_cm", 128, 16, "atom")
+    _px_lin(by, "atom_attention_encoder.linear_no_bias_q", 128, 384, "atom")
+    _px_lin(by, "atom_attention_encoder.small_mlp.1", 16, 16, "apair")
+    _px_lin(by, "atom_attention_encoder.small_mlp.3", 16, 16, "apair")
+    _px_lin(by, "atom_attention_encoder.small_mlp.5", 16, 16, "apair")
+
+
+def _px_check_diff(layer: Layer) -> None:
+    if {ln.name for ln in layer.pair_linears} != PROTENIX_DIFF_LINEARS:
+        raise ValueError("protenix diffusion linears are not the published set")
+    by = _px_by(layer)
+    _px_lin(by, "diffusion_conditioning.linear_no_bias_z", 256, 128, "pair")
+    _px_lin(by, "diffusion_conditioning.linear_no_bias_s", 833, 384, "res")
+    _px_lin(by, "diffusion_conditioning.linear_no_bias_n", 256, 384, "res")
+    _px_transition(by, "diffusion_conditioning.transition_z1", 128, 256, "pair")
+    _px_transition(by, "diffusion_conditioning.transition_z2", 128, 256, "pair")
+    _px_transition(by, "diffusion_conditioning.transition_s1", 384, 768, "res")
+    _px_transition(by, "diffusion_conditioning.transition_s2", 384, 768, "res")
+    _px_lin(by, "atom_attention_encoder.linear_no_bias_s", 384, 128, "atom")
+    _px_lin(by, "atom_attention_encoder.linear_no_bias_z", 128, 16, "spair")
+    _px_lin(by, "atom_attention_encoder.linear_no_bias_cl", 128, 16, "atom")
+    _px_lin(by, "atom_attention_encoder.linear_no_bias_cm", 128, 16, "atom")
+    _px_lin(by, "atom_attention_encoder.linear_no_bias_q", 128, 768, "atom")
+    _px_lin(by, "atom_attention_encoder.small_mlp.1", 16, 16, "apair")
+    _px_lin(by, "linear_no_bias_s", 384, 768, "res")
+    _px_lin(by, "atom_attention_decoder.linear_no_bias_a", 768, 128, "atom")
+    _px_lin(by, "atom_attention_decoder.linear_no_bias_out", 128, 3, "atom")
+
+
+def _px_check_conf(layer: Layer) -> None:
+    if {ln.name for ln in layer.pair_linears} != PROTENIX_CONF_LINEARS:
+        raise ValueError("protenix confidence linears are not the published set")
+    by = _px_by(layer)
+    _px_lin(by, "linear_no_bias_pae", 128, 64, "pair")
+    _px_lin(by, "linear_no_bias_pde", 128, 64, "pair")
+    _px_lin(by, "linear_no_bias_s1", 449, 128, "res")
+
+
+def _px_check_dit(layer: Layer) -> None:
+    names = {ln.name for ln in layer.pair_linears}
+    by = _px_by(layer)
+    if names == PROTENIX_DIT_LINEARS:
+        _px_lin(by, "attention_pair_bias.linear_nobias_z", 128, 16, "spair")
+        _px_lin(by, "attention_pair_bias.attention.linear_q", 768, 768, "res")
+        return
+    if names == PROTENIX_ATOM_DIT_LINEARS:
+        _px_lin(by, "attention_pair_bias.linear_nobias_z", 16, 4, "apair")
+        _px_lin(by, "attention_pair_bias.attention.linear_q", 128, 128, "atom")
+        return
+    raise ValueError("protenix diffusion-transformer linears are not the published set")
+
+
+def _px_res_rows(pd: PairDims, b: int, s: int, dap: int) -> int:
+    return _pair_rows("res", pd, b, s, 1, dap)
+
+
+def _px_before(kind: str, name: str, rows: str, m: int, k: int, n: int, li: int, rep: float, af: str,
+               pd: PairDims, b: int, s: int, dap: int, rep_tok: float) -> list[Op]:
+    """LayerNorm / ReLU that the published module runs before this linear."""
+    if kind == "px_pair":
+        ln_name = _PX_PAIR_LN.get(name)
+        return [_px_ln(ln_name, m, k, li, rep)] if ln_name else []
+    if kind in ("px_msa", "px_msa_last"):
+        ln_name = _PX_MSA_LN.get(name)
+        return [_px_ln(ln_name, m, k, li, rep)] if ln_name else []
+    if kind == "px_recycle":
+        if (k, n, rows) == (384, 384, "res"):
+            return [_px_ln("s_ln", m, k, li, rep)]
+        return [_px_ln("z_ln", m, k, li, rep)]
+    if kind == "px_dit":
+        # Plain layernorm_z on the pair bias. The query norm is AdaLN and is not billed.
+        if name == "attention_pair_bias.linear_nobias_z":
+            return [_px_ln("attn_z_ln", m, k, li, rep)]
+        return []
+    if kind == "px_embed":
+        return _px_atom_relu_before(name, m, k, li, rep, af, pd, b, s, rep_tok)
+    if kind == "px_diff":
+        if name == "diffusion_conditioning.linear_no_bias_z":
+            return [_px_ln("cond_z_ln", m, k, li, rep)]
+        if name == "diffusion_conditioning.linear_no_bias_s":
+            # Cat(s_trunk, s_inputs) is normalized once per step, before the sample axis exists.
+            tok = _px_res_rows(pd, b, 1, dap)
+            return [_px_ln("cond_s_ln", tok, k, li, float(dap))] if tok > 0 else []
+        if name == "diffusion_conditioning.linear_no_bias_n":
+            # Fourier embedding is one vector per sample. The GEMM stays on token rows.
+            return [_px_ln("noise_ln", b * s, k, li, rep_tok)] if s > 0 else []
+        if name == "atom_attention_encoder.linear_no_bias_s":
+            tok = _px_res_rows(pd, b, s, dap)
+            return [_px_ln("enc_s_ln", tok, k, li, rep_tok)] if tok > 0 else []
+        if name == "atom_attention_encoder.linear_no_bias_z":
+            return [_px_ln("enc_z_ln", m, k, li, rep)]
+        if name == "linear_no_bias_s":
+            return [_px_ln("tok_s_ln", m, k, li, rep)]
+        if name == "atom_attention_decoder.linear_no_bias_a":
+            # layernorm_a reads the token activation. The decoder GEMM is on atom rows.
+            tok = _px_res_rows(pd, b, s, dap)
+            return [_px_ln("a_ln", tok, k, li, rep_tok)] if tok > 0 else []
+        if name == "atom_attention_decoder.linear_no_bias_out":
+            return [_px_ln("q_ln", m, k, li, rep)]
+        ln_name = _PX_DIFF_LN.get(name)
+        out = [_px_ln(ln_name, m, k, li, rep)] if ln_name else []
+        out += _px_atom_relu_before(name, m, k, li, rep, af, pd, b, s, rep_tok)
+        return out
+    if kind == "px_conf":
+        if name == "linear_no_bias_s1":
+            # input_strunk_ln runs once, before the sample loop.
+            tok = _px_res_rows(pd, b, 1, dap)
+            return [_px_ln("input_s_ln", tok, 384, li, float(dap))] if tok > 0 else []
+        if name == "linear_no_bias_pae":
+            return [_px_ln("pae_ln", m, k, li, rep)]
+        if name == "linear_no_bias_pde":
+            return [_px_ln("pde_ln", m, k, li, rep)]
+        return []
+    raise ValueError(f"protenix vector kind {kind} is not published")
+
+
+def _px_atom_relu_before(name: str, m: int, k: int, li: int, rep: float, af: str, pd: PairDims, b: int,
+                         s: int, rep_tok: float) -> list[Op]:
+    """F.relu on the windowed atom single, and nn.ReLU inside small_mlp."""
+    if name == "atom_attention_encoder.linear_no_bias_cl":
+        n_el = b * s * _px_window_rows(pd.atoms, _PX_N_QUERIES) * k
+        return [_esm_relu("cl_relu", n_el, li, rep_tok, af, "protenix")] if n_el > 0 else []
+    if name == "atom_attention_encoder.linear_no_bias_cm":
+        n_el = b * s * _px_window_rows(pd.atoms, _PX_N_KEYS) * k
+        return [_esm_relu("ck_relu", n_el, li, rep_tok, af, "protenix")] if n_el > 0 else []
+    relu_name = _PX_MLP_RELU.get(name)
+    if relu_name:
+        return [_esm_relu(relu_name, m * k, li, rep, af, "protenix")]
+    return []
+
+
+def _px_after(kind: str, name: str, m: int, n: int, li: int, rep: float, af: str, pd: PairDims, b: int,
+              s: int, ps: int, dap: int, rep_tok: float) -> list[Op]:
+    """SiLU, the transition multiply, and the post-linear ReLU."""
+    if kind == "px_pair":
+        out = []
+        silu_name = _PX_PAIR_SILU.get(name)
+        if silu_name:
+            out.append(_px_silu(silu_name, m * n, li, rep, af))
+        mul_name = _PX_PAIR_MUL.get(name)
+        if mul_name:
+            out.append(_px_mul(mul_name, m * n, li, rep, af))
+        return out
+    if kind in ("px_msa", "px_msa_last"):
+        out = []
+        silu_name = _PX_MSA_SILU.get(name)
+        if silu_name:
+            out.append(_px_silu(silu_name, m * n, li, rep, af))
+        mul_name = _PX_MSA_MUL.get(name)
+        if mul_name:
+            out.append(_px_mul(mul_name, m * n, li, rep, af))
+        return out
+    if kind in ("px_embed", "px_diff") and name == "atom_attention_encoder.linear_no_bias_q":
+        # F.relu(linear_q(q_l)) on the atom rows, width c_token.
+        return [_esm_relu("q_relu", m * n, li, rep, af, "protenix")]
+    if kind == "px_diff":
+        out = []
+        silu_name = _PX_DIFF_SILU.get(name)
+        if silu_name:
+            out.append(_px_silu(silu_name, m * n, li, rep, af))
+        mul_name = _PX_DIFF_MUL.get(name)
+        if mul_name:
+            out.append(_px_mul(mul_name, m * n, li, rep, af))
+        return out
+    if kind == "px_conf" and name == "linear_no_bias_pde":
+        # plddt_ln / resolved_ln read the broadcast atom single, once per sample.
+        atoms = _pair_rows("atom", pd, b, s, ps, dap)
+        if atoms <= 0:
+            return []
+        return [_px_ln("plddt_ln", atoms, 384, li, rep_tok),
+                _px_ln("resolved_ln", atoms, 384, li, rep_tok)]
+    if kind in ("px_dit", "px_recycle", "px_conf", "px_embed", "px_diff"):
+        return []
+    raise ValueError(f"protenix vector kind {kind} is not published")
+
+
 def _of_who(model: ModelSpec) -> str:
     if model.id in ("openfold", "alphafold2"):
         return model.id
@@ -2753,6 +3201,22 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         _bz_check_cache(L)
     elif kind == "bz_diff":
         _bz_check_diff(L)
+    elif kind == "px_pair":
+        _px_check_pair(L)
+    elif kind == "px_msa":
+        _px_check_msa(L, False)
+    elif kind == "px_msa_last":
+        _px_check_msa(L, True)
+    elif kind == "px_recycle":
+        _px_check_recycle(L)
+    elif kind == "px_embed":
+        _px_check_embed(L)
+    elif kind == "px_diff":
+        _px_check_diff(L)
+    elif kind == "px_conf":
+        _px_check_conf(L)
+    elif kind == "px_dit":
+        _px_check_dit(L)
     state_copies = _esmfold_state_copies(model) if kind == "esm_lddt" else 1
     for l in L.pair_linears:
         m = _pair_rows(l.rows, pd, b, s, ps, dap)
@@ -2856,6 +3320,9 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
             ln_name = _BZ_DIFF_LN.get(l.name)
             if ln_name:
                 ops.append(_esm_ln(ln_name, m, l.k, li, rep, "boltz-1"))
+        elif kind.startswith("px_"):
+            ops.extend(_px_before(kind, l.name, l.rows, m, l.k, l.n, li, rep, model.act_fmt,
+                                  pd, b, s, dap, rep_tok))
         o = gemm(model, f"{L.stack}.{l.name}", li, m, l.k, l.n, l.role or "pair", stream=True, replicated=rep)
         ops.append(o)
         if kind == "esm_proj" and l.name == "mlp.1":
@@ -2917,6 +3384,8 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
             mul_name = _BZ_DIFF_MUL.get(l.name)
             if mul_name:
                 ops.append(_bz_mul(mul_name, m * l.n, li, rep, model.act_fmt))
+        elif kind.startswith("px_"):
+            ops.extend(_px_after(kind, l.name, m, l.n, li, rep, model.act_fmt, pd, b, s, ps, dap, rep_tok))
         ops.append(Op(f"{L.stack}.{l.name}.ew", "vector", li, vec=m * (l.k + l.n) * 4, replicated=rep))
     has_col = any(c.kind == "col_att" for c in L.pair_cores)
     for i, c in enumerate(L.pair_cores):
