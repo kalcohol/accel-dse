@@ -7,8 +7,10 @@ the same mapping / memplan / schedule path as the denoiser (``evaluate._pipeline
 
   text encoder  every header GEMM of the text transformer at M = prompts · padded text tokens, plus the
                 attention score / value products (bidirectional for T5 / umT5, causal for the Llama / Qwen /
-                CLIP text towers).  prompts = batch · cfg when the reference encodes a negative prompt for the
-                uncond branch, else batch (Open-Sora: learned null embedding; guidance-distilled models).
+                CLIP text towers).  0.436 also bills the published RMSNorm, LayerNorm and SiLU that match the
+                existing vector recipes.  The GEMM tail stays 3 element-ops per output.  prompts = batch · cfg
+                when the reference encodes a negative prompt for the uncond branch, else batch (Open-Sora:
+                learned null embedding; guidance-distilled models).
   VAE decoder   every decoder conv as an implicit GEMM: M = output voxels at the conv's resolution level,
                 K = C_in · kernel volume, N = C_out (2-D per-frame convs: kernel kh·kw; depth-to-space /
                 transposed convs at their input / output rate).  Resolution levels follow each family's
@@ -183,10 +185,224 @@ def stored_bytes(key: str) -> float:
 # ---------------------------------------------------------------- text encoders
 _TE_LAYER = re.compile(r"(?:^|\.)(?:block|blocks|layers)\.(\d+)\.")
 _TE_SKIP = re.compile(r"embed|shared\.|lm_head|relative_attention_bias|position|visual|norm|text_projection")
+_TE_FLOATS = ("fp16", "bf16", "fp32")
+# Qwen3.5 RMSNorm multiplies (1 + weight). That is not the weight-multiply recipe, so those towers only bill SiLU.
+_TE_KIND = {
+    "llama": "rms_silu",
+    "qwen2": "rms_silu",
+    "qwen2_5_vl": "rms_silu",
+    "qwen2_5_vl_text": "rms_silu",
+    "qwen3": "rms_silu",
+    "qwen3_vl": "rms_silu",
+    "qwen3_vl_text": "rms_silu",
+    "qwen3_5": "silu",
+    "qwen3_5_text": "silu",
+    "t5": "t5_rms",
+    "clip_text_model": "clip_ln",
+}
+
+
+def _te_rms(name: str, layer: int, rows: int, width: int) -> Op:
+    """fp32 pow(2).mean, one rsqrt per row, times the weight. The affine is already in the parameters."""
+    return Op(name, "vector", layer, vec=rows * width * 4, sfu=float(rows), a_fmt="fp32")
+
+
+def _te_ln(name: str, layer: int, rows: int, width: int) -> Op:
+    """PyTorch layer_norm reduces in fp32. One rsqrt per row. The affine is already in the parameters."""
+    return Op(name, "vector", layer, vec=rows * width * 4, sfu=float(rows), a_fmt="fp32")
+
+
+def _te_silu(name: str, layer: int, n: int, af: str) -> Op:
+    """x * sigmoid(x). sigmoid is exp, one add and a reciprocal. The class does not upcast."""
+    return Op(name, "vector", layer, vec=n * 4, sfu=float(n * 2), a_fmt=af)
+
+
+def _te_mul(name: str, layer: int, n: int, af: str) -> Op:
+    """One multiply of the activated gate by the up projection. No transcendental."""
+    return Op(name, "vector", layer, vec=float(n), a_fmt=af)
+
+
+def _decoder_cfg(cfg: dict) -> dict:
+    tc = cfg.get("text_config")
+    if isinstance(tc, dict) and tc.get("model_type") in _TE_KIND:
+        return tc
+    return cfg
+
+
+def _pairs_ending(pairs: list, suffix: str) -> list:
+    return [(n, sh) for n, sh in pairs if n.endswith(suffix)]
+
+
+def _one_tensor(pairs: list, suffix: str, what: str):
+    hits = _pairs_ending(pairs, suffix)
+    if len(hits) != 1:
+        raise ValueError(f"text encoder {what} tensor count is {len(hits)}")
+    return hits[0]
+
+
+def _vec_width(sh, what: str) -> int:
+    if len(sh) != 1:
+        raise ValueError(f"text encoder {what} weight is not a vector")
+    return int(sh[0])
+
+
+def _by_layer(tensors: dict) -> dict:
+    out: dict = {}
+    for name, sh in tensors.items():
+        mm = _TE_LAYER.search(name)
+        if mm:
+            out.setdefault(int(mm.group(1)), []).append((name, sh))
+    return out
+
+
+def _final_norm_width(tensors: dict) -> int:
+    hits = []
+    for name, sh in tensors.items():
+        if _TE_LAYER.search(name):
+            continue
+        if name == "norm.weight" or name.endswith(".norm.weight") or name.endswith("final_layer_norm.weight"):
+            hits.append(sh)
+    if len(hits) != 1:
+        raise ValueError(f"text encoder final norm tensor count is {len(hits)}")
+    return _vec_width(hits[0], "final norm")
+
+
+def _text_depth(cfg: dict) -> int:
+    if "num_hidden_layers" in cfg:
+        return int(cfg["num_hidden_layers"])
+    return int(cfg["num_layers"])
+
+
+def _text_hidden(cfg: dict) -> int:
+    if cfg.get("hidden_size"):
+        return int(cfg["hidden_size"])
+    return int(cfg["d_model"])
+
+
+def _check_layers(layers: set, depth: int) -> None:
+    if set(layers) != set(range(depth)):
+        raise ValueError("text encoder layer ids do not match the config depth")
+
+
+def _stored_act(d: dict) -> str:
+    act = d["dtype"]
+    if act not in _TE_FLOATS:
+        raise ValueError("text encoder activation dtype is not fp16, bf16, or fp32")
+    return act
+
+
+def _qk_rms(pairs: list, li: int, rows: int, cfg: dict, seen: list) -> list:
+    """Q/K RMSNorm on head_dim. ``seen`` is [with_qk, without_qk] so a mixed tower is refused."""
+    q = _pairs_ending(pairs, "self_attn.q_norm.weight")
+    k = _pairs_ending(pairs, "self_attn.k_norm.weight")
+    if len(q) > 1 or len(k) > 1 or bool(q) != bool(k):
+        raise ValueError("text encoder q_norm and k_norm must both be present")
+    if not q:
+        seen[1] = True
+        return []
+    seen[0] = True
+    hd = _vec_width(q[0][1], "q_norm")
+    if _vec_width(k[0][1], "k_norm") != hd:
+        raise ValueError("text encoder k_norm width is not q_norm width")
+    cfg_hd = cfg.get("head_dim")
+    if cfg_hd is not None and int(cfg_hd) != hd:
+        raise ValueError("text encoder q_norm width is not head_dim")
+    hq = int(cfg["num_attention_heads"])
+    hk = int(cfg["num_key_value_heads"])
+    qn = int(_one_tensor(pairs, "self_attn.q_proj.weight", "q_proj")[1][0])
+    kn = int(_one_tensor(pairs, "self_attn.k_proj.weight", "k_proj")[1][0])
+    if qn != hq * hd or kn != hk * hd:
+        raise ValueError("text encoder q_norm head count does not match q_proj")
+    return [_te_rms(f"te.{li}.q_rms", li, rows * hq, hd),
+            _te_rms(f"te.{li}.k_rms", li, rows * hk, hd)]
+
+
+def _silu_pair(pairs: list, li: int, rows: int, h: int, inter: int, act: str) -> list:
+    gw = _one_tensor(pairs, "mlp.gate_proj.weight", "gate_proj")[1]
+    if len(gw) != 2 or int(gw[0]) != inter or int(gw[1]) != h:
+        raise ValueError("text encoder gate_proj shape is not intermediate x hidden")
+    n = rows * inter
+    return [_te_silu(f"te.{li}.silu", li, n, act), _te_mul(f"te.{li}.mlp_mul", li, n, act)]
+
+
+def _norm_width(pairs: list, suffix: str, what: str, h: int) -> None:
+    w = _vec_width(_one_tensor(pairs, suffix, what)[1], what)
+    if w != h:
+        raise ValueError(f"text encoder {what} width is not hidden size")
+
+
+def _text_vector_plan(d: dict, rows: int, layers: set) -> dict | None:
+    """Per-layer (pre, post) vector ops plus the final norm. None keeps the previous GEMM-only tail."""
+    cfg = _decoder_cfg(d.get("config") or {})
+    kind = _TE_KIND.get(cfg.get("model_type") or "")
+    if kind is None:
+        return None
+    act = _stored_act(d)
+    depth = _text_depth(cfg)
+    h = _text_hidden(cfg)
+    _check_layers(layers, depth)
+    grouped = _by_layer(d["tensors"])
+    pre_post: dict = {}
+    if kind == "rms_silu":
+        if cfg.get("hidden_act") != "silu":
+            raise ValueError("text encoder hidden_act is not silu")
+        inter = int(cfg["intermediate_size"])
+        seen = [False, False]
+        for li in range(depth):
+            pairs = grouped.get(li, [])
+            _norm_width(pairs, "input_layernorm.weight", "input_layernorm", h)
+            _norm_width(pairs, "post_attention_layernorm.weight", "post_attention_layernorm", h)
+            pre = [_te_rms(f"te.{li}.attn_rms", li, rows, h)]
+            pre += _qk_rms(pairs, li, rows, cfg, seen)
+            post = [_te_rms(f"te.{li}.mlp_rms", li, rows, h)]
+            post += _silu_pair(pairs, li, rows, h, inter, act)
+            pre_post[li] = (pre, post)
+        if seen[0] and seen[1]:
+            raise ValueError("text encoder q_norm is not on every layer")
+    elif kind == "silu":
+        if cfg.get("hidden_act") != "silu":
+            raise ValueError("text encoder hidden_act is not silu")
+        inter = int(cfg["intermediate_size"])
+        for li in range(depth):
+            pre_post[li] = ([], _silu_pair(grouped.get(li, []), li, rows, h, inter, act))
+        return {"layers": pre_post, "final": []}
+    elif kind == "t5_rms":
+        if cfg.get("dense_act_fn") != "gelu_new" or cfg.get("is_gated_act") is not True:
+            raise ValueError("text encoder dense_act_fn is not gelu_new")
+        for li in range(depth):
+            pairs = grouped.get(li, [])
+            _norm_width(pairs, "layer.0.layer_norm.weight", "attn norm", h)
+            _norm_width(pairs, "layer.1.layer_norm.weight", "mlp norm", h)
+            pre_post[li] = ([_te_rms(f"te.{li}.attn_rms", li, rows, h)],
+                            [_te_rms(f"te.{li}.mlp_rms", li, rows, h)])
+    elif kind == "clip_ln":
+        if cfg.get("hidden_act") != "quick_gelu":
+            raise ValueError("text encoder hidden_act is not quick_gelu")
+        for li in range(depth):
+            pairs = grouped.get(li, [])
+            _norm_width(pairs, "layer_norm1.weight", "layer_norm1", h)
+            _norm_width(pairs, "layer_norm2.weight", "layer_norm2", h)
+            pre_post[li] = ([_te_ln(f"te.{li}.attn_ln", li, rows, h)],
+                            [_te_ln(f"te.{li}.mlp_ln", li, rows, h)])
+    else:
+        return None
+    fw = _final_norm_width(d["tensors"])
+    if fw != h:
+        raise ValueError("text encoder final norm width is not hidden size")
+    if kind == "clip_ln":
+        final = [_te_ln("te.final_ln", depth, rows, h)]
+    else:
+        final = [_te_rms("te.final_rms", depth, rows, h)]
+    return {"layers": pre_post, "final": final}
 
 
 def text_ops(te: TextEnc, prompts: int, af: str) -> tuple[list[Op], float]:
-    """Op list of one text-encoder pass over ``prompts`` padded prompts; (ops, activation peak bytes)."""
+    """Op list of one text-encoder pass over ``prompts`` padded prompts; (ops, activation peak bytes).
+
+    GEMMs stay in header-name order with ``vec = rows * n * 3``. Vector ops for a published RMSNorm,
+    LayerNorm or SiLU are appended with the attention of that layer. Their ``flops`` stay 0. Norms are
+    fp32. SiLU uses the checkpoint dtype and does not follow ``af``.
+    """
     d = component_data(te.key)
     wf = d["dtype"]
     wb = _fmt(wf).bits
@@ -208,15 +424,22 @@ def text_ops(te: TextEnc, prompts: int, af: str) -> tuple[list[Op], float]:
     causal = 0.5 if te.causal else 1.0
     cnt = prompts * te.heads
     T, dh = te.tokens, te.head_dim
+    plan = _text_vector_plan(d, rows, layers)
+    layered = plan["layers"] if plan else {}
     for li in sorted(layers):
+        pre, post = layered.get(li, ([], []))
+        ops += pre
         if te.full_layers and li not in te.full_layers:
             ops += _gdn_ops(te, li, prompts)
-            continue
-        ops += [Op(f"te.{li}.qk", "attn", li, m=T, k=dh, n=T, count=cnt, causal=causal,
-                   act_bytes=cnt * T * dh * ab, stream=True, orient=True),
-                Op(f"te.{li}.pv", "attn", li, m=T, k=T, n=dh, count=cnt, causal=causal,
-                   act_bytes=cnt * T * dh * ab, orient=True),
-                Op(f"te.{li}.softmax", "vector", li, vec=cnt * T * T * causal * 5)]
+        else:
+            ops += [Op(f"te.{li}.qk", "attn", li, m=T, k=dh, n=T, count=cnt, causal=causal,
+                       act_bytes=cnt * T * dh * ab, stream=True, orient=True),
+                    Op(f"te.{li}.pv", "attn", li, m=T, k=T, n=dh, count=cnt, causal=causal,
+                       act_bytes=cnt * T * dh * ab, orient=True),
+                    Op(f"te.{li}.softmax", "vector", li, vec=cnt * T * T * causal * 5)]
+        ops += post
+    if plan:
+        ops += plan["final"]
     return ops, peak
 
 
