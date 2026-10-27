@@ -4304,23 +4304,24 @@ def _from_d1_omni(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelSpec:
         d1=True, trunk_params=trunk, d1_buf=buf)
 
 
-def _whisper_vision_fmt(rel: dict) -> str:
-    """Activation dtype of a shared Whisper encoder, from the one float vision role.
+def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
+    """Activation dtype of a tower, from the one float vision role.
 
     ``config.torch_dtype`` is not the source. Distil-Whisper large-v2 says float32 and
     stores fp16. GEMM ``w_fmt`` stays the historical bf16 billing; this value is only
-    the vector ``a_fmt`` for GELU, SiLU and ReLU. LayerNorm stays fp32.
+    the vector ``a_fmt`` for GELU, SiLU and ReLU. LayerNorm stays fp32. AuT uses the
+    same rule.
     """
     vr = (rel.get("roles") or {}).get("vision") or {}
     keys = [k for k, v in vr.items() if isinstance(v, dict) and v.get("params")]
     if len(keys) != 1:
-        raise ValueError("whisper tower vision role is not one dtype")
+        raise ValueError(f"{label} tower vision role is not one dtype")
     key = keys[0]
     block = vr[key]
     bits = 8.0 * block["bytes"] / block["params"]
     expect = {"fp16": 16.0, "bf16": 16.0, "fp32": 32.0}
     if key not in expect or abs(bits - expect[key]) > 1e-3:
-        raise ValueError(f"whisper tower vision role {key} is {bits} bits")
+        raise ValueError(f"{label} tower vision role {key} is {bits} bits")
     return key
 
 
@@ -4796,6 +4797,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             if rel is None:
                 raise ValueError("whisper tower vision role is missing")
             vs = replace(vs, audio=replace(vs.audio, vec_fmt=_whisper_vision_fmt(rel)))
+        if vs is not None and getattr(vs, "audio", None) is not None and vs.audio.kind == "aut":
+            # 0.416: same vision-role dtype for AuT GELU. GEMM w_fmt stays bf16.
+            if rel is None:
+                raise ValueError("aut tower vision role is missing")
+            vs = replace(vs, audio=replace(vs.audio, vec_fmt=_whisper_vision_fmt(rel, "aut")))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -4869,6 +4875,21 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "解码器仍把 GELU 按 SiLU 的逐元素开销计，这次不改。"
                 "eval 的 Dropout 是恒等，不单列。"
                 "fp16 clamp、Omni 乘 long 的 mask、Ming 的 F.normalize 不单列。",))
+        if (vs is not None and getattr(vs, "audio", None) is not None and vs.audio.kind == "aut"):
+            au = vs.audio
+            spec = replace(spec, notes=spec.notes + (
+                "AuT 编码器：三层 Conv2d 各跑一次 F.gelu，每一层是注意力前的 LayerNorm、"
+                "MLP 前的 LayerNorm、ACT2FN['gelu']。"
+                "编码器 LayerNorm 在块之后。投影器是 Linear、同一次激活、Linear。"
+                "F.gelu 和 ACT2FN['gelu'] 都是 erf 形式（0.5 * x * (1 + erf(x / sqrt(2)))），"
+                "不是 gelu_pytorch_tanh，也不是 quick_gelu。"
+                "卷积 GELU 读补齐后的 chunk 网格。LayerNorm、FFN GELU 和投影器读有效编码器位置。"
+                f"GELU 不升精度，a_fmt 是 vision 角色的 {au.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 在 fp32 归约。GEMM 的 w_fmt 仍是历史的 bf16，通用 GEMM 尾项不减。"
+                "Index-Echo 2B 的 connector 在 w1 之后再计一次 F.gelu。9B 的 connector 是一次 Linear，没有激活。"
+                "eval 的 Dropout 是恒等，不单列。"
+                "正弦位置加、fp16 clamp、connector 的 exp(log_alpha) 和 beta 标量、整份残差加不单列。",))
     return spec
 
 
