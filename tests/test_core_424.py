@@ -232,6 +232,8 @@ def test_other_towers_do_not_gain_qwen35():
     assert vl.vision.ln_mode == "qwen3vl"
     ernie = get_model("ernie-4.5-vl-28b-a3b")
     enames = [op.name for op in vision_ops(ernie.vision, image_grid(ernie.vision, 1024, 1024), 1)]
-    assert "vis.mgelu" not in enames and "vis.0.attn_ln" not in enames
+    # 0.433 bills ERNIE's own LayerNorm as attn_ln. The Qwen3.5 merger names stay off this tower.
+    assert "vis.mgelu" not in enames and "vis.pre_ln" not in enames
+    assert "vis.0.attn_ln" in enames and "vis.out_ln" in enames and "vis.after_rms" in enames
     pre = evaluate(Scenario(model="qwen3.5-9b", serving=Serving(phase="prefill", batch=1, prompt=16, images=1)))
     assert pre.vision["image_tokens"] == 1024 and pre.step > 0

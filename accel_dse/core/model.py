@@ -4388,6 +4388,44 @@ def _radio_vision_fmt(rel: dict) -> str:
     return "bf16"
 
 
+def _ernie_vision_fmt(rel: dict, cfg: dict, vision_params: int) -> str:
+    """Activation dtype of the ERNIE-4.5-VL resampler ``nn.GELU()``.
+
+    The usual vision role is two buckets. fp16 is the DFNRope tower. bf16 is
+    ``VariableResolutionResamplerModel``. Thinking stores the whole tower as
+    one bf16 bucket. Both layouts are 16 bits, so GEMM ``w_fmt`` stays bf16.
+    ``nn.GELU()`` follows that bf16 storage. LayerNorm and RMSNorm stay fp32.
+    The tower MLP's ``quick_gelu`` is not this dtype.
+    """
+    from .vision import ernie_resampler_params
+    vr = (rel.get("roles") or {}).get("vision") or {}
+    keys = [k for k, v in vr.items() if isinstance(v, dict) and v.get("params")]
+    if set(keys) == {"bf16"}:
+        block = vr["bf16"]
+        bits = 8.0 * block["bytes"] / block["params"]
+        if abs(bits - 16.0) > 1e-3:
+            raise ValueError(f"ernie vision role bf16 is {bits} bits")
+        if block["params"] != vision_params:
+            raise ValueError("ernie bf16 vision role is not the tower")
+        return "bf16"
+    if set(keys) != {"fp16", "bf16"}:
+        raise ValueError("ernie vision role is not fp16 tower plus bf16 resampler")
+    for key in ("fp16", "bf16"):
+        block = vr[key]
+        bits = 8.0 * block["bytes"] / block["params"]
+        if abs(bits - 16.0) > 1e-3:
+            raise ValueError(f"ernie vision role {key} is {bits} bits")
+    vc = cfg["vision_config"]
+    res = ernie_resampler_params(
+        int(vc["embed_dim"]), int(cfg["spatial_conv_size"]),
+        int(cfg["temporal_conv_size"]), int(cfg["hidden_size"]))
+    if vr["bf16"]["params"] != res:
+        raise ValueError("ernie bf16 vision role is not the resampler")
+    if vr["fp16"]["params"] + res != vision_params:
+        raise ValueError("ernie vision role does not match the tower")
+    return "bf16"
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -4955,6 +4993,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 if audio is not None:
                     audio = replace(audio, vec_fmt=fmt)
                 vs = replace(vs, vec_fmt=fmt, audio=audio)
+        if vs is not None and vs.family == "ernievl":
+            # 0.433: resampler nn.GELU() follows the bf16 bucket. The fp16
+            # bucket is the tower. GEMM w_fmt stays bf16. Norms stay fp32.
+            if rel is None:
+                raise ValueError("ernie vision role is missing")
+            vs = replace(vs, vec_fmt=_ernie_vision_fmt(rel, cfg, vs.params))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -5261,6 +5305,23 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "两级 stride-2 下采样卷积和投影 Linear 没有激活。"
                 "LayerNorm 在 fp32 归约，每行一次 rsqrt，仿射已经在参数里。"
                 "通用 GEMM 尾项不减。两份 vision 角色都是单独一份 bf16。",))
+        if vs is not None and vs.family == "ernievl":
+            spec = replace(spec, notes=spec.notes + (
+                "ERNIE-4.5-VL：每一层 norm1 和 norm2 是 nn.LayerNorm(embed_dim)。"
+                "块之后的 ln 仍在 patch 行上，宽度是 embed_dim，在 resampler 的 view 之前。"
+                "VisionMlp 读 ACT2FN[hidden_act]，发布值是 quick_gelu，不单列。"
+                "spatial_linear 和 temporal_linear 都是 Linear、nn.GELU()、Linear、nn.LayerNorm。"
+                "nn.GELU() 不传 approximate，默认 approximate='none'，erf 形式。"
+                "静图把一帧复制后拼到特征轴上，时间 GEMM 的行数不变、K 加倍。"
+                "视频里塔和 spatial 看到每一帧，temporal 和投影看到成对后的一半行。"
+                "投影 Linear 之后是 RMSNorm：升到 fp32，pow(2).mean，一次 rsqrt，乘 weight。"
+                "宽度是文本 hidden，不是 spatial_dim。"
+                f"GELU 不升精度，a_fmt 是 {vs.vec_fmt}。"
+                "分桶发布里 bf16 是 resampler，fp16 是塔；Thinking 把整份视觉存成一份 bf16。"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 和 RMSNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
+                "拼帧的 index_select、RoPE 的 cos/sin、整份残差加不单列。"
+                "塔的 GEMM 标签仍是 bf16。通用 GEMM 尾项不减。",))
     return spec
 
 
