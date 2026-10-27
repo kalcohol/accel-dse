@@ -6,6 +6,30 @@
 
 
 
+## [0.409.0] — 2026-10-27
+
+### Granite Speech 补上已执行的 SiLU、GLU、0.5 残差、LayerNorm 和 BatchNorm；Q-Former 补上 erf-GELU
+
+- **修正（Granite Speech / Plus）。** `GraniteSpeechConformerBlock`（transformers v4.57 `modeling_granite_speech.py`；Plus 是同一份拷贝）每一层的 FFN 是 `LayerNorm`、`Linear`、`nn.SiLU`、`Linear`，然后 `0.5 * ff + residual`。注意力的 `pre_norm` 在 context pad 之前，LayerNorm 的行数是未补齐帧；q / kv 仍按 context 补齐。卷积模块是 `LayerNorm`、pointwise 到 `2 * inner`、`nn.GLU`（切分是 view，保留 inner）、stride 1 的深度卷积、`BatchNorm1d`、`SiLU`、pointwise 回去。`nn.SiLU` 与语言栈同一套：`x * sigmoid(x)`，`vec = 元素 * 4`，`sfu = 元素 * 2`（exp 与 reciprocal）。GLU 是保留半边的 `a * sigmoid(b)`，同样 4 / 2，宽度是 inner，不是 `2 * inner`。0.5 残差是一次乘和一次加，`vec = 元素 * 2`，`sfu` 是 0。LayerNorm 在 fp32 归约，`vec = 行 * 宽 * 4`，每行一次 `rsqrt`，仿射已经在参数里。eval 的 BatchNorm 用 running stats：四次算术按元素计，`rsqrt` 每个通道一次，不随 clip 数变。这两份 checkpoint 的仿射是 bf16，类不升精度，所以 SiLU、GLU、0.5 残差和 BatchNorm 的 `a_fmt` 是 bf16，LayerNorm 是 fp32。1 秒、1 个 clip：未补齐帧 50、hidden 1024、FFN 4096、inner 2048；q 的行是补齐后的 200。16 层，核 15，context 200。softmax 仍是原来的双向分数，`sfu` 是 0。通用 GEMM 尾项 `VEC_PER_OUT` 不减。5.0-2b 与 4.1-plus 的 `param_check().rel_err` 仍是 0。请求 fp8 时 GEMM 按请求计，SiLU、GLU、BatchNorm 和 Q-Former GELU 仍是 bf16。
+- **修正（Q-Former）。** `use_qformer_text_input` 是 false，只跑 query 路径。`Blip2QFormerModel.forward` 把 query cast 到 LayerNorm 权重的 dtype（这里是 bf16），先做一次 LayerNorm。发布的 Q-Former 是 2 层，`cross_attention_frequency` 是 1，所以两层都有自注意力输出 LayerNorm 和交叉注意力输出 LayerNorm。`hidden_act` 是 `gelu`，`ACT2FN["gelu"]` 是 erf 形式 `0.5 * x * (1 + erf(x / sqrt(2)))`：四次算术加一次 erf，`vec = 元素 * 5`，`sfu = 元素`。行数是查询（窗 15、每窗 3 个查询，1 秒是 12），宽度是 intermediate 4096，不是 hidden 1024。文本 FFN 没有构造。eval 的 `nn.Dropout` 是恒等，配置概率不是 0 也不单列。Plus 只把交叉注意力的 K 加宽到 2048（5.0-2b 是 1024），GELU 的形状相同。
+- **修正（Granite Speech 5 CTC）。** `GraniteSpeech5EncoderBlock`（transformers v5.16 `modeling_granite_speech5.py`）有五处 LayerNorm。FFN 的 `ACT2FN["silu"]` 要求是 silu。卷积是 pointwise、`F.glu`（卷积前的长度，宽度 inner）、深度卷积、`F.silu(BatchNorm)`、pointwise，再 `residual + 0.5 * ff`。`subsample_layers` 是 `[0, 1]`，stride 2。残差用 `unfold(1, 2, 2).mean(-1)`，丢掉末尾奇数帧，保留 `T // 2`，可以和卷积输出长度不同。池化是加和乘 `1/2`，`vec = 保留帧 * hidden * 2`，`sfu` 是 0，只在第 0、1 层。1 秒：第 0 层输入 50、卷积输出 25、保留 25；第 1 层输入 25、卷积输出 13、保留 12；第 2 层起输入、卷积输出和保留都是 12。16 层，context 128，核 7。BatchNorm 仿射是 fp32，running stats 是 buffer，`rsqrt` 仍是每个通道一次。卷积上的 SiLU 直接读这份 fp32 输出，没有 cast 回去，所以 `a_fmt` 是 fp32。FFN 的 SiLU 和 GLU 仍读 bf16 Linear，保持 bf16。`activation_dropout` 和 `attention_dropout` 是 0，不单列。没有 Q-Former，也没有 GELU。深度卷积前的 `masked_fill` 不单列。`param_check().rel_err` 仍是 0。请求 fp8 时 GEMM 按请求计，FFN SiLU 和 GLU 仍是 bf16，BatchNorm 和卷积 SiLU 仍是 fp32。
+- **不单列。** LongCat 塔在 0.405–0.408 已经把公开前向里能数清形状的算子计入。`emb_mult` 是 1，发布的 `dropout` 是 0，`pos_ids` 的 gather 仍不单列。softmax 仍是原来的双向分数。没有新的目录行。
+- **未纳入：**
+  - **仍折在 GEMM 尾项里的激活。** OmniASR 的 GELU、d1 FastConformer 的 GLU / 0.5 残差 / BatchNorm、LFM2.5-VL 与 d1 视觉的 `gelu_pytorch_tanh`、ERNIE 的 quick_gelu、WeVisOne / Qwen3-VL 视觉 GELU，这次不单列。0.368 没有给 `gelu_pytorch_tanh` 单建一套周期，这次也不新写。
+  - **LongCat-Flash-Lite-Sparse。** 2026-10-27 再读：sha `35de83a18b5838ec1657edb3f885a59bbdd7888f`，`lastModified` 2026-08-04。根目录有 safetensors，没有 modeling 文件，只有 `tokenization_llama.py`。`architectures` 是 `LongcatCausalLM`，`attention_method` 仍是 LSA。没有已发布的 LSA 前向。不套 MLA，也不套 DSA。
+  - **ERNIE-4.5-21B-A3B-PT、21B-A3B-Base-PT、300B-A47B-PT。** `config.json` 现在是 200，类是 `Ernie4_5_MoeForCausalLM`，`model_type` 是 `ernie4_5_moe`。这三份已经在目录里，不是新模型。
+  - **ERNIE-4.5-0.3B-Thinking、300B-A47B-Thinking、VL-424B-A47B-Thinking。** `config.json` 仍是 401。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 根 `config.json` 仍是 404。同组织的 2.3 fp8 / nvfp4 和 2.5 是 diffusers 或单文件扩散权重。不新写扩散栈。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 `config.json` 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 的根 `config.json` 是 200，内容是空对象。`tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401。
+  - **nvidia Cosmos3。** `nvidia/Cosmos3` 与 `nvidia/Cosmos-3` 的 `config.json` 仍是 401。`nvidia/Cosmos3-Nano` 的类仍是 `Cosmos3ForConditionalGeneration`，`model_type` 是 `cosmos3_omni`。这不是已有的条件生成路径。不把内层文本记成 Qwen3-VL，也不新写扩散栈。
+  - **Gemma-4 assistant / QAT。** `google/gemma-4-assistant` 与 `google/gemma-4-E4B-it-qat` 的 `config.json` 仍是 401。`google/gemma-4-12B-it-assistant` 的类仍是 `Gemma4UnifiedAssistantForCausalLM`。这不是已入库的 Gemma-4 栈。不单列。
+  - **2026-10-20 及之后按 `lastModified` 的扫描**（120 个组织，249 条，接口错误 0，2026-10-27）。对得上现有机制、又缺 header 的没有入库。`ibm-granite/granite-speech-5.0-2b` 的 `lastModified` 是 2026-10-26，就是这次补账单的已入库模型，不是新行。靠近的几条：`MiniMaxAI/MiniMax-M3-MXFP8` 的 `quant_method` 是 `mxfp8`，类是 `MiniMaxM3SparseForConditionalGeneration`；`IFM/K2-Horizon-0.9B` 仍是 `dtype=float32`；`KRAFTON/Raon-1-mini-preview-nvfp4` 的 `quant_method` 仍是 `modelopt_fp4`，`hidden_act` 是 `situ`；`inclusionAI/ZwZ-2B` 是 `qwen3_vl`，`dtype` 是 `float32`，没有新的 header；`tencent/Hy-SimulMT-30B-A3B` 的类仍是 `HYV3SpeechForCausalLM`；`nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Base-BF16` 仍是 `NemotronH_Omni_Reasoning_V3`；`nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB` 的 `config.json` 仍是 404；`inclusionAI/Realtime-Venus` 的根 `config.json` 仍是 `refs` / `venus` / `version` 的包索引；`meta-models/Muse-Glimmer-30B` 的类是 `MuseGlimmerForConditionalGeneration`；`inclusionAI/LBS-27B` 的类是 `Qwen3_5ForConditionalGeneration`，这次没有读 safetensors header，不入库。GGUF / MLX / ONNX / diffusers / tensorrt 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.408.0] — 2026-10-27
 
 ### LongCat rope2d 补上已执行的 inv_freq outer 和 cos/sin repeat
