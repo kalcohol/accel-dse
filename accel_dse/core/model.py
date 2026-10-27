@@ -4347,6 +4347,8 @@ def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
     Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp merger ``nn.GELU()`` uses it the same way.
     Those LayerNorms stay fp32. A vision role with more than one dtype is not
     given this value.
+    Ling-3.0-flash-VL ``linear_proj`` ``nn.GELU()`` uses it the same way.
+    Those LayerNorms stay fp32.
     A Qwen3-VL
     tower stored entirely as fp32 keeps the model activation format instead
     (WeVisOne). LayerNorm and GLM RMSNorm stay fp32.
@@ -4910,6 +4912,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 vs = replace(vs, ln_mode="")
             else:
                 vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "qwen35"))
+        if vs is not None and vs.ln_mode == "ling":
+            # 0.431: linear_proj nn.GELU() follows the one vision-role float.
+            # LayerNorm stays fp32. GEMM w_fmt stays bf16.
+            if rel is None:
+                raise ValueError("ling tower vision role is missing")
+            vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "ling"))
         if vs is not None and vs.family == "radio":
             # 0.425: MLP GELU follows the bf16 tower role. The six fp32 values are
             # the conditioner buffers. LayerNorm and RMSNorm stay fp32.
@@ -5129,6 +5137,23 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。"
                 "位置插值、RoPE 的 cos/sin、整份残差加、eval 的 attention dropout 不单列。"
+                "通用 GEMM 尾项不减。",))
+        if vs is not None and vs.ln_mode == "ling":
+            spec = replace(spec, notes=spec.notes + (
+                "Ling-3.0-flash-VL 视觉塔：每一层注意力前和 MLP 前各一次 nn.LayerNorm(hidden)。"
+                "merger 只有 norm，没有 fc。use_postshuffle_norm 是 false："
+                "先对 patch 序列做 LayerNorm(hidden)，再 view 到 4*hidden。"
+                "linear_proj 是 Linear、nn.GELU()、Linear。nn.GELU() 默认 approximate='none'，"
+                "erf 形式。行数是合并后的位置，宽度是文本 hidden，不是 4*hidden，也不是 out_hidden_size。"
+                "config.json 省略 mlp_depth。BailingMMConfig 的默认是 1，那只会建一级 Linear。"
+                "检查点是 linear_proj.0 和 linear_proj.2，对上 mlp_depth 2 的 Sequential。"
+                "块内 MLP 的 hidden_act 仍是 gelu_pytorch_tanh，不单列。没有 deepstack。"
+                "norm_query_embeds 是 false，F.normalize 不跑。"
+                f"GELU 不升精度，a_fmt 是 vision 角色的 {vs.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 在 fp32 归约。仿射已经在参数里。"
+                "位置插值、RoPE 的 cos/sin、整份残差加不单列。"
+                "llama.cpp 的 FFN_GELU 是 tanh 近似，不是这次记的 erf-GELU。"
                 "通用 GEMM 尾项不减。",))
         if vs is not None and vs.family == "radio":
             spec = replace(spec, notes=spec.notes + (

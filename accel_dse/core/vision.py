@@ -173,6 +173,13 @@ merged rows at ``4 * hidden``. The block MLP stays ``gelu_pytorch_tanh``.
 There is no deepstack merger. GELU follows the one vision-role float.
 LayerNorm stays fp32. A tower whose vision role is more than one dtype is
 left on the shared GEMM tail.
+Ling-3.0-flash-VL (family stays ``qwen``, ``ln_mode`` ``ling``) bills the same
+``nn.LayerNorm`` calls before attention, before the MLP, and on the patch rows
+before the 2x2 view. The merger linears are not in the checkpoint.
+``nn.GELU()`` after ``linear_proj.0`` is the erf form, on merged rows at the
+text hidden size, not ``4 * hidden`` and not ``out_hidden_size``. The block
+MLP stays ``gelu_pytorch_tanh``. ``norm_query_embeds`` false does not run
+``F.normalize``. GELU follows the one vision-role float. LayerNorm stays fp32.
 LFM2.5-VL (family ``lfm2vl``, including d1-3B) bills ``nn.LayerNorm`` before
 attention, before the MLP, and after the blocks, all on the padded patch rows.
 ``ACT2FN["gelu"]`` sits between the projector linears on the unshuffled valid
@@ -483,6 +490,8 @@ class VisionSpec:
     # on the MLP and on both adapter linears. Other qwen towers stay empty.
     # 0.430: "step5" bills Step-5 Perception Encoder nn.LayerNorm calls.
     # quick_gelu and LayerScale stay in the GEMM tail.
+    # 0.431: "ling" bills Ling-3.0-flash-VL block and merger LayerNorms and the
+    # linear_proj nn.GELU() (erf). The block MLP stays gelu_pytorch_tanh.
     ln_mode: str = ""
     # 0.419: deepstack block indexes, in merger order. Empty when deepstack is 0.
     ds_idx: tuple[int, ...] = ()
@@ -3704,6 +3713,18 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return VisionSpec("ds", "DeepSeek ViT + aligner", p, 1, h, inter, L, nh, h, True, r,
                           ((r * r * h, text_h), (text_h, text_h)), params, tuple(sorted(pre.items())))
     if mt == "qwen3_moe_vit" and vc.get("disable_merger_proj"):   # 0.145 Ling-3.0-VL: Qwen3-VL ViT, merger = norm only
+        # 0.431: Qwen3VLMoeVisionBlock norm1/norm2 and the norm-only merger are
+        # nn.LayerNorm. modeling_bailingmm.py builds linear_proj as Linear,
+        # nn.GELU(), Linear when mlp_depth is 2. The block MLP reads hidden_act
+        # (gelu_pytorch_tanh) and is not billed. The release config omits
+        # mlp_depth. BailingMMConfig's default is 1 (one Linear, no GELU). The
+        # checkpoint stores linear_proj.0 and linear_proj.2, which is that
+        # Sequential at mlp_depth 2. An explicit other depth is not this module.
+        if vc.get("hidden_act") != "gelu_pytorch_tanh":
+            raise ValueError("ling vision hidden_act is not gelu_pytorch_tanh")
+        mlp_depth = cfg["mlp_depth"] if "mlp_depth" in cfg else 2
+        if type(mlp_depth) is not int or mlp_depth != 2:
+            raise ValueError("ling mlp_depth is not 2")
         h, inter, L, nh = vc["hidden_size"], vc["intermediate_size"], vc["depth"], vc["num_heads"]
         p, t, mk = vc["patch_size"], vc["temporal_patch_size"], vc["spatial_merge_size"]
         hm = h * mk * mk
@@ -3713,7 +3734,8 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                   + 2 * h + _lin(hm, text_h) + _lin(text_h, text_h))
         pre["factor"] = p * mk
         return VisionSpec("qwen", "Qwen3-VL ViT + linear_proj", p, t, h, inter, L, nh, h, False, mk,
-                          ((hm, text_h), (text_h, text_h)), params, tuple(sorted(pre.items())))
+                          ((hm, text_h), (text_h, text_h)), params, tuple(sorted(pre.items())),
+                          ln_mode="ling")
     if "fullatt_block_indexes" in vc and vc.get("num_key_value_heads"):   # 0.144 MiMo-V2.6 ViT (Qwen2.5-VL style)
         # MiMoVisionSwiGLUMLP reads ACT2FN[hidden_act]. The released value is silu.
         # nn.GELU() on the merger does not read it.
@@ -4229,6 +4251,7 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     pixtral = v.family == "pixtral"
     q3 = v.ln_mode == "qwen3vl"
     q35 = v.ln_mode == "qwen35"
+    ling = v.ln_mode == "ling"
     glm = v.family == "glm"
     mimo = v.ln_mode == "mimo"
     radio = v.family == "radio"
@@ -4331,6 +4354,18 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if (v.deepstack or v.gated or v.kv_heads or len(v.post) != 2
                 or v.post[0] != (hm, hm) or v.post[1][0] != hm):
             raise ValueError("qwen35 vision block is not fused qkv plus a two-linear merger")
+    if ling:
+        # Ling block LayerNorms, merger.norm before the 2x2 view, and nn.GELU()
+        # after linear_proj.0. The block MLP stays gelu_pytorch_tanh. The merger
+        # has no fc1/fc2. F.normalize is not this config.
+        if v.vec_fmt not in ("fp16", "bf16", "fp32"):
+            raise ValueError("ling vision activation dtype is not a vision float")
+        hm = h * v.merge * v.merge
+        if (v.deepstack or v.gated or v.kv_heads or v.qkv != h or len(v.post) != 2):
+            raise ValueError("ling vision block is not fused qkv plus a two-linear projector")
+        text_n = v.post[0][1]
+        if v.post[0] != (hm, text_n) or v.post[1] != (text_n, text_n):
+            raise ValueError("ling vision block is not fused qkv plus a two-linear projector")
     if pixtral:
         # PixtralVisionModel.ln_pre is PixtralRMSNorm on the flattened patches,
         # before the block loop. One rsqrt per patch token, width hidden.
@@ -4387,8 +4422,9 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if pixtral:
             # PixtralAttentionLayer: attention_norm, then q/k/v. Width is hidden.
             ops.append(_rms_vec(pfx + f"{li}.attn_rms", li, rows, h))
-        if q3 or q35:
+        if q3 or q35 or ling:
             # norm1 is LayerNorm(hidden) on patch tokens, before the fused qkv.
+            # Ling's merger is norm-only; this is still the block norm, width hidden.
             ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
         if glm:
             # norm1 is Glm5NextRMSNorm(hidden) on patch tokens, before the fused qkv.
@@ -4453,8 +4489,9 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if pixtral:
             # Residual add is the full branch, not 0.5. ffn_norm then SwiGLU.
             ops.append(_rms_vec(pfx + f"{li}.ffn_rms", li, rows, h))
-        if q3 or q35:
+        if q3 or q35 or ling:
             # norm2 is LayerNorm(hidden) before the MLP. The residual add is the full branch.
+            # Ling's MLP activation is gelu_pytorch_tanh and is not billed.
             ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
         if glm:
             # norm2 is Glm5NextRMSNorm(hidden) before the SwiGLU. The residual add is the full branch.
@@ -4564,11 +4601,12 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # Mistral3MultiModalProjector.norm runs on the patch sequence, before the
         # unfold. Width is hidden, not the text width, and the row count is not merged.
         ops.append(_rms_vec(pfx + "proj_rms", v.depth, images * N0, h))
-    if q3 or q35:
+    if q3 or q35 or ling:
         # Final merger, use_postshuffle_norm false: LayerNorm(hidden) on the patch
         # sequence, then a view to 4h. The row count is not the merged count.
         # Qwen3.5 / Qwen4-Exp construct the only merger this way. Qwen3-VL's
-        # deepstack mergers are the post-shuffle path below.
+        # deepstack mergers are the post-shuffle path below. Ling stores only
+        # this norm (no merger fc). The GEMMs after it are linear_proj.
         ops.append(_ln_vec(pfx + "pre_ln", v.depth, images * N0, h))
     if radio and v.post_ln:
         # vision_final_layernorm is LayerNorm(hidden) on patch features, after the
@@ -4650,6 +4688,13 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # N (4 * hidden), not out_hidden_size. The second linear has no activation.
             # The block MLP's gelu_pytorch_tanh is not this op.
             ops.append(_gelu_erf_vec(pfx + "mgelu", v.depth, m_ * n, v.vec_fmt))
+        if ling and i == 0:
+            # modeling_bailingmm.py inserts nn.GELU() between the two linear_proj
+            # linears. Default approximate is 'none': the erf form. Rows are the
+            # merged count. Width is linear_proj.0's N (the text hidden size), not
+            # 4 * hidden and not out_hidden_size. llama.cpp's FFN_GELU is the tanh
+            # approximation and is not this op. The second linear has no activation.
+            ops.append(_gelu_erf_vec(pfx + "proj_gelu", v.depth, m_ * n, v.vec_fmt))
         if q3 and i % 2 == 0:
             # nn.GELU() default approximate is 'none': the erf form. Width is fc1's N (4h).
             # The block MLP's gelu_pytorch_tanh is not this op.
