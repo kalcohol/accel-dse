@@ -107,4 +107,6 @@ def test_omniasr_bills_erf_gelu_on_conv_pos_and_ffn():
     onames = [op.name for op in audio_ops(other, 1.0, 1)]
     assert not any(name.startswith("aud.fe.") and name.endswith(".gelu") for name in onames)
     d1 = [op.name for op in audio_ops(get_model("d1-omni-600m").vision.audio, 1.0, 1)]
-    assert not any(name.endswith(".gelu") for name in d1)
+    # 0.411 bills the adapter and residual erf-GELU. OmniASR's conv, position and FFN sites stay off this tower.
+    assert "aud.pos.gelu" not in d1 and "aud.0.gelu" not in d1
+    assert not any(name.startswith("aud.fe.") and name.endswith(".gelu") for name in d1)

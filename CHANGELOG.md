@@ -6,6 +6,32 @@
 
 
 
+## [0.411.0] — 2026-10-27
+
+### d1 FastConformer 补上已执行的 SiLU、GLU、0.5 残差、LayerNorm 和 BatchNorm；adapter 与 residual 补上 erf-GELU
+
+- **修正。** `LiquidAI/d1-omni-600M` 的 `audio.py`（sha `02b55d7`，2026-10-27 再读）里，`ConformerLayer.forward` 每一层是 `LayerNorm`、`FeedForward`、`x + ff * 0.5`，然后注意力，再 `LayerNorm`、`ConvModule`，再第二段同样的 FFN 和 `* 0.5`，最后 `norm_out`。`FeedForward` 是 `Linear`、`F.silu`、`Linear`。`ConvModule` 是 pointwise 到 `2 * d`、`F.glu`（切分是 view，保留 `d`）、`masked_fill` 再 pad、深度卷积、`BatchNorm1d`、`F.silu`、pointwise 回去。`F.silu` 与 0.409 的 Granite 同一套：`x * sigmoid(x)`，`vec = 元素 * 4`，`sfu = 元素 * 2`（exp 与 reciprocal）。GLU 是保留半边的 `a * sigmoid(b)`，同样 4 / 2，宽度是 `d_model`，不是 `2 * d`。`x + ff * 0.5` 是一次乘和一次加，`vec = 元素 * 2`，`sfu` 是 0，宽度是 `d_model`，不是 FFN 内宽。LayerNorm 在 fp32 归约，`vec = 行 * 宽 * 4`，每行一次 `rsqrt`，仿射已经在参数里。eval 的 BatchNorm 用 running stats：四次算术按元素计，`rsqrt` 每个通道一次，不随 clip 数变。类不升精度，发布权重是 fp32，所以这些向量运算的 `a_fmt` 是 fp32，不跟请求里的 GEMM 激活格式走。通用 GEMM 尾项 `VEC_PER_OUT` 不减。`d1-omni-600m` 的 `param_check().rel_err` 仍是 0。请求 fp8 时塔 GEMM 仍是 fp32，这些向量运算也仍是 fp32。softmax 的 `sfu` 仍是 0。
+  - **FFN。** 1 秒、1 个 clip：编码器帧 13，`d_model` 512，FFN 2048，17 层。每一层补 `aud.{层}.ff1_ln`、`ff1_silu`、`ff1_half`、`ff2_ln`、`ff2_silu`、`ff2_half`。SiLU 的宽度是 2048。0.5 残差和 LayerNorm 的宽度是 512。`ff1_up` 的 `vec` 仍是 `13 * 2048 * 3`。
+  - **卷积。** 每一层补 `aud.{层}.conv_ln`、`glu`、`bn`、`conv_silu`。GLU、BatchNorm 和卷积 SiLU 的宽度都是 512，不是 pointwise 的 1024。BatchNorm 的 `sfu` 是 512。两个 clip 时 `vec` 加倍，`sfu` 仍是 512。深度卷积仍是原来的向量 tap，核 9。
+  - **层末 LayerNorm。** 每一层补 `aud.{层}.out_ln`，行数是编码器帧，宽度是 512。注意力前的 `attn_ln` 也按未补齐帧计。相对位置 GEMM 仍是 `2T-1`，整批只建一次。
+  - **adapter 与 residual。** `Adapter.forward` 是 `LayerNorm(d_model)`、`Linear(512 → 1024)`、`F.gelu`、`Linear(1024 → 1024)`。`Residual.forward` 是 `LayerNorm(1024)`、`Linear(1024 → 512)`、`F.gelu`、`Linear(512 → 1024)`，再 `x + branch`。`F.gelu` 的默认 `approximate` 是 `'none'`，公式是 `0.5 * x * (1 + erf(x / sqrt(2)))`：四次算术加一次 erf，`vec = 元素 * 5`，`sfu = 元素`。不是 `gelu_pytorch_tanh`。补 `aud.adapter.ln`、`aud.adapter.gelu`、`aud.residual.ln`、`aud.residual.gelu`。adapter 的 GELU 宽度是 1024。residual 的 GELU 宽度是 `residual_width` 512，不是 1024。末尾那次整份相加不是 0.5，不单列。
+- **不单列。** 下采样三次 `nn.ReLU`、进每一层卷积前的时间 mask 乘、深度卷积前的 `masked_fill` 和 pad、注意力与卷积的整份残差加、`pos_emb` 的 sin/cos 表，这次都不单列。没有 Dropout。视觉 `hidden_act` 仍是 `gelu_pytorch_tanh`，不套 erf 配方。
+- **未纳入：**
+  - **仍折在 GEMM 尾项里的激活。** LFM2.5-VL 与 d1 视觉的 `gelu_pytorch_tanh`、ERNIE 的 quick_gelu、WeVisOne / Qwen3-VL 视觉 GELU，这次不单列。2026-10-27 再读：`Qwen/Qwen3-VL-2B-Instruct` 与 `tencent/WeVisOne-VL-2B` 的视觉 `hidden_act` 仍是 `gelu_pytorch_tanh`，文本是 `silu`。`baidu/ERNIE-4.5-VL-28B-A3B` 的视觉 `hidden_act` 仍是 `quick_gelu`。transformers `QuickGELUActivation` 是 `x * sigmoid(1.702 * x)`，不是 SiLU 的 `x * sigmoid(x)`，也不是 erf-GELU。`GELUTanh` 走 `nn.functional.gelu(..., approximate="tanh")`，不是已有的 erf 配方。不新写 tanh-GELU，也不新写 quick_gelu。
+  - **LongCat-Flash-Lite-Sparse。** 2026-10-27 再读：sha `35de83a18b5838ec1657edb3f885a59bbdd7888f`，`lastModified` 2026-08-04。37 个文件。根目录有 safetensors，没有 modeling 文件，只有 `tokenization_llama.py`。`architectures` 是 `LongcatCausalLM`，`attention_method` 仍是 LSA，`mtp_num_layers` 是 3。vLLM #48302 仍是 open（更新于 2026-09-09），SGLang #32918 仍是 open（更新于 2026-08-17）。没有已发布的 LSA 前向。不套 MLA，也不套 DSA。
+  - **ERNIE-4.5-21B-A3B-PT、21B-A3B-Base-PT、300B-A47B-PT。** `config.json` 仍是 200，类是 `Ernie4_5_MoeForCausalLM`，`model_type` 是 `ernie4_5_moe`。这三份已经在目录里，不是新模型。
+  - **ERNIE-4.5-0.3B-Thinking、300B-A47B-Thinking、VL-424B-A47B-Thinking。** API 仍是 401。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 根 `config.json` 仍是 404。不新写扩散栈。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 API 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 的 `lastModified` 是 2026-10-25，根 `config.json` 是 200，内容是空对象。`tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401，sha `1af1635aa22b`，`lastModified` 2026-10-22。
+  - **nvidia Cosmos3。** `nvidia/Cosmos3` 与 `nvidia/Cosmos-3` 的 API 仍是 401。`nvidia/Cosmos3-Nano` 的类仍是 `Cosmos3ForConditionalGeneration`，`model_type` 是 `cosmos3_omni`。文本是 `qwen3_vl_text`（hidden 4096、36 层），视觉是 `qwen3_vl` 且 `hidden_act` 是 `gelu_pytorch_tanh`。`model._target` 是 `omni_mot_model`，并带 `diffusion_expert_config`。这不是已有的条件生成路径。不把内层文本记成 Qwen3-VL，也不新写扩散栈。
+  - **Gemma-4 assistant / QAT。** `google/gemma-4-assistant` 与 `google/gemma-4-E4B-it-qat` 的 API 仍是 401。`google/gemma-4-12B-it-assistant` 的类仍是 `Gemma4UnifiedAssistantForCausalLM`，`model_type` 是 `gemma4_unified_assistant`，文本是 4 层、hidden 1024 的 `gemma4_unified_text`。这不是已入库的 Gemma-4 栈。不单列。
+  - **2026-10-20 及之后按 `lastModified` 的扫描**（120 个组织，303 条，接口错误 0，2026-10-27，每个组织最多 100 条）。对得上现有机制、又读过 header 的没有入库。`LiquidAI/LFM2.5-2.6B`、`MiniMaxAI/MiniMax-M2.7`、`nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16`、`ibm-granite/granite-speech-5.0-2b` 与 `granite-speech-4.1-2b` 的 `lastModified` 落在窗口里，但是已经在目录里，不是新行。靠近的几条这次重读了 `config.json`，没有读 safetensors header：`microsoft/Sentiment-Analysis-7B` 的类是 `MistralForCausalLM`（hidden 4096、32 层，`silu`）；`openbmb/MiniCPM-V-4.7-1B` 的类是 `MiniCPMV4_7ForConditionalGeneration`，`model_type` 是 `minicpmv4_7`；`inclusionAI/LBS-27B` 与 `JetBrains/Qwen3.8-3.6-27B-blend` 的类是 `Qwen3_5ForConditionalGeneration`，视觉 `hidden_act` 是 `gelu_pytorch_tanh`；`inclusionAI/ZwZ-2B` 是 `qwen3_vl`，`dtype` 是 `float32`，视觉仍是 `gelu_pytorch_tanh`；`nvidia/llama-nv-embed-reasoning-3b` 的类是 `LlamaBidirectionalModel`，`model_type` 是 `llama_bidirec`；`baidu/Unlimited-OCR-2` 的类是 `UnlimitedOCRForCausalLM`；`tencent/Hy-SimulMT-30B-A3B-Interleave` 的类仍是 `HYV3SpeechForCausalLM`；`MiniMaxAI/MiniMax-M3-MXFP8` 的 `quant_method` 是 `mxfp8`，类是 `MiniMaxM3SparseForConditionalGeneration`，`hidden_act` 是 `swigluoai`；`IFM/K2-Horizon-0.9B` 仍是 `dtype=float32`，类是 `K2HorizonForCausalLM`；`KRAFTON/Raon-1-mini-preview-nvfp4` 的 `quant_method` 仍是 `modelopt_fp4`，`hidden_act` 是 `situ`；`nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-Base-BF16` 仍是 `NemotronH_Omni_Reasoning_V3`；`swiss-ai/Apertus-v1.5-8B` 与 `Apertus-v1.5-70B` 的 `config.json` 是 401；`nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-4GB` 的 `config.json` 仍是 404；`inclusionAI/Realtime-Venus` 的根 `config.json` 仍是 `version` / `refs` / `venus` 的包索引；`meta-models/Muse-Glimmer-30B` 的类仍是 `MuseGlimmerForConditionalGeneration`。GGUF / MLX / ONNX / diffusers / tensorrt / kernels 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.410.0] — 2026-10-27
 
 ### OmniASR 补上已执行的 erf-GELU

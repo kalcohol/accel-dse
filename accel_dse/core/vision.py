@@ -88,6 +88,10 @@ builds ``inv_freq`` angles, and the cos/sin ``repeat`` that widens those angles 
 encoder bills its ReLU6 calls, the int32 mask multiply, and the projector GELU. OmniASR bills
 ``ACT2FN["gelu"]`` (``nn.functional.gelu``, the erf form) on every feature-extractor conv output, on the
 positional conv after the even-kernel pad slice, and on each FFN intermediate. Eval dropout is not an op.
+d1 FastConformer (``audio.py`` ``ConformerLayer``) bills each block's LayerNorms, ``F.silu``,
+``F.glu`` on the kept half, BatchNorm and ``x + ff * 0.5``. The adapter and the residual bill
+``F.gelu`` (the default erf form). Those activations stay fp32. Subsampling ReLU, time-mask
+multiplies, ``masked_fill`` and the plain residual adds stay in the tail.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -1678,7 +1682,16 @@ def _d1_audio_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
 
     linear_pos reads the 2T-1 sinusoid once per batch, not once per clip. The relative
     matmul is T by 2T-1 and is then sliced; QK, PV, and softmax see the T by T slice.
-    Depthwise convs are vector taps. GLU, the 0.5 residual, and BatchNorm are not GEMMs.
+    Depthwise convs are vector taps.
+
+    ``ConformerLayer`` (LiquidAI/d1-omni-600M ``audio.py``) runs LayerNorm, ``F.silu``,
+    ``x + ff * 0.5``, ``F.glu`` on the kept half and eval BatchNorm. Those use the same
+    vector recipes as Granite Speech. ``F.glu``'s split is a view. BatchNorm's rsqrt is
+    once per channel. The adapter and the residual run ``F.gelu`` with the default
+    ``approximate='none'`` (erf). The class does not cast, so a requested GEMM format
+    does not change these ops or the fp32 GEMMs. The shared GEMM tail is not reduced.
+    Subsampling ``nn.ReLU``, the time-mask multiplies, ``masked_fill``, the plain
+    residual adds and the sinusoid table stay in the tail.
     """
     mel, t = _d1_audio_lens(seconds)
     if t <= 0 or clips <= 0:
@@ -1711,10 +1724,18 @@ def _d1_audio_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
                   act_bytes=2 * length * freq * clips * ch * ab))
     ops.append(gemm("aud.sub.pw1", length * freq * clips, ch, ch))
     ops.append(gemm("aud.sub.out", length * clips, ch * freq, d))
+    # Released weights are fp32. F.silu, F.glu, the 0.5 scale, BatchNorm and F.gelu do not upcast.
+    act = "fp32"
     pos = 2 * t - 1
     for li in range(a.depths[0]):
         tm = t * clips
-        ops += [gemm(f"aud.{li}.ff1_up", tm, d, ff, li), gemm(f"aud.{li}.ff1_down", tm, ff, d, li)]
+        # FeedForward: LayerNorm, Linear, F.silu, Linear. The block then does x + ff * 0.5.
+        ops.append(_ln_vec(f"aud.{li}.ff1_ln", li, tm, d))
+        ops.append(gemm(f"aud.{li}.ff1_up", tm, d, ff, li))
+        ops.append(_silu_vec(f"aud.{li}.ff1_silu", li, tm * ff, act))
+        ops.append(gemm(f"aud.{li}.ff1_down", tm, ff, d, li))
+        ops.append(_half_vec(f"aud.{li}.ff1_half", li, tm * d, act))
+        ops.append(_ln_vec(f"aud.{li}.attn_ln", li, tm, d))
         ops += [gemm(f"aud.{li}.q", tm, d, d, li), gemm(f"aud.{li}.k", tm, d, d, li),
                 gemm(f"aud.{li}.v", tm, d, d, li), gemm(f"aud.{li}.o", tm, d, d, li)]
         # One position row per batch, shared by every clip of this length.
@@ -1727,14 +1748,33 @@ def _d1_audio_ops(a: AudioSpec, seconds: float, clips: int) -> list[Op]:
                 Op(f"aud.{li}.pv", "attn", li, m=t, k=t, n=hd, count=cnt, causal=1.0,
                    act_bytes=cnt * t * hd * ab, orient=True),
                 Op(f"aud.{li}.softmax", "vector", li, vec=cnt * t * t * 5.0)]
-        ops += [gemm(f"aud.{li}.pw1", tm, d, 2 * d, li),
-                Op(f"aud.{li}.dw", "vector", li, vec=tm * d * ker, act_bytes=2 * tm * d * ab),
-                gemm(f"aud.{li}.pw2", tm, d, d, li)]
-        ops += [gemm(f"aud.{li}.ff2_up", tm, d, ff, li), gemm(f"aud.{li}.ff2_down", tm, ff, d, li)]
-    ops += [gemm("aud.adapter.1", t * clips, d, a.out),
-            gemm("aud.adapter.2", t * clips, a.out, a.out)]
-    ops += [gemm("aud.residual.down", t * clips, a.out, a.gs_inner),
-            gemm("aud.residual.up", t * clips, a.gs_inner, a.out)]
+        # ConvModule: LayerNorm, pointwise to 2 * d, F.glu (keeps d), depthwise,
+        # BatchNorm, F.silu, pointwise back. The pad and masked_fill are not ops.
+        ops.append(_ln_vec(f"aud.{li}.conv_ln", li, tm, d))
+        ops.append(gemm(f"aud.{li}.pw1", tm, d, 2 * d, li))
+        ops.append(_glu_vec(f"aud.{li}.glu", li, tm * d, act))
+        ops.append(Op(f"aud.{li}.dw", "vector", li, vec=tm * d * ker, act_bytes=2 * tm * d * ab))
+        ops.append(_bn_vec(f"aud.{li}.bn", li, tm * d, d, act))
+        ops.append(_silu_vec(f"aud.{li}.conv_silu", li, tm * d, act))
+        ops.append(gemm(f"aud.{li}.pw2", tm, d, d, li))
+        ops.append(_ln_vec(f"aud.{li}.ff2_ln", li, tm, d))
+        ops.append(gemm(f"aud.{li}.ff2_up", tm, d, ff, li))
+        ops.append(_silu_vec(f"aud.{li}.ff2_silu", li, tm * ff, act))
+        ops.append(gemm(f"aud.{li}.ff2_down", tm, ff, d, li))
+        ops.append(_half_vec(f"aud.{li}.ff2_half", li, tm * d, act))
+        ops.append(_ln_vec(f"aud.{li}.out_ln", li, tm, d))
+    rows = t * clips
+    # Adapter: LayerNorm(d), Linear(d -> out), F.gelu, Linear(out -> out).
+    ops.append(_ln_vec("aud.adapter.ln", 0, rows, d))
+    ops.append(gemm("aud.adapter.1", rows, d, a.out))
+    ops.append(_gelu_erf_vec("aud.adapter.gelu", 0, rows * a.out, act))
+    ops.append(gemm("aud.adapter.2", rows, a.out, a.out))
+    # Residual: LayerNorm(out), Linear(out -> width), F.gelu, Linear(width -> out), then x + branch.
+    # The trailing add is a full residual, not the 0.5 scale, so it is not a half op.
+    ops.append(_ln_vec("aud.residual.ln", 0, rows, a.out))
+    ops.append(gemm("aud.residual.down", rows, a.out, a.gs_inner))
+    ops.append(_gelu_erf_vec("aud.residual.gelu", 0, rows * a.gs_inner, act))
+    ops.append(gemm("aud.residual.up", rows, a.gs_inner, a.out))
     return ops
 
 
