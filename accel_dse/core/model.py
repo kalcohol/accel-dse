@@ -4290,7 +4290,10 @@ def _from_d1_omni(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelSpec:
             "adapter 是 LayerNorm、Linear、F.gelu、Linear。"
             "residual 是 LayerNorm、Linear、F.gelu、Linear，再加回输入。"
             "F.gelu 默认是 erf 形式，不是 gelu_pytorch_tanh。通用 GEMM 尾项不减。"
-            "subsampling 的 ReLU、时间 mask、masked_fill、整份残差加和位置正弦表不单列。"
+            "subsampling 的三次 nn.ReLU 是 max(x, 0)，一次截断，不是 relu6 的两次，按元素计成向量运算，不是 GEMM。"
+            "时间 mask 是激活乘同 dtype 的 0/1，一次乘，比较不另计。"
+            "深度卷积前的 masked_fill 是 where，不是乘法，也不走 ReLU，不单列。"
+            "pad、整份残差加和位置正弦表不单列。"
             "视觉塔的 hidden_act 是 gelu_pytorch_tanh，不单列。")
     return ModelSpec(
         id=model_id, hf_id=hf_id, arch="D1OmniModel", hidden=int(pr["trunk"]), vocab=int(pr["vocab"]),

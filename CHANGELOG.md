@@ -6,6 +6,31 @@
 
 
 
+## [0.412.0] — 2026-10-27
+
+### d1 FastConformer 下采样补上已执行的三次 ReLU 和时间 mask 乘
+
+- **修正。** `LiquidAI/d1-omni-600M` 的 `audio.py`（sha `02b55d7`，2026-10-27 再读）里，`ConvSubsampling.forward` 对 `self.conv` 的每一个模块先做 `x * _time_mask(x, lengths)`，再跑模块。stride 不是 `(1, 1)` 的 `Conv2d` 之后才更新长度。循环结束后、`Linear` 之前再乘一次。`self.conv` 是 8 个模块：stride-2 的 `Conv2d(1 → 256)`、`nn.ReLU(inplace=True)`、stride-2 的深度卷积、1×1 pointwise、`nn.ReLU`、stride-2 的深度卷积、1×1 pointwise、`nn.ReLU`。所以时间 mask 是 9 次，ReLU 是 3 次。`nn.ReLU` 是 `max(x, 0)`，一次截断，没有超越函数，不升精度。0.407 的 `nn.ReLU6` 是 `min(max(x, 0), 6)`，两次截断，`vec = 元素 * 2`。这里是一次，`vec = 元素`，`sfu` 是 0，不是把 ReLU6 的 2 套上来。`_time_mask` 把比较结果 cast 到激活的 dtype 再乘回去。发布权重是 fp32，类不升精度，所以这次乘的 `a_fmt` 是 fp32，`vec = 元素`，`sfu` 是 0。`arange`、比较和 cast 只用来建 mask，不另计。和 LongCat 的 mask 乘同一套：一次乘，不建新周期。通用 GEMM 尾项 `VEC_PER_OUT` 不减。`d1-omni-600m` 的 `param_check().rel_err` 仍是 0。请求 fp8 时塔 GEMM 仍是 fp32，这些向量运算也仍是 fp32。
+  - **第一次卷积前。** 输入是 `(clip, 1, mel, 128)`。1 秒的 mel 是 100。补 `aud.sub.mask0`，`vec` 是 `100 * 128`，通道是 1，不是 256。0.5 秒先补到 8000 个样本，mel 是 50。10 秒 mel 是 1000。两个 clip 时 `vec` 加倍。
+  - **三次 ReLU。** 每次都在对应的卷积或 pointwise 之后，宽度是通道 256 乘当时的时间乘频率。1 秒：`aud.sub.relu0` 是 `256 * 50 * 64`，`relu1` 是 `256 * 25 * 32`，`relu2` 是 `256 * 13 * 16`。不是 `* 2`。ReLU 前面各有一次 mask，形状和这次 ReLU 相同。已有的 `aud.sub.0` 仍是输出格点 `50 * 64`、K 是 9、N 是 256，`vec` 仍是 `50 * 64 * 256 * 3`。`aud.sub.dw0` 的 tap 仍是 `25 * 32 * 256 * 9`。
+  - **线性前。** 最后一次 ReLU 之后、`aud.sub.out` 之前再补 `aud.sub.mask8`，形状和 `relu2` 相同。`aud.sub.out` 的行数仍是编码器帧（1 秒是 13，10 秒是 125，0.5 秒是 7）。后面的 Conformer SiLU、GLU、0.5 残差、LayerNorm、BatchNorm 和 erf-GELU 不变。相对位置 GEMM 仍是整批一次的 `2T-1`，不随 clip 数变。
+- **不单列。** 深度卷积前的 `x.masked_fill(pad_mask, 0)` 是 where，不是 ReLU 的截断，也不是这次的乘法。现有配方对不上，不新写 where。`F.pad`、注意力和卷积的整份残差加、`pos_emb` 的 sin/cos 表，仍不单列。注意力分数上的 `masked_fill` 仍折在原来的 softmax 里，`sfu` 仍是 0。没有 Dropout。视觉 `hidden_act` 仍是 `gelu_pytorch_tanh`，不套 erf 配方。
+- **未纳入：**
+  - **仍折在 GEMM 尾项里的激活。** LFM2.5-VL 与 d1 视觉的 `gelu_pytorch_tanh`、ERNIE 的 quick_gelu、WeVisOne / Qwen3-VL 视觉 GELU，这次不单列。2026-10-27 再读：`Qwen/Qwen3-VL-2B-Instruct` 与 `tencent/WeVisOne-VL-2B` 的视觉 `hidden_act` 仍是 `gelu_pytorch_tanh`，文本是 `silu`。`baidu/ERNIE-4.5-VL-28B-A3B` 的视觉 `hidden_act` 仍是 `quick_gelu`。transformers `QuickGELUActivation` 是 `x * sigmoid(1.702 * x)`，不是 SiLU 的 `x * sigmoid(x)`，也不是 erf-GELU。`GELUTanh` 走 `nn.functional.gelu(..., approximate="tanh")`，不是已有的 erf 配方。不新写 tanh-GELU，也不新写 quick_gelu。
+  - **LongCat-Flash-Lite-Sparse。** 2026-10-27 再读：sha `35de83a18b5838ec1657edb3f885a59bbdd7888f`，`lastModified` 2026-08-04。37 个文件。根目录有 safetensors，没有 modeling 文件，只有 `tokenization_llama.py`。`architectures` 是 `LongcatCausalLM`，`attention_method` 仍是 LSA，`mtp_num_layers` 是 3。vLLM #48302 仍是 open（更新于 2026-09-09），SGLang #32918 仍是 open（更新于 2026-08-17）。没有已发布的 LSA 前向。不套 MLA，也不套 DSA。
+  - **ERNIE-4.5-21B-A3B-PT、21B-A3B-Base-PT、300B-A47B-PT。** `config.json` 仍是 200，类是 `Ernie4_5_MoeForCausalLM`，`model_type` 是 `ernie4_5_moe`。这三份已经在目录里，不是新模型。
+  - **ERNIE-4.5-0.3B-Thinking、300B-A47B-Thinking、VL-424B-A47B-Thinking。** API 仍是 401。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 根 `config.json` 仍是 404。不新写扩散栈。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 的 API 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 的 `lastModified` 是 2026-10-25，根 `config.json` 是 200，内容是空对象。`tencent/Hy-Nomas-Diffusers` 的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts` 的 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 `config.json` 仍是 401，sha `1af1635aa22b`，`lastModified` 2026-10-22。
+  - **nvidia Cosmos3。** `nvidia/Cosmos3` 与 `nvidia/Cosmos-3` 的 API 仍是 401。`nvidia/Cosmos3-Nano` 的类仍是 `Cosmos3ForConditionalGeneration`，`model_type` 是 `cosmos3_omni`。文本是 `qwen3_vl_text`（hidden 4096、36 层），视觉是 `qwen3_vl` 且 `hidden_act` 是 `gelu_pytorch_tanh`。`model._target` 是 `omni_mot_model`，并带 `diffusion_expert_config`。这不是已有的条件生成路径。不把内层文本记成 Qwen3-VL，也不新写扩散栈。
+  - **Gemma-4 assistant / QAT。** `google/gemma-4-assistant` 与 `google/gemma-4-E4B-it-qat` 的 API 仍是 401。`google/gemma-4-12B-it-assistant` 的类仍是 `Gemma4UnifiedAssistantForCausalLM`，`model_type` 是 `gemma4_unified_assistant`，文本是 4 层、hidden 1024 的 `gemma4_unified_text`。这不是已入库的 Gemma-4 栈。不单列。
+  - **2026-10-20 及之后按 `lastModified` 的扫描。** 0.411 当天已经扫过（120 个组织，303 条，接口错误 0，2026-10-27）。这次没有新的、对得上现有机制又读过 header 的行。靠近的几条仍不是新模型：`LiquidAI/LFM2.5-2.6B`、`MiniMaxAI/MiniMax-M2.7`、`nvidia/NVIDIA-Nemotron-Labs-Dory1.0-4B-BF16`、`ibm-granite/granite-speech-5.0-2b` 与 `granite-speech-4.1-2b` 已经在目录里。GGUF / MLX / ONNX / diffusers / tensorrt / kernels 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。
+
 ## [0.411.0] — 2026-10-27
 
 ### d1 FastConformer 补上已执行的 SiLU、GLU、0.5 残差、LayerNorm 和 BatchNorm；adapter 与 residual 补上 erf-GELU
