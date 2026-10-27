@@ -58,10 +58,16 @@ docs/MODEL.md §20):
          scalar buffers on each of q, k, v, o, gate, up and down; the clamp does not change the GEMM.
          Video uses the same tower with the video processor's max_soft_tokens (70 on the shipped
          configs, not the image 280): one batch row per frame, padded to 70·pooling² patches.
+         0.429 bills the four per-layer ``Gemma4RMSNorm`` calls (input, post-attention, pre-FFN,
+         post-FFN) on hidden, plus ``q_norm`` / ``k_norm`` on ``head_dim`` (one rsqrt per head).
+         ``v_norm`` is ``with_scale=False`` and is not billed. The MLP stays
+         ``gelu_pytorch_tanh`` and is not billed as SiLU or erf-GELU.
   gemma4u Gemma-4 12B encoder-free embedder (gemma4_unified_vision): LN → Linear(48²·3 → mm) → LN →
          factorised position table → LN → RMSNorm (no scale) → Linear(mm → text). Both GEMMs see the
          padded max_soft_tokens rows; the LLM prompt keeps only the real soft tokens. Video merges
          patches first, then pads each frame to the video max_soft_tokens (70) before those GEMMs.
+         0.429 bills those three ``nn.LayerNorm`` calls (patch dim, then mm, then mm). The
+         pre-projection RMSNorm is ``with_scale=False`` and is not billed.
          The unified audio
          path is one Linear(audio_embed_dim → text) when audio_config.model_type is gemma4_unified_audio.
          gemma4_audio (E2B / E4B) is a conformer: two stride-2 Conv2d, 12 local-attention blocks,
@@ -2528,8 +2534,11 @@ def _gemma4_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
         return None
     if au is not None:
         params += au.params
+    act = vc.get("hidden_activation")
+    if act != "gelu_pytorch_tanh":
+        raise ValueError("gemma4 vision hidden_activation is not gelu_pytorch_tanh")
     pre = {"patch": patch, "pool": pool, "max_soft": soft, "qd": qd, "kvd": kvd, "text_h": text_h,
-           "std": 1 if vc.get("standardize", False) else 0}
+           "std": 1 if vc.get("standardize", False) else 0, "act": act}
     return VisionSpec("gemma4", "Gemma-4 ViT + pool + projector", patch, 1, hv, inter, depth, nh, qd, True, pool,
                       ((mm, text_h),), params, tuple(sorted(pre.items())), audio=au)
 
@@ -2549,11 +2558,24 @@ def _gemma4_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> lis
                   a_fmt=af, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
 
     if v.family == "gemma4u":
-        # Both linears see the padded soft-token rows. The LLM keeps g.llm_tokens of them.
+        # Gemma4UnifiedVisionEmbedder. Both linears see the padded soft-token rows.
+        # patch_ln1 is LayerNorm(patch_dim) before the dense. patch_ln2 is LayerNorm(mm)
+        # after it. pos_norm is LayerNorm(mm) after the position add and before the
+        # scale-free RMSNorm. That RMSNorm (with_scale=False) is not this op. The
+        # position gather, the padding multiply, and the two-axis sum are not ops.
         rows = images * soft
         k_patch = pr["patch_dim"]
         mm, text_h = pr["mm"], pr["text_h"]
-        return [gemm("patch_dense", rows, k_patch, mm), gemm("proj", rows, mm, text_h)]
+        return [_ln_vec("vis.ln1", 0, rows, k_patch),
+                gemm("patch_dense", rows, k_patch, mm),
+                _ln_vec("vis.ln2", 0, rows, mm),
+                _ln_vec("vis.pos_ln", 0, rows, mm),
+                gemm("proj", rows, mm, text_h)]
+    # Gemma4VisionEncoderLayer. Four Gemma4RMSNorm(hidden) calls per block, plus
+    # q_norm / k_norm on head_dim (one rsqrt per head). v_norm has with_scale=False
+    # and is not this op. The MLP activation is gelu_pytorch_tanh and is not billed.
+    if pr.get("act") != "gelu_pytorch_tanh":
+        raise ValueError("gemma4 vision hidden_activation is not gelu_pytorch_tanh")
     n_pad = soft * pool * pool
     rows = images * n_pad
     h = v.hidden
@@ -2561,11 +2583,26 @@ def _gemma4_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> lis
     qd, kvd = pr["qd"], pr["kvd"]
     cnt = images * v.heads
     dh = v.head_dim
+    if dh < 1 or qd != h or kvd % dh or (kvd // dh) < 1:
+        raise ValueError("gemma4 vision q/k width is not a whole number of heads")
+    nkv = kvd // dh
     keys = n_pad * n_pad
     for li in range(v.depth):
+        # input_layernorm is Gemma4RMSNorm(hidden) before q. One rsqrt per padded token.
+        ops.append(_rms_vec(f"vis.{li}.in_rms", li, rows, h))
         ops += [gemm(f"{li}.q", rows, h, qd, li), gemm(f"{li}.k", rows, h, kvd, li),
-                gemm(f"{li}.v", rows, h, kvd, li), gemm(f"{li}.o", rows, qd, h, li)]
+                gemm(f"{li}.v", rows, h, kvd, li)]
+        # q_norm / k_norm see (tokens, heads, head_dim). mean is over head_dim, so the
+        # rsqrt count is tokens * heads, not one rsqrt over hidden. v_norm is scale-free.
+        ops.append(_rms_vec(f"vis.{li}.q_rms", li, rows * v.heads, dh))
+        ops.append(_rms_vec(f"vis.{li}.k_rms", li, rows * nkv, dh))
+        ops.append(gemm(f"{li}.o", rows, qd, h, li))
+        # post_attention_layernorm, then the full residual (not an op), then
+        # pre_feedforward_layernorm. Both reduce hidden, one rsqrt per token.
+        ops.append(_rms_vec(f"vis.{li}.post_attn_rms", li, rows, h))
+        ops.append(_rms_vec(f"vis.{li}.pre_ffn_rms", li, rows, h))
         ops += [gemm(f"{li}.mlp_in", rows, h, 2 * v.inter, li), gemm(f"{li}.mlp_out", rows, v.inter, h, li)]
+        ops.append(_rms_vec(f"vis.{li}.post_ffn_rms", li, rows, h))
         ops += [Op(f"vis.{li}.qk", "attn", li, m=n_pad, k=dh, n=n_pad, count=cnt, causal=1.0,
                    act_bytes=cnt * n_pad * dh * ab, stream=True, orient=True),
                 Op(f"vis.{li}.pv", "attn", li, m=n_pad, k=n_pad, n=dh, count=cnt, causal=1.0,

@@ -79,9 +79,11 @@ def test_image_grid_and_padded_tower():
     ug = image_grid(u.vision, 1024, 1024)
     assert ug.llm_tokens == 256 and u.vision.family == "gemma4u" and u.vision.depth == 0
     uops = vision_ops(u.vision, ug, 1)
-    assert [o.name for o in uops] == ["vis.patch_dense", "vis.proj"]
-    assert uops[0].m == 280 and (uops[0].k, uops[0].n) == (6912, 3840)
-    assert (uops[1].k, uops[1].n) == (3840, 3840)
+    assert [o.name for o in uops] == ["vis.ln1", "vis.patch_dense", "vis.ln2", "vis.pos_ln", "vis.proj"]
+    dense = next(o for o in uops if o.name == "vis.patch_dense")
+    proj_u = next(o for o in uops if o.name == "vis.proj")
+    assert dense.m == 280 and (dense.k, dense.n) == (6912, 3840)
+    assert (proj_u.k, proj_u.n) == (3840, 3840)
     assert u.vision.audio is not None and u.vision.audio.kind == "g4lin"
     assert u.vision.audio.tokens(1.0) == math.ceil(16000 / 640)
     aops = audio_ops(u.vision.audio, 1.0, 1)
