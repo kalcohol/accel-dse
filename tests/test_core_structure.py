@@ -26,7 +26,10 @@ def _tf(mid: str, **wl) -> float:
 def _cores(mid: str) -> dict[str, Counter]:
     out: dict[str, Counter] = {}
     for L in get_model(mid).layers:
-        out.setdefault(L.stack, Counter(c.kind + ("·glob" if c.glob else "") for c in L.pair_cores))
+        cores = Counter(c.kind + ("·glob" if c.glob else "") for c in L.pair_cores)
+        # 0.441: the structure-module preamble has no attention core. Keep the first layer that does.
+        if L.stack not in out or (not out[L.stack] and cores):
+            out[L.stack] = cores
     return {k: v for k, v in out.items() if v}
 
 
