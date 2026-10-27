@@ -186,6 +186,17 @@ first merger linear is the erf form, on merged rows at ``4 * hidden``. SiLU,
 the product and GELU stay at the vision-role dtype. RMSNorm and LayerNorm
 stay fp32. The rotary ``torch.outer``, cos/sin, the full residual adds, and
 the window mask are not ops.
+C-RADIO (family ``radio``) bills ``nn.LayerNorm`` before attention and before
+the MLP, ``ACT2FN["gelu"]`` (``nn.functional.gelu``, the erf form) on the MLP
+intermediate, and the projector ``NemotronH_Omni_RMSNorm`` on the shuffled
+rows. Super-VL also bills ``vision_final_layernorm`` on the patch features
+when the language model has MTP. Bolt ships ``vision_final_layernorm`` false,
+so that norm is absent. GELU stays at the bf16 tower dtype. The six fp32
+conditioner values are buffers, not a second weight dtype. LayerNorm and
+RMSNorm stay fp32. ``ACT2FN["relu2"]``, the identity LayerScale, the input
+conditioner, and the position interpolation are not ops. The ten cls /
+register tokens stay outside the tower row count. The shared GEMM tail is
+unchanged.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -420,6 +431,9 @@ class VisionSpec:
     ln_mode: str = ""
     # 0.419: deepstack block indexes, in merger order. Empty when deepstack is 0.
     ds_idx: tuple[int, ...] = ()
+    # 0.425: C-RADIO vision_final_layernorm on patch features. False when the
+    # release does not construct that module (Bolt).
+    post_ln: bool = False
 
     @property
     def head_dim(self) -> int:
@@ -3400,6 +3414,18 @@ def _longcat_omni_vision_spec(cfg: dict) -> VisionSpec:
         counts["towers"], tuple(sorted(pre.items())), False, audio=au)
 
 
+def _radio_final_ln(cfg: dict) -> bool:
+    """Whether the projector constructs ``vision_final_layernorm``.
+
+    Bolt's modeling file reads ``vision_final_layernorm`` when the key is
+    present. Super omits the key and uses ``num_nextn_predict_layers > 0``.
+    """
+    if "vision_final_layernorm" in cfg:
+        return bool(cfg["vision_final_layernorm"])
+    nxt = (cfg.get("llm_config") or {}).get("num_nextn_predict_layers") or 0
+    return type(nxt) is int and nxt > 0
+
+
 def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
     """VisionSpec from the release's full config (``vision_config`` + text hidden size), or None."""
     vc = cfg.get("vision_config")
@@ -3635,17 +3661,29 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
                                  "「来源」代码）；Step-5-Preview 未随附处理器，套用于 Step-5 为「假设」（vision_config / 169 / 81 / "
                                  "image_token_id 全同，inference/validate_vision.py 以 configuration_step3p7 加载参考编码器）")
     if mt == "radio" and cfg.get("model_type") == "nemotron_h_omni":
-        # 0.278 C-RADIO ViT-H/16 (modeling_radio.py 「来源」): conv-free patch embedder (Linear 768 → h, no bias) + CPE
+        # 0.278 C-RADIO ViT-H/16 (modeling_radio.py): conv-free patch embedder (Linear 768 → h, no bias) + CPE
         # position grid (16384 × h) + 10 cls / register tokens, 32 pre-LN blocks (biased qkv / proj, GELU MLP 4h); then
         # (MTP releases) a final LayerNorm, 2×2 pixel shuffle (downsample_ratio 0.5) and mlp1 = RMSNorm(4h) → Linear
-        # 4h → projector_hidden_size → ReLU² → Linear → text h (no bias) 「来源」 modeling_nemotron_h_omni.py
+        # 4h → projector_hidden_size → ReLU² → Linear → text h (no bias). modeling_nemotron_h_omni.py.
+        # 0.425: hidden_act is gelu (ACT2FN erf form). use_swiglu_ffn is false. layerscale_value 1.0 is the
+        # identity multiply and is not a released tensor. ReLU² is not the ReLU recipe.
+        if vc.get("hidden_act") != "gelu":
+            raise ValueError("radio hidden_act is not gelu")
+        if vc.get("use_swiglu_ffn"):
+            raise ValueError("radio use_swiglu_ffn is not false")
+        if vc.get("layerscale_value", 1.0) != 1.0:
+            raise ValueError("radio layerscale_value is not 1")
+        if vc.get("drop_path_rate", 0.0) not in (0, 0.0) or vc.get("hidden_dropout_prob", 0.0) not in (0, 0.0):
+            raise ValueError("radio dropout is not 0")
         h, L, nh, p = vc["hidden_size"], vc["num_hidden_layers"], vc["num_attention_heads"], vc["patch_size"]
         inter = int(h * vc.get("mlp_ratio", 4.0))
         r = int(round(1 / cfg["downsample_ratio"]))
         ph_ = cfg["projector_hidden_size"]
         ncls = (vc.get("num_cls_tokens") or 0) + (vc.get("num_registers") or 0)
         grid = (vc.get("cpe_max_size") or 2048) // p
-        fln = 2 * h if (tc_ := cfg.get("llm_config") or {}).get("num_nextn_predict_layers") else 0
+        final_ln = _radio_final_ln(cfg)
+        tc_ = cfg.get("llm_config") or {}
+        fln = 2 * h if final_ln else 0
         video = 3 * (vc.get("video_temporal_patch_size") or 1) * p * p * h
         params = (3 * p * p * h + grid * grid * h + ncls * h
                   + L * (4 * h + _lin(h, 3 * h) + _lin(h, h) + _lin(h, inter) + _lin(inter, h))
@@ -3655,7 +3693,8 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return VisionSpec("radio", "C-RADIO ViT-H/16（动态分辨率单图）+ 2×2 像素重排 + MLP 投影", p, 1, h, inter, L, nh, h,
                           False, r, ((r * r * h, ph_), (ph_, out)), params, tuple(sorted(pre.items())), extra=video,
                           approx="视觉：10 个 cls / register token 未计入注意力长度（≥ 1024 个 patch，< 1 %）「近似」；"
-                                 "视频 tubelet 的 video_embedder（2 帧 patch）按单帧 patch 嵌入计「近似」，EVS 剪枝按保留数公式计")
+                                 "视频 tubelet 的 video_embedder（2 帧 patch）按单帧 patch 嵌入计「近似」，EVS 剪枝按保留数公式计",
+                          post_ln=final_ln)
     if vc.get("model_type") == "minicpmv4_7_vision":          # 0.144 SigLIP + in-tower merger (insert_layer_id) + merger
         h, inter, L, nh, p = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"], vc["patch_size"]
         ins = cfg.get("insert_layer_id") or 0
@@ -4039,6 +4078,7 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     q35 = v.ln_mode == "qwen35"
     glm = v.family == "glm"
     mimo = v.ln_mode == "mimo"
+    radio = v.family == "radio"
     if glm:
         # Glm5NextVisionBlock + Glm5NextVisionPatchMerger. Hidden RMSNorms, per-head
         # q/k RMSNorms, gate SiLU, merger LayerNorm and nn.GELU(). The clamps are not ops.
@@ -4062,6 +4102,14 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if (not v.gated or v.kv_heads < 1 or len(v.post) != 2
                 or v.post[0] != (hm, hm) or v.post[1][0] != hm):
             raise ValueError("mimo vision block is not gqa swiglu plus a two-linear merger")
+    if radio:
+        # RadioLayer LayerNorms and RadioMLP ACT2FN["gelu"]. The projector RMSNorm
+        # sits on the shuffled rows. relu2 and the identity LayerScale are not ops.
+        if v.vec_fmt not in ("fp16", "bf16", "fp32"):
+            raise ValueError("radio vision activation dtype is not a vision float")
+        hm = h * v.merge * v.merge
+        if (v.gated or v.kv_heads or v.qkv != h or len(v.post) != 2 or v.post[0][0] != hm):
+            raise ValueError("radio vision block is not fused qkv plus a two-linear projector")
     if q3:
         # Qwen3VLVisionBlock LayerNorms and Qwen3VLVisionPatchMerger nn.GELU().
         # The block MLP stays gelu_pytorch_tanh. Merger fc1 is Linear(4h, 4h).
@@ -4142,6 +4190,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # norm1 is nn.RMSNorm(hidden) on patch tokens, before the fused qkv.
             # One rsqrt per token. q and k are not normalized.
             ops.append(_rms_vec(pfx + f"{li}.norm1", li, rows, h))
+        if radio:
+            # norm1 is LayerNorm(hidden) on the billed patch rows, before fused qkv.
+            # The ten cls / register tokens stay in the existing row approximation.
+            ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
         if pixtral:
             # Attention runs before o_proj. One bidirectional block per image.
@@ -4186,12 +4238,20 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if mimo:
             # norm2 is nn.RMSNorm(hidden) before the SwiGLU. The residual add is the full branch.
             ops.append(_rms_vec(pfx + f"{li}.norm2", li, rows, h))
+        if radio:
+            # norm2 is LayerNorm(hidden) before the MLP. The residual add is the full branch.
+            ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
         if longcat:
             # ls1 / ls2 are Parameter(embed_dim): branch * scale, then the residual add.
             # The class does not upcast. No rsqrt.
             ops.append(Op(pfx + f"{li}.ls1", "vector", li, vec=rows * h * 2, a_fmt="bf16"))
             ops.append(lc_rms(f"{li}.norm2", li, h, rows))
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
+        if radio:
+            # ACT2FN["gelu"] is nn.functional.gelu (default approximate 'none', the erf
+            # form). Width is intermediate, not hidden. The class does not upcast.
+            # The load-time Chunk of the released qkv matrix is not a second GEMM.
+            ops.append(_gelu_erf_vec(pfx + f"{li}.gelu", li, rows * v.inter, v.vec_fmt))
         if pixtral:
             # PixtralMLP: down(act(gate) * up). ACT2FN["silu"] is x * sigmoid(x)
             # on the gate only, so the width is intermediate, not the fused 2x GEMM.
@@ -4256,6 +4316,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # Qwen3.5 / Qwen4-Exp construct the only merger this way. Qwen3-VL's
         # deepstack mergers are the post-shuffle path below.
         ops.append(_ln_vec(pfx + "pre_ln", v.depth, images * N0, h))
+    if radio and v.post_ln:
+        # vision_final_layernorm is LayerNorm(hidden) on patch features, after the
+        # cls / register tokens are stripped and before the pixel shuffle.
+        ops.append(_ln_vec(pfx + "final_ln", v.depth, images * N0, h))
     if mimo:
         # ln_q is LayerNorm(context_dim) on the patch sequence, before the view
         # to 4 * hidden. Rows are patches, not merged positions. Width is hidden,
@@ -4269,6 +4333,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # Deepstack merger, use_postshuffle_norm true: view to 4h, then LayerNorm(4h).
             slot = i // 2 - 1
             ops.append(_ln_vec(pfx + f"ds{slot}.ln", v.ds_idx[slot], m_, k))
+        if radio and i == 0:
+            # mlp1.norm is RMSNorm on the shuffled rows. Width is 4 * hidden, not
+            # projector_hidden_size. eps is not an op. relu2 after linear1 is not this op.
+            ops.append(_rms_vec(pfx + "proj_rms", v.depth, m_, k))
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
         if mimo and i == 0:
             # nn.GELU() default approximate is 'none': the erf form. Width is fc1's
