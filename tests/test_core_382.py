@@ -91,12 +91,14 @@ def test_gemma4_video_grid_and_pad():
     u = video_grid(uni.vision, video_pre(uni), 32, 1280, 720)
     assert u.llm_tokens == 32 * 66 and u.slice.pad_soft == 70
     uops = vision_ops(uni.vision, u.slice, u.frames)
-    assert [o.name for o in uops] == ["vis.patch_dense", "vis.proj"]
-    assert uops[0].m == uops[1].m == 32 * 70
-    assert (uops[0].k, uops[0].n) == (6912, 3840)
+    assert [o.name for o in uops] == ["vis.ln1", "vis.patch_dense", "vis.ln2", "vis.pos_ln", "vis.proj"]
+    dense = next(o for o in uops if o.name == "vis.patch_dense")
+    uproj = next(o for o in uops if o.name == "vis.proj")
+    assert dense.m == uproj.m == 32 * 70
+    assert (dense.k, dense.n) == (6912, 3840)
     edge = video_grid(uni.vision, video_pre(uni), 32, 4000, 48)
     eops = vision_ops(uni.vision, edge.slice, 1)
-    assert eops[0].m == 70 and edge.llm_tokens == 32 * 70
+    assert next(o for o in eops if o.name == "vis.patch_dense").m == 70 and edge.llm_tokens == 32 * 70
     e2 = get_model("gemma-4-e2b-it")
     e2q = next(o for o in vision_ops(e2.vision, wide.slice, 1) if o.name == "vis.0.q")
     assert e2q.m == 70 * 9 and e2q.k == e2.vision.hidden

@@ -54,8 +54,10 @@ def test_review_382_gemma4_video_unchanged():
     uni = get_model("gemma-4-12b-it")
     u = video_grid(uni.vision, video_pre(uni), 32, 1280, 720)
     uops = vision_ops(uni.vision, u.slice, u.frames)
-    assert [o.name for o in uops] == ["vis.patch_dense", "vis.proj"]
-    assert uops[0].m == uops[1].m == 32 * 70
+    assert [o.name for o in uops] == ["vis.ln1", "vis.patch_dense", "vis.ln2", "vis.pos_ln", "vis.proj"]
+    dense = next(o for o in uops if o.name == "vis.patch_dense")
+    uproj = next(o for o in uops if o.name == "vis.proj")
+    assert dense.m == uproj.m == 32 * 70
     assert u.llm_tokens == 32 * 66
 
 

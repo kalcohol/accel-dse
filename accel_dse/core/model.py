@@ -4984,7 +4984,26 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "带 weight 的 RMSNorm 升到 fp32，pow(2).mean 再一次 pow(-0.5)，乘 weight，每行一次。"
                 "embed_audio 的 RMSNorm 没有 scale，不单列。"
                 "softcap、softplus、clamp、整份残差加和正弦表不单列。"
-                "视觉 hidden_activation 仍是 gelu_pytorch_tanh。通用 GEMM 尾项不减。",))
+                "视觉 hidden_activation 仍是 gelu_pytorch_tanh，不把 GeGLU 记成 SiLU 或 erf-GELU。"
+                "通用 GEMM 尾项不减。",))
+        if vs is not None and vs.family == "gemma4":
+            spec = replace(spec, notes=spec.notes + (
+                "Gemma-4 视觉塔：每一层的 input_layernorm、post_attention_layernorm、"
+                "pre_feedforward_layernorm、post_feedforward_layernorm 是 Gemma4RMSNorm(hidden)，带 weight。"
+                "q_norm 和 k_norm 是 Gemma4RMSNorm(head_dim)，按头做一次 rsqrt，不是把多头展成 hidden 再做一次。"
+                "v_norm 的 with_scale 是 False，不单列。"
+                "MLP 是 down(ACT2FN[hidden_activation](gate) * up)，发布值是 gelu_pytorch_tanh，"
+                "不把 GeGLU 记成 SiLU 或 erf-GELU。"
+                "RMSNorm 升到 fp32，pow(2).mean 再一次 pow(-0.5)，乘 weight。"
+                "整份残差加、RoPE、clamp、像素的 2*(x-0.5) 不单列。通用 GEMM 尾项不减。",))
+        if vs is not None and vs.family == "gemma4u":
+            spec = replace(spec, notes=spec.notes + (
+                "Gemma-4 unified 视觉：patch_ln1 是 nn.LayerNorm(patch_dim)，在 dense 之前。"
+                "patch_ln2 是 nn.LayerNorm(mm)，在 dense 之后、位置加之前。"
+                "pos_norm 是 nn.LayerNorm(mm)，在位置加之后。"
+                "投影前的 Gemma4UnifiedRMSNorm 是 with_scale=False，不单列。"
+                "LayerNorm 在 fp32 归约，仿射已经在参数里。"
+                "位置嵌入的 gather、padding 乘和两轴相加不单列。通用 GEMM 尾项不减。",))
         if (vs is not None and getattr(vs, "audio", None) is not None and vs.audio.kind == "sanm"):
             au = vs.audio
             spec = replace(spec, notes=spec.notes + (
