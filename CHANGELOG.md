@@ -6,6 +6,29 @@
 
 
 
+## [0.438.0] — 2026-10-27
+
+### Carbon-A 编码器补上已执行的 GenerannoRMSNorm 和 SiLU
+
+- **修正。** 没有新开目录行。改的是已经入库的 `carbon-a-1.2b`（`HuggingFaceBio/Carbon-A-1.2B`，sha `56c0e2fdceeab87c110df700b0f362234b14b42a`，`lastModified` 2026-10-27）。2026-10-27 再读仓库里的 `modeling_generanno.py`。`GenerannoRMSNorm` 的注释写明它等价于 `T5LayerNorm`：先 `to(float32)`，`pow(2).mean`，一次 `rsqrt`，再乘 `weight`，然后转回输入 dtype。它用在 `input_layernorm`、`post_attention_layernorm` 和 `model.norm`。`GenerannoMLP` 在 `pretraining_tp == 1` 时是 `down_proj(act_fn(gate_proj(x)) * up_proj(x))`。发布的 `hidden_act` 是 `silu`。`attention_bias` 和 `mlp_bias` 都是 false。`attention_dropout` 是 0。`rope_scaling` 是 null。注意力在 `repeat_kv` 之前对 q 和 k 做 RoPE，没有 `q_norm` / `k_norm`。`is_causal` 的默认值是 false。`GenerannoForTokenClassification` 的 `num_prediction_heads` 是 2，`k` 是 6，`use_mlp_classifier` 默认 false，所以两个头是无 bias 的 `Linear(hidden, 12)`。本地发布 JSON 仍是 2026-10-15 抓的，238 个张量，形状与这次读到的头一致，没有改发布文件。权重按模型卡的 BF16 推理设置计，safetensors 是 fp32。向量 `flops` 是 0，`w_params` 是 0。仿射已经在参数里。eps 不另计。RMSNorm 在 fp32 归约，`vec = token * hidden * 4`，`sfu` 是 token 数。SiLU 是 `x * sigmoid(x)`，不升精度，`a_fmt` 跟已计的激活 dtype。门和 up 的相乘是一次乘法。GEMM 的名字、顺序和形状不变。这条全序列路径上 `gemm()` 的 `vec` 仍是 0，不从 GEMM 里扣向量。闭式 GEMM FLOPs 不变。参数仍是 1,153,656,832。`hidden_act` 不是 `silu`、`model_type` 不是 `generanno`、`pretraining_tp` 不是 1、`rope_scaling` 不是 null、`use_mlp_classifier` 不是 false、出现 q/k norm 或 score bias、或层宽对不上，会拒绝。
+  - **默认窗口。** 26 层，hidden 2048，intermediate 5632，32 个查询头，4 个 KV 头，head 64，词表 4128。16384 token。`attn_rms` 和 `mlp_rms` 的 `vec` 是 `16384 * 2048 * 4`，`sfu` 是 16384，`a_fmt` 是 fp32。`silu` 的 `vec` 是 `16384 * 5632 * 4`，`sfu` 是 `16384 * 5632 * 2`，`a_fmt` 是 bf16。`mlp_mul` 的 `vec` 是 `16384 * 5632`，`sfu` 是 0。`rope` 的 `vec` 是 `16384 * (32 + 4) * 64 * 3`，`a_fmt` 是 bf16。没有 `qk_norm_rope`，没有 `q_scale`，没有 `gelu`，没有名为 `act` 的向量，没有 `attn_norm`，没有 `ffn_norm`。残差仍是 `16384 * 2048 * 2`。`attn.q` 的 M、K、N 都是 16384、2048、2048，`w_fmt` 是 bf16，`w_bits` 是 16，`a_fmt` 是 bf16，`vec` 是 0，FLOPs 是 `2 * 16384 * 2048 * 2048`。`attn.k` 的 N 是 256。`mlp.gate_up` 的 N 是 11264。`mlp.down` 的 K 是 5632，N 是 2048。`silu` 排在 `mlp.down` 之后。第 25 层同样。`final_rms` 的 `layer` 是 26，`vec` 是 `16384 * 2048 * 4`，`sfu` 是 16384，排在 `io.score_0` 和 `io.score_1` 之前。两个头的 N 都是 12。RMSNorm 是 53 个（26 层各两次，再加最终 norm）。130 token 时 `silu` 的 `vec` 是 `130 * 5632 * 4`，`attn_rms` 的 `sfu` 是 130。batch 2 时行数加倍。
+  - **TP2 且 SP2，以及 fp8。** 本地 token 8192，本地 intermediate 2816。`silu` 的 `vec` 是 `8192 * 2816 * 4`，`sfu` 是 `8192 * 2816 * 2`。`mlp_mul` 的 `vec` 是 `8192 * 2816`。`attn_rms` 的宽度仍是 2048，`sfu` 是 8192。`rope` 的 `vec` 是 `8192 * (16 + 2) * 64 * 3`。`attn.q` 的 N 是 1024，`attn.k` 的 N 是 128，`mlp.gate_up` 的 N 是 5632，`mlp.down` 的 K 是 2816。`final_rms` 的行数是 8192。`io.score_0` 的 N 仍是 12。请求 fp8：`silu` 和 `mlp_mul` 的 `a_fmt` 是 fp8，RMSNorm 仍是 fp32，`rope` 仍是 bf16，GEMM 的 `a_fmt` 是 fp8，`w_fmt` 仍是 bf16，`w_bits` 仍是 16。
+  - **ESM-2 的 RoPE 计数不变。** `qk_norm` 为 false 时，k 按 `n_kv` 头计。MHA（`n_kv == n_q`）与原来的「查询头乘 2」相同。ESM-2 650M 在 514 token 时 `rope` 的 `vec` 仍是 `514 * 1280 * 6`，`a_fmt` 仍是 bf16。Wan 和 ESMFold 仍走原来的 `act` 尾项。
+- **不单列。** cos/sin 的 fp32 表、padding mask、两次残差加、eps，都不单列。通用 GEMM 尾项不减。不把 tanh-GELU 记成 SiLU。不新写 AdaLN。前 60 个目录条目不含 `carbon-a-1.2b`（它在第 75 位）。stage 指纹仍是 `f54f33dfa13cdd41`，默认 pipe 指纹仍是 `1e15ae85430a04f3`。去掉 DeepSeek-V4 之后仍是 `5c058c9ed0f8f61e` / `8a5fa1d0881da387`。GEMM FLOPs 不变。
+- **未纳入：**
+  - **ESMFold 的 ESM-2 语言模型层。** 层宽是 2560，全序列向量用的是 `ModelSpec.hidden`（折叠主干 1024）。这次不改。
+  - **Wan DiT 主干的 norm 和 tanh-GELU。** 主干 norm 和 AdaLN 混在同一笔里，FFN 是 tanh-GELU。不把这份 norm 拆成 RMSNorm，也不把 tanh-GELU 记成 erf-GELU 或 SiLU。umT5 的 RMSNorm 仍是 0.437 的那一笔。
+  - **LongCat-Flash-Lite-Sparse。** 2026-10-27 再读：`meituan-longcat/LongCat-Flash-Lite-Sparse`，sha `35de83a18b58`，`lastModified` 2026-08-04。`attention_method` 仍是 LSA。vLLM #48302 仍是 open（更新于 2026-09-09），SGLang #32918 仍是 open（更新于 2026-08-17）。没有已发布的 LSA 前向。不套 MLA，也不套 DSA。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** `config.json` 仍是 404。sha 仍是 `a5ca2b7a9421` 和 `c1e51f6f1197`，`lastModified` 2026-06-02。
+  - **LTX-2.3。** `Lightricks/LTX-2.3` 的 sha 是 `c1521179de48`，`lastModified` 2026-10-22，根 `config.json` 仍是 404。不新写扩散栈。
+  - **LFM2.5-d1。** `LiquidAI/LFM2.5-d1` 与 `LiquidAI/LFM2.5-1.2B-d1` 的 API 仍是 401。
+  - **Hy-Nomas。** `tencent/Hy-Nomas` 的 sha 是 `c67f2c52b3fb`，`lastModified` 2026-10-25，根 `config.json` 仍是空对象。`tencent/Hy-Nomas-Diffusers`（sha `a1ae04d11ae4`，`lastModified` 2026-10-24）的根 `config.json` 仍是 404。
+  - **pocket-tts。** `kyutai/pocket-tts`，sha `db04f0e65347`，`lastModified` 2026-10-21。根 `config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** `orcarouter/OrcaCyber-Nano-1.0` 的 sha 仍是 `97140f3ff7e2`，`lastModified` 仍是 2026-10-27。根 `config.json` 仍是 401。
+  - **ERNIE-4.5-0.3B-Thinking。** API 仍是 401。这次没有再读 21B / 300B 的 Thinking 仓库。
+  - **这次没有重读。** Cosmos3、Gemma-4 assistant / QAT，以及 2026-10-20 及之后那张 120 个组织的整表，仍按 0.437 记下的状态延期。没有新开目录行。GGUF / MLX / ONNX / diffusers / tensorrt / kernels 不单列。
+  - **仍不单列。** softcap、scalar-gate、NPU、LSA、Cosmos3 扩散、tanh-GELU、quick_gelu、gelu_new、relu2、LayerScale、sigmoid 门、RMSNormGated、`1 + weight` RMSNorm。LongCat 的 `emb_mult=1`、`dropout=0` 和 `pos_ids` gather。Index-Echo 的 `exp(log_alpha)` 和 `beta`。MiniMax 文本的 `swigluoai`。ERNIE 塔内的 `quick_gelu`。MiniCPM-V 塔内和 vit_merger 的 `gelu_pytorch_tanh`。Muse 的 `vision_projection` 和没有 scale 的 perception RMSNorm。Ling 块内的 `gelu_pytorch_tanh`。Step-5 的 `quick_gelu` 和 LayerScale。Gemma-4 的 `v_norm`、`with_scale=False` 和 `gelu_pytorch_tanh` GeGLU。DeepSeek 语言侧 Expert 的 SiLU 和 clamp。C-RADIO 的 `relu2`。Kimi MoonViT 塔内的 `PytorchGELUTanh`。Youtu、granite-speech-4.1-2b、kanana-2-vision。Qwen3.5 的 `1 + weight` RMSNorm、注意力输出 sigmoid 和 `RMSNormGated`。T5 的 `gelu_new`。CLIP 的 `quick_gelu`。ESM-2 的 `token_dropout`（工作负载没有 mask 率）。空 deepstack 的 `qwen3_vl` 仍是旧路径。
+
 ## [0.437.0] — 2026-10-27
 
 ### ESM-2 编码器的 LayerNorm 与 erf-GELU，以及 Wan umT5 的 RMSNorm
