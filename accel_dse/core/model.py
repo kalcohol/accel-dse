@@ -4219,7 +4219,12 @@ def _from_omniasr_ctc(model_id: str, hf_id: str, cfg: dict, rel: dict) -> ModelS
             "ACT2FN['gelu'] 是 erf 形式。特征卷积每一层、位置卷积、以及每一层 FFN 的 intermediate "
             "各计一次向量运算，不是 GEMM。类不升精度。"
             "eval 的 Dropout 和 LayerDrop 是恒等，不单列。最终 argmax 不单列。"
-            "LayerNorm 和残差加仍留在 GEMM 尾项。投影器和 CTC 头没有 GELU。")
+            "特征卷积每一层在 GELU 之前做 LayerNorm，宽度是 conv 通道，不是 hidden。"
+            "投影 Linear 之前再做一次 LayerNorm，宽度仍是最后一层通道。"
+            "编码器每一层在注意力前和 FFN 前各做一次 LayerNorm(hidden)，块之后再做一次。"
+            "LayerNorm 在 fp32 归约，按行计一次 rsqrt，不是 GEMM。位置卷积没有 LayerNorm。"
+            "不是 0.5 的残差加，以及 padding 的 masked_fill，不单列。"
+            "投影器和 CTC 头没有 GELU。")
     return ModelSpec(
         id=model_id, hf_id=hf_id, arch="OmniASRForCTC", hidden=au.dims[0], vocab=au.out,
         layers=(), tie_embeddings=True, coverage="full", notes=(note,),
@@ -4830,7 +4835,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "特征卷积每一层、位置卷积、以及每一层 FFN 的 intermediate 各计一次，宽度分别是 conv 通道、"
                 "hidden 和 intermediate。不升精度，dtype 跟随发布的权重格式。"
                 "multi_modal_projector 没有 GELU。eval 的 Dropout 和 LayerDrop 是恒等，不单列。"
-                "LayerNorm 仍留在 GEMM 尾项。",))
+                "特征卷积的 LayerNorm 在 GELU 之前，宽度是 conv 通道，不是 hidden。"
+                "投影 Linear 之前还有一次 LayerNorm，宽度仍是最后一层通道。"
+                "每一层注意力前和 FFN 前各有一次 LayerNorm(hidden)，编码器末尾再有一次。"
+                "LayerNorm 在 fp32 归约，不是 GEMM。位置卷积没有 LayerNorm。"
+                "不是 0.5 的残差加不单列。",))
         if (vs is not None and getattr(vs, "audio", None) is not None and vs.audio.kind == "g4conf"):
             spec = replace(spec, notes=spec.notes + (
                 "gemma4_audio 的 hidden_act 是 silu，residual_weight 是 0.5。"

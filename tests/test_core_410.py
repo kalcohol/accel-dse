@@ -65,8 +65,11 @@ def test_omniasr_bills_erf_gelu_on_conv_pos_and_ffn():
         assert by["aud.fe.6"].m == 49 and by["aud.0.fc1"].m == 49
         assert by["aud.0.fc1"].n == ff and by["aud.pos"].n == hidden
         for i in range(7):
-            assert names.index(f"aud.fe.{i}") + 1 == names.index(f"aud.fe.{i}.gelu")
-        assert names.index("aud.fe.6.gelu") + 1 == names.index("aud.fe.proj")
+            # 0.417 inserts the conv LayerNorm between the GEMM and the GELU.
+            assert names.index(f"aud.fe.{i}") + 1 == names.index(f"aud.fe.{i}.ln")
+            assert names.index(f"aud.fe.{i}.ln") + 1 == names.index(f"aud.fe.{i}.gelu")
+        assert names.index("aud.fe.6.gelu") + 1 == names.index("aud.fe.ln")
+        assert names.index("aud.fe.ln") + 1 == names.index("aud.fe.proj")
         assert names.index("aud.pos") + 1 == names.index("aud.pos.gelu")
         assert names.index("aud.0.fc1") + 1 == names.index("aud.0.gelu")
         assert names.index("aud.0.gelu") + 1 == names.index("aud.0.fc2")

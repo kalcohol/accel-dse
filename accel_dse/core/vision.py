@@ -90,7 +90,11 @@ product it multiplies, the two projector erf-GELUs, rope2d cos/sin, the per-forw
 builds ``inv_freq`` angles, and the cos/sin ``repeat`` that widens those angles to ``head_dim``. The FSMN
 encoder bills its ReLU6 calls, the int32 mask multiply, and the projector GELU. OmniASR bills
 ``ACT2FN["gelu"]`` (``nn.functional.gelu``, the erf form) on every feature-extractor conv output, on the
-positional conv after the even-kernel pad slice, and on each FFN intermediate. Eval dropout is not an op.
+positional conv after the even-kernel pad slice, and on each FFN intermediate. It also bills the
+``nn.LayerNorm`` calls the same forward runs: one on every conv output before that GELU, one on the
+conv channels before the projection, one before attention and one before the FFN in each block, and
+one after the blocks. Those norms reduce in fp32. The positional conv has no LayerNorm. Eval dropout
+is not an op.
 d1 FastConformer (``audio.py`` ``ConformerLayer``) bills each block's LayerNorms, ``F.silu``,
 ``F.glu`` on the kept half, BatchNorm and ``x + ff * 0.5``. The adapter and the residual bill
 ``F.gelu`` (the default erf form). Those activations stay fp32. Subsampling bills three
@@ -1275,9 +1279,17 @@ def _w2v_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> li
     0.410: ``hidden_act`` is ``gelu``. ``ACT2FN["gelu"]`` is ``nn.functional.gelu`` (erf, not tanh).
     ``OmniASRLayerNormConvLayer`` runs it on every conv output, ``OmniASRPositionalConvEmbedding`` runs it
     after the even-kernel ``[:, :, :-1]`` slice, and ``OmniASRFeedForward`` runs it on the intermediate width.
-    The class does not cast, so the vector dtype is the released weight format. Requested GEMM activation
+    The class does not cast, so the GELU dtype is the released weight format. Requested GEMM activation
     format does not change it. Eval ``Dropout`` and ``layerdrop`` are identity. The projector and the CTC
-    head have no GELU. LayerNorm stays in the shared GEMM tail, which is not reduced.
+    head have no GELU.
+
+    0.417: the same classes run ``nn.LayerNorm`` (affine weight and bias, already in the parameter total).
+    Each conv layer normalizes the conv channels after the transpose and before GELU.
+    ``OmniASREncoderSubsamplingConv1D`` normalizes those channels again, then the projection.
+    Each block normalizes ``hidden_size`` before attention and again before the FFN.
+    ``OmniASRAudioModel`` normalizes ``hidden_size`` after the blocks. PyTorch reduces in fp32,
+    one rsqrt per row. The positional conv, the plain residual adds, and the padding ``masked_fill``
+    are not this op. The shared GEMM tail is not reduced.
     """
     d, dh = a.dims[0], a.dims[0] // a.heads
     T = a.tokens(seconds)
@@ -1302,27 +1314,34 @@ def _w2v_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> li
         cout = a.n_mels
         rows = Lout * clips
         ops.append(gemm(f"aud.fe.{i}", rows, k * cin, cout, 0, wp=cout * cin * k + cout))
-        # LayerNorm then ACT2FN["gelu"] on the conv channels. The norm stays in the GEMM tail.
+        # Transpose, LayerNorm over conv channels, transpose back, then ACT2FN["gelu"].
+        ops.append(_ln_vec(f"aud.fe.{i}.ln", 0, rows, cout))
         ops.append(_gelu_erf_vec(f"aud.fe.{i}.gelu", 0, rows * cout, a.w_fmt))
         din = cout
     if T:
+        # Post-conv LayerNorm is still the conv width. The projection is the next GEMM.
+        ops.append(_ln_vec("aud.fe.ln", 0, R, a.n_mels))
         ops.append(gemm("aud.fe.proj", R, a.n_mels, d, 0))
         # grouped positional conv: weight [d, d/g, pk] → treat as GEMM R × (pk·d/g) → d.
         # padding kernel//2 on an even kernel emits T+1, then [:, :, :-1] drops one frame.
-        # GELU reads the sliced length, which is the encoder frame count.
+        # GELU reads the sliced length, which is the encoder frame count. No LayerNorm here.
         ops.append(gemm("aud.pos", R, a.kernel * (d // a.ch), d, 0, wp=d * (d // a.ch) * a.kernel + d))
         ops.append(_gelu_erf_vec("aud.pos.gelu", 0, R * d, a.w_fmt))
         ff = int(a.mlp * d)
         for li in range(a.depths[0]):
-            ops += [gemm(f"aud.{li}.qkv", R, d, 3 * d, li), gemm(f"aud.{li}.o", R, d, d, li),
-                    gemm(f"aud.{li}.fc1", R, d, ff, li)]
-            ops.append(_gelu_erf_vec(f"aud.{li}.gelu", li, R * ff, a.w_fmt))
-            ops.append(gemm(f"aud.{li}.fc2", R, ff, d, li))
+            ops.append(_ln_vec(f"aud.{li}.attn_ln", li, R, d))
+            ops.append(gemm(f"aud.{li}.qkv", R, d, 3 * d, li))
             ops += [Op(f"aud.{li}.qk", "attn", li, m=T, k=dh, n=T, count=clips * a.heads, causal=1.0,
                        act_bytes=clips * a.heads * T * dh * ab, stream=True, orient=True),
                     Op(f"aud.{li}.pv", "attn", li, m=T, k=T, n=dh, count=clips * a.heads, causal=1.0,
                        act_bytes=clips * a.heads * T * dh * ab, orient=True),
                     Op(f"aud.{li}.softmax", "vector", li, vec=clips * a.heads * T * T * 5.0)]
+            ops.append(gemm(f"aud.{li}.o", R, d, d, li))
+            ops.append(_ln_vec(f"aud.{li}.mlp_ln", li, R, d))
+            ops.append(gemm(f"aud.{li}.fc1", R, d, ff, li))
+            ops.append(_gelu_erf_vec(f"aud.{li}.gelu", li, R * ff, a.w_fmt))
+            ops.append(gemm(f"aud.{li}.fc2", R, ff, d, li))
+        ops.append(_ln_vec("aud.ln", a.depths[0], R, d))
         for j, (k, n) in enumerate(a.lin or ()):
             # CTC: one Linear on every frame (OmniASRForCTC.ctc_head). LLM: multi_modal_projector.
             name = "aud.ctc" if a.ctc else f"aud.proj.linear{j}"

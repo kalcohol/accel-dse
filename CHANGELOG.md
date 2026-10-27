@@ -6,6 +6,32 @@
 
 
 
+## [0.417.0] — 2026-10-27
+
+### OmniASR 补上已执行的 LayerNorm
+
+- **修正。** 目录里 kind `w2v` 的塔这次拆开已经在跑的 LayerNorm。覆盖 8 个 CTC / LLM：`omniasr-ctc-300m-v2`、`ctc-1b-v2`、`ctc-3b-v2`、`ctc-7b-v2`，以及 `omniasr-llm-300m-v2`、`llm-1b-v2`、`llm-3b-v2`、`llm-7b-v2`。没有新开目录行。2026-10-27 再读 transformers PR #43265（仍是 open，head `edeabb50916b`，更新于 2026-10-22）里 `ebezzam/transformers` 分支 `omnilingual` 的 `modeling_omniasr.py` 和 `modeling_omniasr_ctc.py`。`OmniASRLayerNormConvLayer.forward` 在 Conv1d 之后把最后两维对调，做 `nn.LayerNorm(out_conv_dim, elementwise_affine=True)`，再对调回去，然后才是 `ACT2FN["gelu"]`。7 层都是这一类，不是 GroupNorm。`OmniASREncoderSubsamplingConv1D.forward` 在全部卷积之后再对调，做 `nn.LayerNorm(conv_dim[-1])`，然后才是 `projection`。`OmniASREncoderLayer.forward` 先做 `layer_norm`，再做注意力，残差加之后做 `final_layer_norm`，再做 FFN。`OmniASRAudioModel.forward` 在全部块之后做 `layer_norm`。`OmniASRForCTC` 用同一份音频塔，然后 `ctc_head` 是带 bias 的 Linear，头上没有 LayerNorm，也没有 GELU。LLM 的 `multi_modal_projector` 同样是 Linear，没有 LayerNorm，也没有 GELU。这些 `nn.LayerNorm` 都带仿射。仿射的 weight 和 bias 已经在参数里。PyTorch `layer_norm` 在 fp32 归约，`vec = 行 * 宽 * 4`，每行一次 `rsqrt`，`a_fmt` 是 fp32，`w_params` 是 0。卷积那一层的 `eps` 用默认的 `1e-5`，其余几处传入 `layer_norm_eps`，发布值也是 `1e-5`，不另计。不跟请求里的 GEMM 激活格式走。发布权重是 fp32，所以 GEMM 的 `w_fmt` 仍是 fp32，`w_bits` 仍是 32，尾项 `VEC_PER_OUT` 不减。8 个的 `param_check().rel_err` 仍是 0。softmax 的 `sfu` 仍是 0。位置卷积没有 LayerNorm。
+  - **特征卷积。** 1 秒、1 个 clip：输出长度是 3199、1599、799、399、199、99、49。通道都是 512，不是 hidden。`aud.fe.0.ln` 的 `vec` 是 `3199 * 512 * 4`，`sfu` 是 3199。`aud.fe.6.ln` 的 `sfu` 是 49。顺序是 conv、`aud.fe.{层}.ln`、`aud.fe.{层}.gelu`。GELU 的 `vec` 仍是长度乘 512 乘 5。
+  - **投影前。** 最后一次 GELU 之后、`aud.fe.proj` 之前补 `aud.fe.ln`。行数是编码器帧，宽度仍是 512，不是 hidden。1 秒的 `vec` 是 `49 * 512 * 4`，`sfu` 是 49。`aud.fe.proj` 的 K 仍是 512，N 是 hidden。
+  - **每一层和编码器末尾。** 顺序跟发布的前向：`attn_ln`、qkv、qk、pv、softmax、o、`mlp_ln`、fc1、gelu、fc2。块之后是 `aud.ln`，然后才是 CTC 的 `aud.ctc` 或 LLM 的 `aud.proj.linear0`。注意力前和 FFN 前的宽度都是 hidden，不是 512，也不是 intermediate。`aud.ln` 的 `layer` 是层数。300M、1 秒：`aud.0.attn_ln` 和 `aud.0.mlp_ln` 的 `vec` 是 `49 * 1024 * 4`，`sfu` 是 49。`aud.ln` 相同，`layer` 是 24。1B 的宽度是 1280，层数 48。3B 和 7B 的宽度是 2048，层数分别是 60 和 128。`aud.0.fc1` 的 `vec` 仍是 `49 * intermediate * 3`，`w_fmt` 仍是 fp32。softmax 的 `vec` 仍是 `16 * 49 * 49 * 5`。LayerNorm 一共是 `9 + 2 * 层数` 个：7 个卷积、1 个投影前、每层 2 个、末尾 1 个。
+  - **长度和 dtype。** 两个 clip 时这些 `vec` 和 `sfu` 加倍。qk 的 M 仍是 49，`count` 加倍。10 秒编码器帧是 499。`aud.fe.6.ln` 的 `sfu` 是 499。`aud.fe.ln` 的 `vec` 是 `499 * 512 * 4`。层 LayerNorm 的 `vec` 是 `499 * hidden * 4`。0.5 秒的卷积长度是 1599、799、399、199、99、49、24，编码器帧是 24。`aud.fe.0.ln` 的 `sfu` 是 1599。`aud.0.mlp_ln` 的 `vec` 是 `24 * hidden * 4`。0 秒仍只跑卷积栈：7 个卷积 LayerNorm 的 `vec` 和 `sfu` 是 0。投影前、块内和末尾的 LayerNorm 跟投影一起，帧数是 0 时不出现。请求 fp8 时卷积和 FFN GEMM 的 `a_fmt` 是 fp8，`vec` 不变，`w_fmt` 仍是 fp32，`w_bits` 仍是 32。LayerNorm 仍是 fp32。GELU 仍是 fp32。
+- **不单列。** 位置卷积仍是偶数核 pad 之后丢掉一帧再 GELU，没有 LayerNorm。对调和切片是 view。注意力后面的残差加、FFN 后面的残差加、位置卷积加回输入，都不是 0.5，不单列。`padding_mask` 不是空的时候，`masked_fill` 把 pad 位置写成 0，这是 where，不是这次的 LayerNorm，也不按 mask 乘来计。eval 的 Dropout 和 LayerDrop 仍是恒等。`activation_dropout`、`hidden_dropout`、`layerdrop` 都是 0.1，`attention_dropout` 是 0，不单列。通用 GEMM 尾项不减。
+- **未纳入：**
+  - **仍折在 GEMM 尾项里的激活。** LFM2.5-VL 与 d1 视觉的 `gelu_pytorch_tanh`、ERNIE 的 quick_gelu、WeVisOne / Qwen3-VL 视觉 GELU，这次不单列。2026-10-27 再读：`Qwen/Qwen3-VL-2B-Instruct`（sha `89644892e4d8`，`lastModified` 2025-10-23）视觉 `hidden_act` 仍是 `gelu_pytorch_tanh`，文本是 `silu`。`tencent/WeVisOne-VL-2B`（sha `f9fda87000e3`，`lastModified` 2026-10-27）视觉仍是 `gelu_pytorch_tanh`，文本是 `silu`。`baidu/ERNIE-4.5-VL-28B-A3B`（sha `e3815e65c607`，`lastModified` 2026-04-20）语言侧 `hidden_act` 是 `silu`，视觉是 `quick_gelu`。不新写 tanh-GELU，也不新写 quick_gelu。解码器里把 GELU 记成 SiLU 的近似也不改。
+  - **LongCat-Flash-Lite-Sparse。** 2026-10-27 再读：sha `35de83a18b58`，`lastModified` 2026-08-04。37 个文件，safetensors 26 个。Python 只有 `tokenization_llama.py`。`architectures` 是 `LongcatCausalLM`，`attention_method` 仍是 LSA，`mtp_num_layers` 是 3。vLLM #48302 仍是 open（更新于 2026-09-09），SGLang #32918 仍是 open（更新于 2026-08-17）。没有已发布的 LSA 前向。不套 MLA，也不套 DSA。
+  - **ERNIE-4.5-21B-A3B-PT、21B-A3B-Base-PT、300B-A47B-PT。** `config.json` 仍是 200。`ERNIE-4.5-21B-A3B-PT` 的 sha 是 `87db95487941`，`lastModified` 2025-11-26。`21B-A3B-Base-PT` 的 sha 是 `c6804383159c`。`300B-A47B-PT` 的 sha 是 `47bbaf1c9e35`。后两份的 `lastModified` 也是 2025-11-26。类仍是 `Ernie4_5_MoeForCausalLM`，`hidden_act` 是 `silu`。这三份已经在目录里。
+  - **ERNIE-4.5-0.3B-Thinking、300B-A47B-Thinking、VL-424B-A47B-Thinking。** API 和 `config.json` 仍是 401。
+  - **Pixtral-12B-2409 / Pixtral-Large-Instruct-2411。** API 是 200，`config.json` 仍是 404。`Pixtral-12B-2409` 的 sha 是 `a5ca2b7a9421`，`lastModified` 2026-06-02。`Pixtral-Large-Instruct-2411` 的 sha 是 `c1e51f6f1197`，`lastModified` 2026-06-02。
+  - **LTX-2.3。** sha `c1521179de48`，`lastModified` 2026-10-22，根 `config.json` 仍是 404。不新写扩散栈。
+  - **LFM2.5-d1。** API 和 `config.json` 仍是 401。
+  - **Hy-Nomas。** sha `c67f2c52b3fb`，`lastModified` 2026-10-25，根 `config.json` 仍是空对象。`tencent/Hy-Nomas-Diffusers`（sha `a1ae04d11ae4`，`lastModified` 2026-10-24）的根 `config.json` 仍是 404。
+  - **pocket-tts。** sha `db04f0e65347`，`lastModified` 2026-10-21，`config.json` 仍是 401。
+  - **OrcaCyber-Nano-1.0。** sha `b6575f22d375`，`lastModified` 2026-10-27，`config.json` 仍是 401。
+  - **nvidia Cosmos3。** `nvidia/Cosmos3` 与 `nvidia/Cosmos-3` 仍是 401。`nvidia/Cosmos3-Nano` 的 sha 是 `e59a53c25979`，`lastModified` 2026-09-16。类仍是 `Cosmos3ForConditionalGeneration`，`model_type` 是 `cosmos3_omni`。文本是 `qwen3_vl_text`（hidden 4096、36 层、`silu`），视觉 `hidden_act` 仍是 `gelu_pytorch_tanh`。`model._target` 是 `omni_mot_model`，并带 `diffusion_expert_config`。不新写扩散栈。
+  - **Gemma-4 assistant / QAT。** `google/gemma-4-assistant` 与 `google/gemma-4-E4B-it-qat` 仍是 401。`google/gemma-4-12B-it-assistant` 的 sha 是 `3b0b0a4a3b31`，`lastModified` 2026-10-26。类仍是 `Gemma4UnifiedAssistantForCausalLM`，`model_type` 是 `gemma4_unified_assistant`。文本是 4 层、hidden 1024 的 `gemma4_unified_text`，`hidden_activation` 仍是 `gelu_pytorch_tanh`，`num_centroids` 是 2048。这不是已入库的 Gemma-4 栈。
+  - **2026-10-20 及之后按 `lastModified` 的扫描。** 0.416 当天已经扫过（120 个组织，252 条，接口错误 0，2026-10-27）。这次没有重跑。没有新开目录行。这次改的是已经入库的 OmniASR 塔。GGUF / MLX / ONNX / diffusers / tensorrt / kernels 不单列。
+  - **softcap / scalar-gate / NPU。** 不新写周期，也不新写算子。LongCat 的 `emb_mult=1`、`dropout=0` 和 `pos_ids` gather 仍不单列。Index-Echo 2B connector 的 `exp(log_alpha)` 和 `beta` 也仍不单列。
+
 ## [0.416.0] — 2026-10-27
 
 ### AuT 编码器补上已执行的 erf-GELU 和 LayerNorm；Index-Echo 2B 的 connector 补上 w1 的 F.gelu
