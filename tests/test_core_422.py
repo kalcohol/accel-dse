@@ -214,4 +214,7 @@ def test_other_towers_do_not_gain_glm5_names():
         assert m.vision is not None and m.vision.family != "glm", mid
         names = [op.name for op in vision_ops(m.vision, image_grid(m.vision, 1024, 1024), 1)]
         for needle in ("vis.post_rms", "vis.proj_silu", "vis.proj_mul", "vis.0.norm1"):
+            # 0.426 bills DeepSeek Block.norm1. The GLM merger names stay absent.
+            if mid == "deepseek-v4.1-flash" and needle == "vis.0.norm1":
+                continue
             assert needle not in names, (mid, needle)
