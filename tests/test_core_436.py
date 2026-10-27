@@ -64,7 +64,7 @@ def _patch(key: str, edit):
 
 
 def test_version_is_436():
-    assert __version__ == "0.439.0"
+    assert __version__ == "0.440.0"
 
 
 def test_llama_bills_rmsnorm_and_silu_and_keeps_gemm_tail():

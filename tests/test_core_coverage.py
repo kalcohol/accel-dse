@@ -64,7 +64,7 @@ _FULL_0651 = {
 "minimax-h3": "60719608255a",   # 0.260: token-refiner attention core (was b786010ff458)
 "esm2-3b": "34f7544287cd",
 "esm2-650m": "1956cfc2e36f",
-"esmfold": "7ad8b1001045",
+"esmfold": "3bbede544308",   # 0.440: linear_in once per recycle, lddt rows x structure blocks (was 7ad8b1001045)
 }
 
 CLOSED = ("gpt-oss-120b", "gpt-oss-20b", "deepseek-v3.2", "glm-5", "glm-5.2", "glm-5.3", "kimi-k3", "qwen3.8-2.4t",

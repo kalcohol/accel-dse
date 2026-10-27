@@ -2212,6 +2212,93 @@ def _tri_unfused(tag: str, li: int, rows: int, n: int, d: int, vd: int, heads: i
             Op(tag + ".softmax", "vector", li, vec=cnt * n * n * 6, sfu=cnt * n * n, launch=nch)]
 
 
+def _esm_ln(name: str, rows: int, width: int, li: int, rep: float) -> Op:
+    """nn.LayerNorm / OpenFold LayerNorm (F.layer_norm). fp32 reduction, one rsqrt per row.
+
+    Affine weights are already in the layer's misc parameters. eps is not billed.
+    """
+    if rows <= 0 or width <= 0:
+        raise ValueError(f"esmfold {name} has no rows")
+    return Op(name, "vector", li, vec=float(rows * width * 4), sfu=float(rows), a_fmt="fp32", replicated=rep)
+
+
+def _esm_relu(name: str, n: int, li: int, rep: float, af: str) -> Op:
+    """nn.ReLU is max(x, 0). One clip, no transcendental, no upcast."""
+    if n <= 0:
+        raise ValueError(f"esmfold {name} has no elements")
+    return Op(name, "vector", li, vec=float(n), a_fmt=af, replicated=rep)
+
+
+def _esmfold_state_copies(model: ModelSpec) -> int:
+    """lddt reads structure['states'], one row-block per StructureModule iteration."""
+    found = [L.iters for L in model.layers if L.vec_kind == "esm_sm"]
+    if len(found) != 1 or found[0] < 1:
+        raise ValueError("esmfold lddt rows are not the structure-module block count")
+    return found[0]
+
+
+# TriangularSelfAttentionBlock linears (facebookresearch/esm tri_self_attn_block.py and the
+# transformers port). Norm companions are billed separately; sigmoid gates are not.
+ESMFOLD_TRUNK_LINEARS = frozenset({
+    "mlp_pair.mlp.1", "mlp_pair.mlp.3", "mlp_seq.mlp.1", "mlp_seq.mlp.3",
+    "pair_to_sequence.linear", "seq_attention.g_proj", "seq_attention.o_proj", "seq_attention.proj",
+    "sequence_to_pair.o_proj", "sequence_to_pair.proj",
+    "tri_att_end.linear", "tri_att_end.mha.linear_g", "tri_att_end.mha.linear_k",
+    "tri_att_end.mha.linear_o", "tri_att_end.mha.linear_q", "tri_att_end.mha.linear_v",
+    "tri_att_start.linear", "tri_att_start.mha.linear_g", "tri_att_start.mha.linear_k",
+    "tri_att_start.mha.linear_o", "tri_att_start.mha.linear_q", "tri_att_start.mha.linear_v",
+    "tri_mul_in.linear_a_g", "tri_mul_in.linear_a_p", "tri_mul_in.linear_b_g", "tri_mul_in.linear_b_p",
+    "tri_mul_in.linear_g", "tri_mul_in.linear_z",
+    "tri_mul_out.linear_a_g", "tri_mul_out.linear_a_p", "tri_mul_out.linear_b_g", "tri_mul_out.linear_b_p",
+    "tri_mul_out.linear_g", "tri_mul_out.linear_z",
+})
+_ESM_TRUNK_LN_BEFORE = {
+    "pair_to_sequence.linear": "pair_to_seq_ln",
+    "seq_attention.proj": "seq_ln",
+    "mlp_seq.mlp.1": "mlp_seq_ln",
+    "sequence_to_pair.proj": "seq_to_pair_ln",
+    "tri_mul_out.linear_a_g": "tri_mul_out_ln_in",
+    "tri_mul_out.linear_z": "tri_mul_out_ln_out",
+    "tri_mul_in.linear_a_g": "tri_mul_in_ln_in",
+    "tri_mul_in.linear_z": "tri_mul_in_ln_out",
+    "tri_att_start.linear": "tri_att_start_ln",
+    "tri_att_end.linear": "tri_att_end_ln",
+    "mlp_pair.mlp.1": "mlp_pair_ln",
+}
+_ESM_TRUNK_RELU_AFTER = {
+    "mlp_seq.mlp.1": "mlp_seq_relu",
+    "mlp_pair.mlp.1": "mlp_pair_relu",
+}
+# StructureModule loop body (openfold structure_module.py _forward_monomer). linear_in is not here:
+# it runs once, before the block loop.
+ESMFOLD_SM_LINEARS = frozenset({
+    "angle_resnet.layers.0.linear_1", "angle_resnet.layers.0.linear_2",
+    "angle_resnet.layers.1.linear_1", "angle_resnet.layers.1.linear_2",
+    "angle_resnet.linear_in", "angle_resnet.linear_initial", "angle_resnet.linear_out",
+    "bb_update.linear",
+    "ipa.linear_b", "ipa.linear_kv", "ipa.linear_kv_points", "ipa.linear_out",
+    "ipa.linear_q", "ipa.linear_q_points",
+    "transition.layers.0.linear_1", "transition.layers.0.linear_2", "transition.layers.0.linear_3",
+})
+_ESM_SM_RELU_BEFORE = {
+    "angle_resnet.linear_initial": "angle_init_relu",
+    "angle_resnet.linear_in": "angle_in_relu",
+    "angle_resnet.layers.0.linear_1": "angle_b0_relu_1",
+    "angle_resnet.layers.0.linear_2": "angle_b0_relu_2",
+    "angle_resnet.layers.1.linear_1": "angle_b1_relu_1",
+    "angle_resnet.layers.1.linear_2": "angle_b1_relu_2",
+    "angle_resnet.linear_out": "angle_out_relu",
+}
+_ESM_SM_RELU_AFTER = {
+    "transition.layers.0.linear_1": "trans_relu_1",
+    "transition.layers.0.linear_2": "trans_relu_2",
+}
+_ESM_SM_LN_AFTER = {
+    "ipa.linear_out": "ipa_ln",
+    "transition.layers.0.linear_3": "trans_ln",
+}
+
+
 def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -> list[Op]:
     """One execution of a structure-model block on one rank.  Every weight GEMM runs on the rows of its grid; each
     linear also carries its layer-norm / gating / bias work (「假设」 4 element-ops per input element + 4 per output
@@ -2235,25 +2322,83 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         rep_tok = dap * s_loc / s
         s = s_loc
     ops: list[Op] = []
-    if L.vec_kind == "esm_proj":
+    kind = L.vec_kind
+    if kind == "esm_proj":
         # modeling_esmfold.py EsmForProteinFolding.esm_s_mlp: LayerNorm(language width),
         # Linear to the trunk width, nn.ReLU, Linear. Rows are residues (bos/eos already stripped).
         if [l.name for l in L.pair_linears] != ["mlp.1", "mlp.3"]:
             raise ValueError("esmfold projection GEMMs are not mlp.1 then mlp.3")
         if L.vec_width <= 0 or L.pair_linears[0].k != L.vec_width:
             raise ValueError("esmfold projection LayerNorm width is not the language width")
+    elif kind == "esm_trunk":
+        if {l.name for l in L.pair_linears} != ESMFOLD_TRUNK_LINEARS:
+            raise ValueError("esmfold trunk block linears are not the published set")
+    elif kind == "esm_sm":
+        if {l.name for l in L.pair_linears} != ESMFOLD_SM_LINEARS:
+            raise ValueError("esmfold structure-module loop linears are not the published set")
+    elif kind == "esm_sm_pre":
+        if [l.name for l in L.pair_linears] != ["linear_in"]:
+            raise ValueError("esmfold structure-module preamble is not linear_in")
+        if L.vec_width <= 0:
+            raise ValueError("esmfold structure pair LayerNorm width is missing")
+    elif kind == "esm_recycle":
+        if [l.name for l in L.pair_linears] != ["trunk2sm_s", "trunk2sm_z"]:
+            raise ValueError("esmfold recycle projections are not trunk2sm_s then trunk2sm_z")
+        by_name = {l.name: l for l in L.pair_linears}
+        for nm, oname in (("trunk2sm_s", "recycle_s_ln"), ("trunk2sm_z", "recycle_z_ln")):
+            lin = by_name[nm]
+            rows = _pair_rows(lin.rows, pd, b, s, ps, dap)
+            if rows <= 0:
+                continue
+            rrep = 1 if lin.rows in _DAP_SPLIT else rep_tok
+            ops.append(_esm_ln(oname, rows, lin.k, li, rrep))
+    elif kind == "esm_lddt":
+        if [l.name for l in L.pair_linears] != ["1", "2", "3"]:
+            raise ValueError("esmfold lddt head is not three linears")
+    state_copies = _esmfold_state_copies(model) if kind == "esm_lddt" else 1
     for l in L.pair_linears:
         m = _pair_rows(l.rows, pd, b, s, ps, dap)
         if m <= 0:
             continue
+        if kind == "esm_lddt":
+            # EsmFold.lddt_head consumes structure["states"], stacked over num_blocks.
+            m *= state_copies
         rep = 1 if l.rows in _DAP_SPLIT else rep_tok
-        if L.vec_kind == "esm_proj" and l.name == "mlp.1":
-            ops.append(Op("esm_s_ln", "vector", li, vec=m * l.k * 4, sfu=float(m), a_fmt="fp32", replicated=rep))
+        if kind == "esm_proj" and l.name == "mlp.1":
+            ops.append(_esm_ln("esm_s_ln", m, l.k, li, rep))
+        elif kind == "esm_trunk":
+            ln_name = _ESM_TRUNK_LN_BEFORE.get(l.name)
+            if ln_name:
+                ops.append(_esm_ln(ln_name, m, l.k, li, rep))
+        elif kind == "esm_sm":
+            relu_name = _ESM_SM_RELU_BEFORE.get(l.name)
+            if relu_name:
+                ops.append(_esm_relu(relu_name, m * l.k, li, rep, model.act_fmt))
+        elif kind == "esm_sm_pre" and l.name == "linear_in":
+            # StructureModule._forward_monomer: layer_norm_s, layer_norm_z, then linear_in, once.
+            ops.append(_esm_ln("sm_s_ln", m, l.k, li, rep))
+            pz = _pair_rows("pair", pd, b, s, ps, dap)
+            if pz > 0:
+                ops.append(_esm_ln("sm_z_ln", pz, L.vec_width, li, 1))
+        elif kind == "esm_lddt" and l.name == "1":
+            # nn.Sequential: LayerNorm, Linear, Linear, Linear. No ReLU.
+            ops.append(_esm_ln("lddt_ln", m, l.k, li, rep))
         o = gemm(model, f"{L.stack}.{l.name}", li, m, l.k, l.n, l.role or "pair", stream=True, replicated=rep)
         ops.append(o)
-        if L.vec_kind == "esm_proj" and l.name == "mlp.1":
+        if kind == "esm_proj" and l.name == "mlp.1":
             # nn.ReLU is max(x, 0). One clip, no transcendental, no upcast.
-            ops.append(Op("esm_s_relu", "vector", li, vec=float(m * l.n), a_fmt=model.act_fmt, replicated=rep))
+            ops.append(_esm_relu("esm_s_relu", m * l.n, li, rep, model.act_fmt))
+        elif kind == "esm_trunk":
+            relu_name = _ESM_TRUNK_RELU_AFTER.get(l.name)
+            if relu_name:
+                ops.append(_esm_relu(relu_name, m * l.n, li, rep, model.act_fmt))
+        elif kind == "esm_sm":
+            relu_name = _ESM_SM_RELU_AFTER.get(l.name)
+            if relu_name:
+                ops.append(_esm_relu(relu_name, m * l.n, li, rep, model.act_fmt))
+            ln_name = _ESM_SM_LN_AFTER.get(l.name)
+            if ln_name:
+                ops.append(_esm_ln(ln_name, m, l.n, li, rep))
         ops.append(Op(f"{L.stack}.{l.name}.ew", "vector", li, vec=m * (l.k + l.n) * 4, replicated=rep))
     has_col = any(c.kind == "col_att" for c in L.pair_cores)
     for i, c in enumerate(L.pair_cores):

@@ -264,6 +264,18 @@ def _need_shape(sh: dict, name: str, shape: list) -> None:
         raise ValueError(f"esmfold {name} shape is not {shape}")
 
 
+def _lin_of(layer: Layer, name: str) -> Linear:
+    found = [ln for ln in layer.pair_linears if ln.name == name]
+    if len(found) != 1:
+        raise ValueError(f"esmfold {name} is missing")
+    return found[0]
+
+
+def _expect_lin(ln: Linear, k: int, n: int, rows: str) -> None:
+    if (ln.k, ln.n, ln.rows) != (k, n, rows):
+        raise ValueError(f"esmfold {ln.name} shape is not [{k}, {n}] on {rows}")
+
+
 def _require_esmfold_lm(c: dict, sh: dict) -> tuple[int, int, int, int, int]:
     """Published ESMFold language tower (transformers modeling_esm.py + modeling_esmfold.py).
 
@@ -316,10 +328,91 @@ def _require_esmfold_lm(c: dict, sh: dict) -> tuple[int, int, int, int, int]:
     return d, H, f, L, cs
 
 
+def _require_esmfold_fold(c: dict, sh: dict, stacks: dict, cs: int) -> tuple[int, ...]:
+    """Published trunk, structure module, recycle norms, and lddt head.
+
+    Returns pairwise width, structure sequence width, structure pair width, resnet width,
+    structure-module iterations, lddt hidden, sequence heads, pair heads, and the IPA
+    output-projection K (heads * (pair + ipa_dim + v_points * 4)).
+    """
+    ec = c.get("esmfold_config") or {}
+    trunk = ec.get("trunk") or {}
+    sm = trunk.get("structure_module") or {}
+    cz = int(trunk.get("pairwise_state_dim") or 0)
+    shw = int(trunk.get("sequence_head_width") or 0)
+    phw = int(trunk.get("pairwise_head_width") or 0)
+    nblocks = int(trunk.get("num_blocks") or 0)
+    if trunk.get("dropout") not in (0, 0.0) or trunk.get("layer_drop") not in (0, 0.0):
+        raise ValueError("esmfold trunk dropout is not 0")
+    if sm.get("dropout_rate") != 0.1:
+        raise ValueError("esmfold structure dropout_rate is not 0.1")
+    if int(sm.get("num_transition_layers") or 0) != 1:
+        raise ValueError("esmfold num_transition_layers is not 1")
+    if int(sm.get("num_resnet_blocks") or 0) != 2:
+        raise ValueError("esmfold num_resnet_blocks is not 2")
+    if int(sm.get("num_angles") or 0) != 7:
+        raise ValueError("esmfold num_angles is not 7")
+    sm_s = int(sm.get("sequence_dim") or 0)
+    sm_z = int(sm.get("pairwise_dim") or 0)
+    resnet = int(sm.get("resnet_dim") or 0)
+    ipa_dim = int(sm.get("ipa_dim") or 0)
+    n_qk = int(sm.get("num_qk_points") or 0)
+    n_v = int(sm.get("num_v_points") or 0)
+    n_heads = int(sm.get("num_heads_ipa") or 0)
+    sm_blocks = int(sm.get("num_blocks") or 0)
+    hid = int(ec.get("lddt_head_hid_dim") or 0)
+    if cs <= 0 or cz <= 0 or shw <= 0 or phw <= 0 or cs % shw or cz % phw:
+        raise ValueError("esmfold trunk width does not divide")
+    if nblocks < 1 or nblocks != stacks.get("trunk.blocks"):
+        raise ValueError("esmfold trunk block count does not match")
+    if stacks.get("trunk.structure_module.angle_resnet.layers") != 2:
+        raise ValueError("esmfold angle resnet stack is not 2")
+    if stacks.get("trunk.structure_module.transition.layers") != 1:
+        raise ValueError("esmfold transition stack is not 1")
+    if sm_s <= 0 or sm_z <= 0 or resnet <= 0 or sm_blocks < 1 or hid <= 0:
+        raise ValueError("esmfold structure width is missing")
+    if ipa_dim <= 0 or n_qk <= 0 or n_v <= 0 or n_heads <= 0:
+        raise ValueError("esmfold IPA width is missing")
+    seq_heads = cs // shw
+    pair_heads = cz // phw
+    for i in (0, nblocks - 1):
+        p = f"trunk.blocks.{i}."
+        _need_shape(sh, p + "layernorm_1.weight", [cs])
+        _need_shape(sh, p + "mlp_seq.mlp.0.weight", [cs])
+        _need_shape(sh, p + "mlp_seq.mlp.1.weight", [4 * cs, cs])
+        _need_shape(sh, p + "mlp_pair.mlp.0.weight", [cz])
+        _need_shape(sh, p + "mlp_pair.mlp.1.weight", [4 * cz, cz])
+        _need_shape(sh, p + "pair_to_sequence.layernorm.weight", [cz])
+        _need_shape(sh, p + "sequence_to_pair.layernorm.weight", [cs])
+        for side in ("in", "out"):
+            _need_shape(sh, p + f"tri_mul_in.layer_norm_{side}.weight", [cz])
+            _need_shape(sh, p + f"tri_mul_out.layer_norm_{side}.weight", [cz])
+        _need_shape(sh, p + "tri_att_start.layer_norm.weight", [cz])
+        _need_shape(sh, p + "tri_att_end.layer_norm.weight", [cz])
+    _need_shape(sh, "trunk.recycle_s_norm.weight", [cs])
+    _need_shape(sh, "trunk.recycle_z_norm.weight", [cz])
+    _need_shape(sh, "trunk.structure_module.layer_norm_s.weight", [sm_s])
+    _need_shape(sh, "trunk.structure_module.layer_norm_z.weight", [sm_z])
+    _need_shape(sh, "trunk.structure_module.layer_norm_ipa.weight", [sm_s])
+    _need_shape(sh, "trunk.structure_module.transition.layer_norm.weight", [sm_s])
+    _need_shape(sh, "trunk.structure_module.linear_in.weight", [sm_s, sm_s])
+    _need_shape(sh, "lddt_head.0.weight", [sm_s])
+    _need_shape(sh, "lddt_head.1.weight", [hid, sm_s])
+    _need_shape(sh, "lddt_head.2.weight", [hid, hid])
+    _need_shape(sh, "lddt_head.3.weight", [37 * 50, hid])
+    if any(n.startswith("lddt_head.4") for n in sh):
+        raise ValueError("esmfold lddt head has a fourth linear")
+    ipa_k = n_heads * (sm_z + ipa_dim + n_v * 4)
+    return cz, sm_s, sm_z, resnet, sm_blocks, hid, seq_heads, pair_heads, ipa_k
+
+
 def build_esmfold(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
     from .domain import _gelu_ffn, _mha
+    from .ir import ESMFOLD_SM_LINEARS, ESMFOLD_TRUNK_LINEARS
     c, sh = rel["config"], rel["shapes"]
     d, H, f, L, cs = _require_esmfold_lm(c, sh)
+    cz, sm_s, sm_z, resnet, sm_blocks, hid, seq_heads, pair_heads, ipa_k = _require_esmfold_fold(
+        c, sh, rel["stacks"], cs)
     t = c["esmfold_config"]["trunk"]
     alin, core = _mha(d, H, rope=d // H)
     # Same attention as the ESM-2 encoder: RoPE, query scaled by head_dim**-0.5, no QK-norm.
@@ -348,11 +441,69 @@ def build_esmfold(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
             tagged.append(replace(layer, vec_kind="esm_proj", vec_width=d))
         elif any(n.startswith("mlp.") for n in names) and layer.stack == "esm_proj":
             raise ValueError("esmfold esm_s_mlp GEMMs are not the published pair")
+        elif layer.stack == "trunk":
+            if {ln.name for ln in layer.pair_linears} != ESMFOLD_TRUNK_LINEARS:
+                raise ValueError("esmfold trunk block linears are not the published set")
+            _expect_lin(_lin_of(layer, "pair_to_sequence.linear"), cz, seq_heads, "pair")
+            _expect_lin(_lin_of(layer, "seq_attention.proj"), cs, 3 * cs, "res")
+            _expect_lin(_lin_of(layer, "mlp_seq.mlp.1"), cs, 4 * cs, "res")
+            _expect_lin(_lin_of(layer, "mlp_seq.mlp.3"), 4 * cs, cs, "res")
+            _expect_lin(_lin_of(layer, "sequence_to_pair.proj"), cs, cz, "res")
+            for side in ("in", "out"):
+                _expect_lin(_lin_of(layer, f"tri_mul_{side}.linear_a_g"), cz, cz, "pair")
+                _expect_lin(_lin_of(layer, f"tri_mul_{side}.linear_z"), cz, cz, "pair")
+            _expect_lin(_lin_of(layer, "tri_att_start.linear"), cz, pair_heads, "pair")
+            _expect_lin(_lin_of(layer, "tri_att_end.linear"), cz, pair_heads, "pair")
+            _expect_lin(_lin_of(layer, "mlp_pair.mlp.1"), cz, 4 * cz, "pair")
+            _expect_lin(_lin_of(layer, "mlp_pair.mlp.3"), 4 * cz, cz, "pair")
+            tagged.append(replace(layer, vec_kind="esm_trunk"))
+        elif layer.stack == "structure":
+            by_name = {ln.name: ln for ln in layer.pair_linears}
+            if "linear_in" not in by_name or set(by_name) - {"linear_in"} != ESMFOLD_SM_LINEARS:
+                raise ValueError("esmfold structure-module linears are not the published set")
+            if layer.iters != sm_blocks or layer.repeat != "recycle":
+                raise ValueError("esmfold structure-module repeat is not the published loop")
+            lin_in = by_name["linear_in"]
+            _expect_lin(lin_in, sm_s, sm_s, "res")
+            _expect_lin(by_name["ipa.linear_out"], ipa_k, sm_s, "res")
+            for nm in ("transition.layers.0.linear_1", "transition.layers.0.linear_2",
+                       "transition.layers.0.linear_3"):
+                _expect_lin(by_name[nm], sm_s, sm_s, "res")
+            _expect_lin(by_name["angle_resnet.linear_initial"], sm_s, resnet, "res")
+            _expect_lin(by_name["angle_resnet.linear_in"], sm_s, resnet, "res")
+            for blk in (0, 1):
+                _expect_lin(by_name[f"angle_resnet.layers.{blk}.linear_1"], resnet, resnet, "res")
+                _expect_lin(by_name[f"angle_resnet.layers.{blk}.linear_2"], resnet, resnet, "res")
+            _expect_lin(by_name["angle_resnet.linear_out"], resnet, 14, "res")
+            # linear_in runs once per structure-module call. The block loop does not repeat it.
+            # Its bias stays in the loop layer's misc so the parameter total is unchanged.
+            pre = replace(layer, pair_linears=(lin_in,), pair_cores=(), misc_params=0,
+                          vec_kind="esm_sm_pre", vec_width=sm_z, iters=1)
+            rest = tuple(ln for ln in layer.pair_linears if ln.name != "linear_in")
+            tagged.append(pre)
+            tagged.append(replace(layer, pair_linears=rest, vec_kind="esm_sm"))
+        elif layer.stack == "recycle":
+            if names != ["trunk2sm_s", "trunk2sm_z"]:
+                raise ValueError("esmfold recycle projections are not trunk2sm_s then trunk2sm_z")
+            _expect_lin(layer.pair_linears[0], cs, sm_s, "res")
+            _expect_lin(layer.pair_linears[1], cz, sm_z, "pair")
+            tagged.append(replace(layer, vec_kind="esm_recycle"))
+        elif layer.stack == "heads" and names == ["1", "2", "3"]:
+            if layer.iters != 1 or layer.repeat != "":
+                raise ValueError("esmfold lddt head is not a single pass")
+            _expect_lin(layer.pair_linears[0], sm_s, hid, "res")
+            _expect_lin(layer.pair_linears[1], hid, hid, "res")
+            _expect_lin(layer.pair_linears[2], hid, 37 * 50, "res")
+            tagged.append(replace(layer, vec_kind="esm_lddt"))
         else:
             tagged.append(layer)
     pl = tagged
-    if sum(1 for layer in pl if layer.vec_kind == "esm_proj") != 1:
-        raise ValueError("esmfold projection layer is missing")
+    kinds = {}
+    for layer in pl:
+        kinds[layer.vec_kind] = kinds.get(layer.vec_kind, 0) + 1
+    if kinds.get("esm_trunk") != 48 or kinds.get("esm_sm") != 1 or kinds.get("esm_sm_pre") != 1 \
+            or kinds.get("esm_recycle") != 1 or kinds.get("esm_lddt") != 1 or kinds.get("esm_proj") != 1:
+        raise ValueError("esmfold vector layers are not the published set")
     max_pos = c.get("max_position_embeddings", 1026)
     # 0.61.2: num_recycles=None runs the loop max_recycles times in total (the +1 for the first pass applies only to an
     # explicit num_recycles; esm/esmfold/v1/trunk.py and transformers EsmFoldingTrunk) — 0.43–0.61.1 ran 5 passes
@@ -368,7 +519,11 @@ def build_esmfold(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
              "无 MSA、无模板（单序列）；chunk_size 128 只降低峰值显存，不改变计算量",
              "0.439：语言层的 LayerNorm 与 erf-GELU 按 ESM-2 宽度计，不用折叠主干的 hidden。"
              "最后一层之后的 emb_layer_norm_after 计一次。esm_s_mlp 在去掉 <cls>/<eos> 的残基行上计 LayerNorm 和 ReLU。"
-             "没有 ESM-2 的 MLM 头。token_dropout 不单列。主干块里的 LayerNorm 和 ReLU 仍留在逐线性尾项里"]
+             "没有 ESM-2 的 MLM 头。token_dropout 不单列。"
+             "0.440：每个主干块计 11 次 LayerNorm 和 2 次 ReLU。recycle 的两条 LayerNorm 每次 recycle 计一次，不并进 trunk2sm。"
+             "结构模块的 layer_norm_s / layer_norm_z 和 linear_in 每次 recycle 只跑一遍；循环体内的 LayerNorm 和 ReLU 按 num_blocks 次。"
+             "lddt 头的 LayerNorm 和三层线性作用在 num_blocks 份残基状态上，只在最后一次 recycle 之后跑一遍，序列里没有 ReLU。"
+             "逐线性 .ew 尾项不减。sigmoid 门、IPA 的 softplus、扭转角的 clamp、esm_s_combine 的 softmax 不单列"]
     return _spec(model_id, hf_id, rel, "ESMFold（ESM-2 3B + 折叠主干 + 结构模块）", t["sequence_state_dim"],
                  [esm_layer] * (L - 1) + [replace(esm_layer, emb_ln=True)] + pl, wl, notes, [], "esmfold")
 
