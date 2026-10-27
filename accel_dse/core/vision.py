@@ -221,6 +221,14 @@ and not over ``qkv_hidden_size``). Merger v2 bills the same erf-GELU, then
 ``PytorchGELUTanh``. GELU follows the one vision-role float. LayerNorm and
 RMSNorm stay fp32. RoPE, position interpolation, the full residual adds, and
 the single-frame temporal mean are not ops.
+Muse Spark NaViT (family stays ``qwen``, ``ln_mode`` ``muse``) bills
+``nn.LayerNorm`` before the window gather, before attention, before the MLP,
+and after the blocks on the patch rows. ``ACT2FN["gelu"]`` is the erf form on
+each MLP intermediate and after both adapter linears (the adapter is
+``act(fc2(act(fc1(x))))``). GELU follows the one vision-role float. LayerNorm
+stays fp32. The fused qkv GEMM is not split into three. RoPE, position
+interpolation, the pixel shuffle, the full residual adds, the scale-free
+perception norm, and the text projection stay out of these ops.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -447,6 +455,7 @@ class VisionSpec:
     # 0.423 MiMo-V2.6 gate SiLU, the SwiGLU product, and merger nn.GELU() use it too.
     # 0.426 DeepSeek-V4.1 vision F.silu, the product, and F.gelu use it too.
     # 0.427 Kimi projector nn.GELU() uses it too.
+    # 0.428 Muse Spark NaViT ACT2FN["gelu"] uses it too.
     # LayerNorm and RMSNorm stay fp32.
     vec_fmt: str = ""
     # 0.419: "qwen3vl" bills Qwen3VLVisionBlock / Qwen3VLVisionPatchMerger LayerNorms
@@ -457,6 +466,8 @@ class VisionSpec:
     # 0.427: "k25" bills Kimi-K2.5 / K2.7-Code LayerNorms and projector nn.GELU().
     # "k3" bills Kimi-K3 RMSNorms and the same projector nn.GELU(). The tower MLP
     # stays PytorchGELUTanh.
+    # 0.428: "muse" bills Muse Spark NaViT LayerNorms and ACT2FN["gelu"] (erf)
+    # on the MLP and on both adapter linears. Other qwen towers stay empty.
     ln_mode: str = ""
     # 0.419: deepstack block indexes, in merger order. Empty when deepstack is 0.
     ds_idx: tuple[int, ...] = ()
@@ -3688,9 +3699,19 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         return VisionSpec("minimax", "MiniMax ViT (3D RoPE) + patch merger", p, mk_t, h, inter, L, nh, h, False, mk,
                           ((h, proj_h), (hm, hm), (hm, hm)), params, tuple(sorted(pre.items())))
     if mt == "muse_spark_vision":                         # 0.174 vLLM PR #61879 vision.py NaViT
+        # 0.428: transformers modeling_muse_glimmer.py (main bd5411001f80).
+        # MuseGlimmerVisionMLP and MuseGlimmerVisionAdapter both read ACT2FN[...].
+        # The released values are gelu, which is the erf form. The adapter forward
+        # is act(fc2(act(fc1(x)))). Anything else is not this module.
+        if vc.get("hidden_act") != "gelu":
+            raise ValueError("muse vision hidden_act is not gelu")
+        if cfg.get("projector_hidden_act") != "gelu":
+            raise ValueError("muse projector_hidden_act is not gelu")
         h, inter, L, nh = vc["hidden_size"], vc["intermediate_size"], vc["num_hidden_layers"], vc["num_attention_heads"]
         p, t, mk = vc["patch_size"], vc["patch_temporal"], vc["merge_size"]
         hm, ph = h * mk * mk, cfg["projector_hidden_size"]
+        if cfg.get("out_hidden_size") != hm:
+            raise ValueError("muse out_hidden_size is not hidden * merge * merge")
         # conv1_linear (no bias) + pos-emb grid + ln_pre/ln_post + blocks (LN×2, biased qkv/out/c_fc/c_proj, GELU MLP)
         # + NaViTAdapter c_fc / c_proj (no bias)
         params = (3 * t * p * p * h + vc["pos_emb_height"] * vc["pos_emb_width"] * h + 4 * h
@@ -3703,7 +3724,7 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         au = audio_spec(cfg)
         return VisionSpec("qwen", "Muse Spark NaViT (Perception Encoder)", p, t, h, inter, L, nh, h, False, mk,
                           ((hm, ph), (ph, ph)), params, tuple(sorted(pre.items())), full_idx=full, tile=tile,
-                          perm=2 if tile else 0, audio=au)
+                          perm=2 if tile else 0, audio=au, ln_mode="muse")
     if vc.get("model_type") == "perception_encoder":          # 0.144 Step-5 PE + 2× stride-2 3×3 downsamplers
         h, L, nh, p, side = vc["width"], vc["layers"], vc["heads"], vc["patch_size"], vc["image_size"]
         inter = 8960 if h == 1536 else int(h * vc.get("mlp_ratio", 8960 / 1536))
@@ -4194,6 +4215,18 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             raise ValueError("kimi vision block is not fused qkv plus a two-linear merger")
         if k25 and v.qkv != h:
             raise ValueError("kimi moonvit qkv width is not hidden")
+    muse = v.ln_mode == "muse"
+    if muse:
+        # MuseGlimmerVisionModel: LayerNorms and ACT2FN["gelu"] (erf). The
+        # adapter is act(fc2(act(fc1(x)))). RoPE, pixel shuffle, the scale-free
+        # perception norm, and the text projection are not ops. q/k/v stay one GEMM.
+        if v.vec_fmt not in ("fp16", "bf16", "fp32"):
+            raise ValueError("muse vision activation dtype is not a vision float")
+        hm = h * v.merge * v.merge
+        if (v.gated or v.kv_heads or v.qkv != h or v.deepstack or len(v.post) != 2
+                or v.post[0][0] != hm or v.post[0][1] != v.post[1][0]
+                or v.post[1][0] != v.post[1][1]):
+            raise ValueError("muse vision block is not fused qkv plus a two-linear adapter")
     if q3:
         # Qwen3VLVisionBlock LayerNorms and Qwen3VLVisionPatchMerger nn.GELU().
         # The block MLP stays gelu_pytorch_tanh. Merger fc1 is Linear(4h, 4h).
@@ -4238,6 +4271,11 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         inv_len = (dim + 1) // 2
         side = max(ph, pw)
         ops.append(Op(pfx + "rope_outer", "vector", 0, vec=side * inv_len, a_fmt="fp32"))
+
+    if muse:
+        # ln_pre is LayerNorm(hidden) on patch rows, before the window gather.
+        # Width is hidden, not 4 * hidden. The two gathers stay one win_perm.
+        ops.append(_ln_vec(pfx + "ln_pre", 0, rows, h))
 
     def lc_rms(name: str, li: int, width: int, n_rows: int) -> Op:
         # RMSNorm.forward / the same 4-elem + 1 rsqrt recipe as attn_norm. fp32 upcast.
@@ -4289,6 +4327,9 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # norm0 is RMSNorm(hidden) on patch tokens, before the fused qkv.
             # One rsqrt per token, not per head and not over qkv_hidden_size.
             ops.append(_rms_vec(pfx + f"{li}.norm1", li, rows, h))
+        if muse:
+            # norm1 is LayerNorm(hidden) on patch tokens, before the fused qkv.
+            ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
         if pixtral:
             # Attention runs before o_proj. One bidirectional block per image.
@@ -4352,7 +4393,15 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # The class does not upcast. No rsqrt.
             ops.append(Op(pfx + f"{li}.ls1", "vector", li, vec=rows * h * 2, a_fmt="bf16"))
             ops.append(lc_rms(f"{li}.norm2", li, h, rows))
+        if muse:
+            # norm2 is LayerNorm(hidden) before the MLP. The residual add is the full branch.
+            ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
         ops.append(gemm(f"{li}.mlp_in", rows, h, (2 if v.gated else 1) * v.inter, li))
+        if muse:
+            # ACT2FN["gelu"] is nn.functional.gelu (default approximate 'none', the erf
+            # form). Width is intermediate, not hidden. The class does not upcast.
+            # The separate q/k/v linears stay one GEMM.
+            ops.append(_gelu_erf_vec(pfx + f"{li}.gelu", li, rows * v.inter, v.vec_fmt))
         if radio:
             # ACT2FN["gelu"] is nn.functional.gelu (default approximate 'none', the erf
             # form). Width is intermediate, not hidden. The class does not upcast.
@@ -4452,6 +4501,10 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # final_layernorm is RMSNorm(hidden) on the patch rows, before the
         # merger view. Width is hidden, not qkv_hidden_size and not text hidden.
         ops.append(_rms_vec(pfx + "out_rms", v.depth, images * N0, h))
+    if muse:
+        # ln_post is LayerNorm(hidden) on patch rows, after the reverse gather
+        # and before pixel shuffle. Width is hidden, not 4 * hidden.
+        ops.append(_ln_vec(pfx + "post_ln", v.depth, images * N0, h))
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
         m_ = merger_rows(kn)
@@ -4469,6 +4522,13 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # Width is hidden, not 4 * hidden. On a still those rows are the patches.
             ops.append(_ln_vec(pfx + "proj_ln", v.depth, m_ * v.merge * v.merge, h))
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
+        if muse and i == 0:
+            # First adapter GELU, after fc1. Width is projector_hidden_size, not
+            # 4 * hidden and not the text hidden size.
+            ops.append(_gelu_erf_vec(pfx + "mgelu", v.depth, m_ * n, v.vec_fmt))
+        if muse and i == 1:
+            # Second adapter GELU. forward is act(fc2(act(fc1(x)))). Same width.
+            ops.append(_gelu_erf_vec(pfx + "mgelu2", v.depth, m_ * n, v.vec_fmt))
         if (k25 or k3) and i == 0:
             # nn.GELU() default approximate is 'none': the erf form. Width is the
             # first linear's N (4 * hidden), not the text hidden size. The block
