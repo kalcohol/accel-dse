@@ -15,6 +15,10 @@ docs/MODEL.md §20):
          every block still runs.  Each merger output is added onto visual-token rows after LLM layers
          ``0 .. len(indexes)-1`` (``Qwen3VLTextModel._deepstack_process``).  A non-empty index list on any other
          Qwen ViT type is still refused.
+         0.419 bills those ``nn.LayerNorm`` calls (fp32 reduction) and ``nn.GELU()`` on each merger
+         (the erf form, after fc1, on merged rows and width 4h). The block MLP stays
+         ``ACT2FN[hidden_act]`` = ``gelu_pytorch_tanh`` and is not billed. RoPE and the full
+         residual adds stay in the tail.
   glm    GLM-5.3-Flash: Conv3d patch embed (T 2), ``depth`` RMSNorm blocks (qkv / proj with bias, q / k RMSNorm,
          SwiGLU MLP with bias), post RMSNorm, 2×2 Conv2d downsample h → out (an implicit GEMM K = 4h), merger
          proj out→out → LN → GELU → SwiGLU out→projection_intermediate→out.  Resize: Glm5Next ``smart_resize`` to
@@ -128,6 +132,17 @@ attention, before the SwiGLU, and on the patch sequence before the merger.
 is one multiply on that same width. ``ACT2FN["gelu"]`` after ``linear_1`` is the
 erf form, on merged rows and the text width. Those three stay at the vision-role
 dtype. The sinusoid RoPE, the full residual adds, and the block mask are not ops.
+Qwen3-VL and WeVisOne (``ln_mode`` ``qwen3vl``) bill ``nn.LayerNorm`` before
+attention, before the MLP, on the patch sequence before the final merger's view,
+and on the merged width of each deepstack merger. ``nn.GELU()`` after each merger
+fc1 is the erf form. The MLP's ``gelu_pytorch_tanh`` is not an op. GELU follows
+the vision-role dtype, except a tower stored as fp32 whose activations stay the
+model activation format. LayerNorm stays fp32.
+LFM2.5-VL (family ``lfm2vl``, including d1-3B) bills ``nn.LayerNorm`` before
+attention, before the MLP, and after the blocks, all on the padded patch rows.
+``ACT2FN["gelu"]`` sits between the projector linears on the unshuffled valid
+rows. The tower MLP stays ``gelu_pytorch_tanh`` and is not billed. A projector
+LayerNorm is billed only when ``projector_use_layernorm`` is true.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -349,7 +364,14 @@ class VisionSpec:
     deepstack: int = 0
     # 0.418 Pixtral SiLU, the SwiGLU product, and the projector erf-GELU. The one
     # float safetensors vision role. RMSNorm stays fp32. Empty on every earlier tower.
+    # 0.419 Qwen3-VL merger erf-GELU and LFM2.5-VL projector erf-GELU use the same field.
+    # LayerNorm stays fp32.
     vec_fmt: str = ""
+    # 0.419: "qwen3vl" bills Qwen3VLVisionBlock / Qwen3VLVisionPatchMerger LayerNorms
+    # and nn.GELU(). Empty on every other tower, including Qwen3.5.
+    ln_mode: str = ""
+    # 0.419: deepstack block indexes, in merger order. Empty when deepstack is 0.
+    ds_idx: tuple[int, ...] = ()
 
     @property
     def head_dim(self) -> int:
@@ -2659,6 +2681,11 @@ def _lfm2_vl_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
     tol = cfg.get("max_pixels_tolerance")
     if isinstance(tol, bool) or not isinstance(tol, (int, float)) or tol <= 0:
         return None
+    # 0.419: the tower MLP is gelu_pytorch_tanh (not billed). The projector is ACT2FN["gelu"] (erf).
+    if vc.get("hidden_act") != "gelu_pytorch_tanh":
+        raise ValueError("lfm2_vl hidden_act is not gelu_pytorch_tanh")
+    if cfg.get("projector_hidden_act") != "gelu":
+        raise ValueError("lfm2_vl projector_hidden_act is not gelu")
     bias = cfg["projector_bias"]
     in_ch = h * factor * factor
     block = (4 * h + 4 * _lin(h, h, True) + _lin(h, inter, True) + _lin(inter, h, True))
@@ -2674,6 +2701,7 @@ def _lfm2_vl_vision_spec(cfg: dict, vc: dict) -> VisionSpec | None:
         "thumb": 1 if cfg["use_thumbnail"] else 0,
         "special": 1 if cfg["use_image_special_tokens"] else 0,
         "split": 1 if split else 0, "tol": float(tol), "pad": pad,
+        "proj_ln": 1 if cfg["projector_use_layernorm"] else 0,
     }
     return VisionSpec("lfm2vl", "SigLIP2 NaFlex + pixel-unshuffle projector", patch, 1, h, inter, depth, heads, h,
                       False, factor, ((in_ch, proj_h), (proj_h, text_h)), params, tuple(sorted(pre.items())))
@@ -2769,6 +2797,11 @@ def _lfm2_vl_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> li
         return Op(pfx + name, "gemm", layer, m=m, k=k, n=n, role="vision", w_params=k * n, w_bits=b, w_fmt=f,
                   a_fmt=a, act_bytes=m * (k + n) * ab, stream=True, vec=m * n * VEC_PER_OUT)
 
+    if v.vec_fmt not in ("fp16", "bf16", "fp32"):
+        raise ValueError("lfm2_vl activation dtype is not a vision float")
+    proj_ln = v.rz.get("proj_ln")
+    if proj_ln not in (0, 1) or len(v.post) != 2:
+        raise ValueError("lfm2_vl projector is not unshuffle, linear, gelu, linear")
     for gi, (ph, pw, cnt) in enumerate(groups):
         if ph % factor or pw % factor or ph < 1 or pw < 1:
             raise ValueError("lfm2_vl patch grid is not divisible by downsample_factor")
@@ -2777,11 +2810,15 @@ def _lfm2_vl_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> li
         heads = images * cnt * v.heads
         ops.append(gemm(pfx, "patch_embed", rows, 3 * v.patch * v.patch, h, 0, "patch"))
         for li in range(v.depth):
+            # Siglip2EncoderLayer: layer_norm1, attention, residual, layer_norm2, MLP, residual.
+            # The residual adds are the full branch. The MLP activation is gelu_pytorch_tanh.
+            ops.append(_ln_vec(f"{pfx}{li}.attn_ln", li, rows, h))
             ops += [gemm(pfx, f"{li}.q", rows, h, h, li, "attn"),
                     gemm(pfx, f"{li}.k", rows, h, h, li, "attn"),
                     gemm(pfx, f"{li}.v", rows, h, h, li, "attn"),
-                    gemm(pfx, f"{li}.o", rows, h, h, li, "attn"),
-                    gemm(pfx, f"{li}.fc1", rows, h, v.inter, li, "mlp"),
+                    gemm(pfx, f"{li}.o", rows, h, h, li, "attn")]
+            ops.append(_ln_vec(f"{pfx}{li}.mlp_ln", li, rows, h))
+            ops += [gemm(pfx, f"{li}.fc1", rows, h, v.inter, li, "mlp"),
                     gemm(pfx, f"{li}.fc2", rows, v.inter, h, li, "mlp")]
             keys = pad * pad
             ops += [Op(f"{pfx}{li}.qk", "attn", li, m=pad, k=dh, n=pad, count=heads, causal=1.0,
@@ -2789,10 +2826,17 @@ def _lfm2_vl_vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str) -> li
                     Op(f"{pfx}{li}.pv", "attn", li, m=pad, k=pad, n=dh, count=heads, causal=1.0,
                        act_bytes=heads * pad * dh * ab, orient=True),
                     Op(f"{pfx}{li}.softmax", "vector", li, vec=heads * keys * 5.0)]
+        # post_layernorm runs before get_image_features drops the pad. vision_use_head is false,
+        # so the pooling head (another LayerNorm) does not run.
+        ops.append(_ln_vec(pfx + "post_ln", v.depth, rows, h))
         m_proj = images * cnt * (ph // factor) * (pw // factor)
-        for i, kn in enumerate(v.post):
-            k, n = kn[:2]
-            ops.append(gemm(pfx, f"merger.{i}", m_proj, k, n, v.depth, "merger"))
+        if proj_ln:
+            # Optional LayerNorm on the unshuffled width, before linear_1. Released configs leave it off.
+            ops.append(_ln_vec(pfx + "proj_ln", v.depth, m_proj, v.post[0][0]))
+        ops.append(gemm(pfx, "merger.0", m_proj, v.post[0][0], v.post[0][1], v.depth, "merger"))
+        # ACT2FN["gelu"] is the erf form. Width is projector_hidden_size, not the tower hidden size.
+        ops.append(_gelu_erf_vec(pfx + "pgelu", v.depth, m_proj * v.post[0][1], v.vec_fmt))
+        ops.append(gemm(pfx, "merger.1", m_proj, v.post[1][0], v.post[1][1], v.depth, "merger"))
     return ops
 
 
@@ -3369,8 +3413,14 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         pre["factor"] = p * mk
         post = ((hm, hm), (hm, out)) * (1 + n_ds)
         label = "Qwen ViT" if n_ds == 0 else "Qwen3-VL ViT + deepstack"
+        # 0.419: a non-empty deepstack list is Qwen3VLVisionModel. The block MLP is
+        # gelu_pytorch_tanh. The merger activation is nn.GELU(), independent of hidden_act.
+        q3 = n_ds > 0 and mt in ("qwen3_vl", "qwen3_vl_moe", "qwen3_vl_vision")
+        if q3 and vc.get("hidden_act") != "gelu_pytorch_tanh":
+            raise ValueError("qwen3vl hidden_act is not gelu_pytorch_tanh")
         return VisionSpec("qwen", label, p, t, h, inter, L, nh, h, False, mk, post, params,
-                          tuple(sorted(pre.items())), deepstack=n_ds)
+                          tuple(sorted(pre.items())), deepstack=n_ds,
+                          ln_mode="qwen3vl" if q3 else "", ds_idx=tuple(ds) if q3 else ())
     if mt == "glm5_next_vision":
         h, inter, L, nh = vc["hidden_size"], vc["intermediate_size"], vc["depth"], vc["num_heads"]
         p, t, mk, out, pi = vc["patch_size"], vc["temporal_patch_size"], vc["spatial_merge_size"], vc["out_hidden_size"], \
@@ -3863,6 +3913,21 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
     qkv_n = (v.heads + 2 * v.kv_heads) * dh if v.kv_heads else 3 * q
     longcat = v.family == "longcatvit" and v.gated
     pixtral = v.family == "pixtral"
+    q3 = v.ln_mode == "qwen3vl"
+    if q3:
+        # Qwen3VLVisionBlock LayerNorms and Qwen3VLVisionPatchMerger nn.GELU().
+        # The block MLP stays gelu_pytorch_tanh. Merger fc1 is Linear(4h, 4h).
+        if v.vec_fmt not in ("fp16", "bf16", "fp32"):
+            raise ValueError("qwen3vl activation dtype is not a vision float")
+        hm = h * v.merge * v.merge
+        if (v.deepstack < 1 or len(v.ds_idx) != v.deepstack or len(set(v.ds_idx)) != v.deepstack
+                or len(v.post) != 2 * (1 + v.deepstack)):
+            raise ValueError("qwen3vl deepstack mergers are missing")
+        if any(i < 0 or i >= v.depth for i in v.ds_idx):
+            raise ValueError("qwen3vl deepstack index is outside the tower")
+        for i in range(0, len(v.post), 2):
+            if v.post[i] != (hm, hm) or v.post[i + 1][0] != hm:
+                raise ValueError("qwen3vl merger is not linear, gelu, linear")
     if pixtral:
         # PixtralVisionModel.ln_pre is PixtralRMSNorm on the flattened patches,
         # before the block loop. One rsqrt per patch token, width hidden.
@@ -3910,6 +3975,9 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if pixtral:
             # PixtralAttentionLayer: attention_norm, then q/k/v. Width is hidden.
             ops.append(_rms_vec(pfx + f"{li}.attn_rms", li, rows, h))
+        if q3:
+            # norm1 is LayerNorm(hidden) on patch tokens, before the fused qkv.
+            ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
         if pixtral:
             # Attention runs before o_proj. One bidirectional block per image.
@@ -3939,6 +4007,9 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if pixtral:
             # Residual add is the full branch, not 0.5. ffn_norm then SwiGLU.
             ops.append(_rms_vec(pfx + f"{li}.ffn_rms", li, rows, h))
+        if q3:
+            # norm2 is LayerNorm(hidden) before the MLP. The residual add is the full branch.
+            ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
         if longcat:
             # ls1 / ls2 are Parameter(embed_dim): branch * scale, then the residual add.
             # The class does not upcast. No rsqrt.
@@ -3988,10 +4059,26 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # Mistral3MultiModalProjector.norm runs on the patch sequence, before the
         # unfold. Width is hidden, not the text width, and the row count is not merged.
         ops.append(_rms_vec(pfx + "proj_rms", v.depth, images * N0, h))
+    if q3:
+        # Final merger, use_postshuffle_norm false: LayerNorm(hidden) on the patch
+        # sequence, then a view to 4h. The row count is not the merged count.
+        ops.append(_ln_vec(pfx + "pre_ln", v.depth, images * N0, h))
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
         m_ = merger_rows(kn)
+        if q3 and i % 2 == 0 and i > 0:
+            # Deepstack merger, use_postshuffle_norm true: view to 4h, then LayerNorm(4h).
+            slot = i // 2 - 1
+            ops.append(_ln_vec(pfx + f"ds{slot}.ln", v.ds_idx[slot], m_, k))
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
+        if q3 and i % 2 == 0:
+            # nn.GELU() default approximate is 'none': the erf form. Width is fc1's N (4h).
+            # The block MLP's gelu_pytorch_tanh is not this op.
+            if i == 0:
+                ops.append(_gelu_erf_vec(pfx + "mgelu", v.depth, m_ * n, v.vec_fmt))
+            else:
+                slot = i // 2 - 1
+                ops.append(_gelu_erf_vec(pfx + f"ds{slot}.gelu", v.ds_idx[slot], m_ * n, v.vec_fmt))
         if pixtral and i == 1:
             # ACT2FN["gelu"] after linear_1, before linear_2. Erf form. Rows are
             # the merged count. Width is linear_1's N (the text hidden size).
