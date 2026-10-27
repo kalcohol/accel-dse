@@ -4339,6 +4339,9 @@ def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
     uses it for gate SiLU, the SwiGLU product, and merger ``nn.GELU()``.
     MiMo-V2.6 uses it for gate SiLU, the SwiGLU product, and merger ``nn.GELU()``.
     MiMo RMSNorm and LayerNorm stay fp32.
+    Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp merger ``nn.GELU()`` uses it the same way.
+    Those LayerNorms stay fp32. A vision role with more than one dtype is not
+    given this value.
     A Qwen3-VL
     tower stored entirely as fp32 keeps the model activation format instead
     (WeVisOne). LayerNorm and GLM RMSNorm stay fp32.
@@ -4869,6 +4872,18 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             if rel is None:
                 raise ValueError("mimo vision role is missing")
             vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "mimo"))
+        if vs is not None and vs.ln_mode == "qwen35":
+            # 0.424: merger nn.GELU() follows the one vision-role float. LayerNorm
+            # stays fp32. A tower stored as more than one vision dtype (the FP4-Local
+            # mix) is not assigned a vector dtype and is not billed.
+            if rel is None:
+                raise ValueError("qwen35 tower vision role is missing")
+            vr = (rel.get("roles") or {}).get("vision") or {}
+            keys = [k for k, v in vr.items() if isinstance(v, dict) and v.get("params")]
+            if len(keys) > 1:
+                vs = replace(vs, ln_mode="")
+            else:
+                vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "qwen35"))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -5026,6 +5041,19 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "RMSNorm 和 LayerNorm 在 fp32 归约。仿射已经在参数里。"
                 "发布头里 merger 的 Linear 和 ln_q 没有 bias，类默认的 bias 不单列。"
                 "RoPE 的 cos/sin、torch.outer、整份残差加、repeat_interleave、窗口 mask 不单列。"
+                "通用 GEMM 尾项不减。",))
+        if vs is not None and vs.ln_mode == "qwen35":
+            spec = replace(spec, notes=spec.notes + (
+                "Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp 视觉塔：每一层注意力前和 MLP 前各一次 "
+                "nn.LayerNorm(hidden)。merger 的 use_postshuffle_norm 是 false："
+                "先对 patch 序列做 LayerNorm(hidden)，再 view 到 4*hidden，然后 Linear、"
+                "nn.GELU()、Linear。nn.GELU() 默认 approximate='none'，erf 形式。"
+                "行数是合并后的位置，宽度是 4*hidden，不是 out_hidden_size。"
+                "块内 MLP 的 hidden_act 仍是 gelu_pytorch_tanh，不单列。没有 deepstack。"
+                f"GELU 不升精度，a_fmt 是 vision 角色的 {vs.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 在 fp32 归约。仿射已经在参数里。"
+                "位置插值、RoPE 的 cos/sin、整份残差加、eval 的 attention dropout 不单列。"
                 "通用 GEMM 尾项不减。",))
     return spec
 

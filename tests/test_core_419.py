@@ -189,10 +189,12 @@ def test_qwen3vl_refuses_other_acts_and_a_missing_dtype():
     _raises(lambda: vision_ops(replace(bare, vec_fmt="fp8"), g, 1),
             "qwen3vl activation dtype is not a vision float")
     old = get_model("qwen3.5-9b")
-    assert old.vision is not None and old.vision.ln_mode == "" and old.vision.deepstack == 0
+    # 0.424 bills this tower as ln_mode qwen35. It is still not the Qwen3-VL deepstack path.
+    assert old.vision is not None and old.vision.ln_mode == "qwen35" and old.vision.deepstack == 0
     names = [op.name for op in vision_ops(old.vision, image_grid(old.vision, 1024, 1024), 1)]
-    for needle in ("vis.pre_ln", "vis.mgelu", "vis.0.attn_ln", "vis.ds0.ln", "vis.pgelu", "vis.post_ln"):
+    for needle in ("vis.ds0.ln", "vis.ds0.gelu", "vis.pgelu", "vis.post_ln"):
         assert needle not in names, needle
+    assert "vis.pre_ln" in names and "vis.mgelu" in names and "vis.0.attn_ln" in names
     ernie = get_model("ernie-4.5-vl-28b-a3b")
     enames = [op.name for op in vision_ops(ernie.vision, image_grid(ernie.vision, 1024, 1024), 1)]
     assert "vis.mgelu" not in enames and "vis.0.attn_ln" not in enames
