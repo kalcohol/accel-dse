@@ -390,6 +390,8 @@ class Layer:
     # esm_recycle, esm_sm_pre, esm_sm, and esm_lddt.
     # 0.441 OpenFold and AlphaFold 2 use of_block, of_sm_pre, of_sm,
     # of_heads, and of_embed. esm_sm_pre stores the structure pair width.
+    # 0.442 Boltz-1 uses bz_pair, bz_msa, bz_recycle, bz_conf, bz_cache,
+    # and bz_diff for published LayerNorm and Transition SiLU.
     # "" keeps the shared full-forward assumption.
     vec_kind: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.

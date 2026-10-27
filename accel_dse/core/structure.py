@@ -895,6 +895,134 @@ def _hoist_step_cache(layers: list[Layer], cached: re.Pattern) -> list[Layer]:
                                 stack="diff_cache")] + out[first:]
 
 
+def _tag_boltz_vectors(pl: list[Layer], sh: dict, c: dict, stacks: dict) -> list[Layer]:
+    """Bill published LayerNorm and Transition SiLU on Boltz-1. Sigmoid gates stay in the .ew tail.
+
+    Diffusion AdaLN and ConditionedTransitionBlock are not the plain LayerNorm / SiLU recipe.
+    """
+    from .ir import (
+        BOLTZ_CONF_LINEARS, BOLTZ_DIFF_LINEARS, BOLTZ_MSA_LINEARS, BOLTZ_MSA_REST, BOLTZ_PAIR_LINEARS,
+        _bz_check_cache, _bz_check_conf, _bz_check_diff, _bz_check_msa, _bz_check_pair, _bz_check_recycle,
+    )
+    who = "boltz-1"
+    hp = c["hyper_parameters"]
+    if int(hp["token_s"]) != 384 or int(hp["token_z"]) != 128:
+        raise ValueError(f"{who} token width is not the published pairformer")
+    if stacks.get("pairformer_module.layers") != 48 or stacks.get("confidence_module.pairformer_module.layers") != 48:
+        raise ValueError(f"{who} pairformer blocks are not 48")
+    if stacks.get("msa_module.layers") != 4 or stacks.get("confidence_module.msa_module.layers") != 4:
+        raise ValueError(f"{who} msa blocks are not 4")
+
+    def block_norms(prefix: str, last: int, specs: tuple[tuple[str, int], ...]) -> None:
+        for idx in (0, last):
+            for suffix, width in specs:
+                _need_vec(sh, who, f"{prefix}{idx}.{suffix}", width)
+
+    pair_norms = (
+        ("attention.norm_s.weight", 384),
+        ("attention.proj_z.0.weight", 128),
+        ("transition_s.norm.weight", 384),
+        ("transition_z.norm.weight", 128),
+        ("tri_att_start.layer_norm.weight", 128),
+        ("tri_att_end.layer_norm.weight", 128),
+        ("tri_mul_in.norm_in.weight", 128),
+        ("tri_mul_in.norm_out.weight", 128),
+        ("tri_mul_out.norm_in.weight", 128),
+        ("tri_mul_out.norm_out.weight", 128),
+    )
+    msa_norms = (
+        ("msa_transition.norm.weight", 64),
+        ("outer_product_mean.norm.weight", 64),
+        ("pair_weighted_averaging.norm_m.weight", 64),
+        ("pair_weighted_averaging.norm_z.weight", 128),
+        ("z_transition.norm.weight", 128),
+        ("tri_att_start.layer_norm.weight", 128),
+        ("tri_att_end.layer_norm.weight", 128),
+        ("tri_mul_in.norm_in.weight", 128),
+        ("tri_mul_in.norm_out.weight", 128),
+        ("tri_mul_out.norm_in.weight", 128),
+        ("tri_mul_out.norm_out.weight", 128),
+    )
+    block_norms("pairformer_module.layers.", 47, pair_norms)
+    block_norms("confidence_module.pairformer_module.layers.", 47, pair_norms)
+    block_norms("msa_module.layers.", 3, msa_norms)
+    block_norms("confidence_module.msa_module.layers.", 3, msa_norms)
+    for name, width in (
+        ("s_norm.weight", 384),
+        ("z_norm.weight", 128),
+        ("confidence_module.s_norm.weight", 384),
+        ("confidence_module.z_norm.weight", 128),
+        ("confidence_module.final_s_norm.weight", 384),
+        ("confidence_module.final_z_norm.weight", 128),
+        ("confidence_module.s_diffusion_norm.weight", 768),
+        ("structure_module.score_model.pairwise_conditioner.dim_pairwise_init_proj.0.weight", 256),
+        ("structure_module.score_model.pairwise_conditioner.transitions.0.norm.weight", 128),
+        ("structure_module.score_model.pairwise_conditioner.transitions.1.norm.weight", 128),
+        ("structure_module.score_model.single_conditioner.norm_single.weight", 839),
+        ("structure_module.score_model.single_conditioner.norm_fourier.weight", 256),
+        ("structure_module.score_model.single_conditioner.transitions.0.norm.weight", 768),
+        ("structure_module.score_model.single_conditioner.transitions.1.norm.weight", 768),
+        ("structure_module.score_model.s_to_a_linear.0.weight", 768),
+        ("structure_module.score_model.a_norm.weight", 768),
+        ("structure_module.out_token_feat_update.norm_next.weight", 768),
+        ("structure_module.out_token_feat_update.norm_fourier.weight", 256),
+    ):
+        _need_vec(sh, who, name, width)
+
+    tagged: list[Layer] = []
+    for layer in pl:
+        names = {ln.name for ln in layer.pair_linears}
+        if layer.stack in ("pairformer", "confidence"):
+            if not names:
+                tagged.append(layer)
+            elif names == BOLTZ_PAIR_LINEARS:
+                _bz_check_pair(layer)
+                tagged.append(replace(layer, vec_kind="bz_pair"))
+            elif layer.stack == "confidence" and names == BOLTZ_CONF_LINEARS:
+                _bz_check_conf(layer)
+                tagged.append(replace(layer, vec_kind="bz_conf"))
+            else:
+                raise ValueError(f"{who} pairformer linears are not the published set")
+        elif layer.stack in ("msa", "conf_msa"):
+            if names == BOLTZ_MSA_LINEARS:
+                _bz_check_msa(layer)
+                tagged.append(replace(layer, vec_kind="bz_msa"))
+            elif layer.stack == "msa" and names == BOLTZ_MSA_REST:
+                tagged.append(layer)
+            elif not names:
+                tagged.append(layer)
+            else:
+                raise ValueError(f"{who} msa linears are not the published set")
+        elif layer.stack == "recycle":
+            if not names:
+                tagged.append(layer)
+            else:
+                _bz_check_recycle(layer)
+                tagged.append(replace(layer, vec_kind="bz_recycle"))
+        elif layer.stack == "diff_cache":
+            _bz_check_cache(layer)
+            tagged.append(replace(layer, vec_kind="bz_cache"))
+        elif layer.stack == "diffusion" and "score_model.single_conditioner.single_embed" in names:
+            _bz_check_diff(layer)
+            tagged.append(replace(layer, vec_kind="bz_diff"))
+        else:
+            tagged.append(layer)
+    kinds: dict[str, int] = {}
+    recycle_shapes = []
+    for layer in tagged:
+        if layer.vec_kind:
+            kinds[layer.vec_kind] = kinds.get(layer.vec_kind, 0) + 1
+        if layer.vec_kind == "bz_recycle":
+            lin = layer.pair_linears[0]
+            recycle_shapes.append((lin.k, lin.n, lin.rows))
+    if kinds.get("bz_pair") != 96 or kinds.get("bz_msa") != 8 or kinds.get("bz_recycle") != 2 \
+            or kinds.get("bz_conf") != 1 or kinds.get("bz_cache") != 1 or kinds.get("bz_diff") != 1:
+        raise ValueError(f"{who} vector layers are not the published set")
+    if sorted(recycle_shapes) != [(128, 128, "pair"), (384, 384, "res")]:
+        raise ValueError(f"{who} recycle projection shape is not the published pair")
+    return tagged
+
+
 def build_boltz1(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
     c = rel["config"]
     hp = c["hyper_parameters"]
@@ -921,6 +1049,7 @@ def build_boltz1(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
                     ("", "embed", "", "", False)]}
     pl, _ = layers_from(rel, _af3_groups(pfx), {"win": win})
     pl = _hoist_step_cache(pl, _BOLTZ_CACHED)
+    pl = _tag_boltz_vectors(pl, rel["shapes"], c, rel["stacks"])
     wl = _apply_defaults(wl, msa=c["max_msa_seqs"], recycles=c["recycling_steps"] + 1, diff_steps=c["sampling_steps"],
                          samples=c["diffusion_samples"], pair_dim=hp["token_z"])
     notes = [f"AF3 类架构：MSA 模块 {rel['stacks']['msa_module.layers']} 块（pair 加权平均）+ Pairformer "
@@ -934,7 +1063,14 @@ def build_boltz1(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
              "boltz predict 默认开启推理缓存（use_inference_model_cache）：pair 条件、每层 pair 偏置投影与原子编码器的原子对 / "
              "条件特征只在第一步计算、之后各步复用（diff_cache，每请求一次）；参考实现的 k / v 投影在重叠的 128 原子键窗口上算"
              "（4 倍行）、键窗口用稠密索引矩阵收集（各约占每步 1.4 %），这里按每原子一行计、收集不计（每步比参考计数少约 3 %）；原子数 = 残基 × "
-             f"{wl.atoms_per_res:g}「假设」（仅蛋白质重原子）；原子级输入 / 输出投影按原子行计（部分实为 token 行，量很小）"]
+             f"{wl.atoms_per_res:g}「假设」（仅蛋白质重原子）；原子级输入 / 输出投影按原子行计（部分实为 token 行，量很小）",
+             "0.442：Pairformer 每块计 10 次 LayerNorm，外加 single / pair Transition 的 SiLU 和一次相乘。"
+             "MSA 块再加 msa Transition、OPM 和 PWA 的 LayerNorm，一共 11 次。"
+             "主干 recycle 的 s_norm / z_norm 每次 recycle 计一次。置信度 imitate_trunk 的 s_norm / z_norm 在按样本展开之前计一次，"
+             "s_diffusion_norm、final_s_norm、final_z_norm 在展开之后计一次。"
+             "扩散的 plain Transition（single / pairwise conditioner）和 a_norm、s_to_a 的 LayerNorm、norm_single、"
+             "两次 Fourier LayerNorm、norm_next 按发布前向计。AdaLN、扩散 SwiGLU、sigmoid 门不单列。"
+             "逐线性 .ew 不减。mask 乘、OPM 的 mask 归一化除法不单列"]
     reasons = ["只评估神经网络推理：MSA 检索（MMseqs2 服务器）与特征化 / 分子预处理未建模"]
     return _spec(model_id, hf_id, rel, "Boltz-1（AF3 类：MSA 模块 + Pairformer + 扩散）", hp["token_s"], pl, wl, notes,
                  reasons, "boltz1")

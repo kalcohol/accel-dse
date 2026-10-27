@@ -2229,6 +2229,20 @@ def _esm_relu(name: str, n: int, li: int, rep: float, af: str, who: str = "esmfo
     return Op(name, "vector", li, vec=float(n), a_fmt=af, replicated=rep)
 
 
+def _bz_silu(name: str, n: int, li: int, rep: float, af: str) -> Op:
+    """nn.SiLU is x * sigmoid(x). Four element-ops, two of them on the SFU, no upcast."""
+    if n <= 0:
+        raise ValueError(f"boltz-1 {name} has no elements")
+    return Op(name, "vector", li, vec=float(n * 4), sfu=float(n * 2), a_fmt=af, replicated=rep)
+
+
+def _bz_mul(name: str, n: int, li: int, rep: float, af: str) -> Op:
+    """silu(fc1) * fc2. One multiply, no transcendental, no upcast."""
+    if n <= 0:
+        raise ValueError(f"boltz-1 {name} has no elements")
+    return Op(name, "vector", li, vec=float(n), a_fmt=af, replicated=rep)
+
+
 def _esmfold_state_copies(model: ModelSpec) -> int:
     """lddt reads structure['states'], one row-block per StructureModule iteration."""
     found = [L.iters for L in model.layers if L.vec_kind == "esm_sm"]
@@ -2413,6 +2427,229 @@ OPENFOLD_EMBED_LINEARS = frozenset({
 })
 
 
+def _bz_mha(prefix: str) -> tuple[str, ...]:
+    return tuple(f"{prefix}.linear_{leaf}" for leaf in ("g", "k", "o", "q", "v"))
+
+
+def _bz_tri_names(side: str) -> tuple[str, ...]:
+    return (f"tri_mul_{side}.g_in", f"tri_mul_{side}.g_out", f"tri_mul_{side}.p_in", f"tri_mul_{side}.p_out")
+
+
+def _bz_tri_att_names(side: str) -> tuple[str, ...]:
+    return (f"tri_att_{side}.linear",) + _bz_mha(f"tri_att_{side}.mha")
+
+
+_BZ_TRI = _bz_tri_names("in") + _bz_tri_names("out") + _bz_tri_att_names("end") + _bz_tri_att_names("start")
+BOLTZ_PAIR_LINEARS = frozenset(
+    ("attention.proj_g", "attention.proj_k", "attention.proj_o", "attention.proj_q", "attention.proj_v",
+     "attention.proj_z.1",
+     "transition_s.fc1", "transition_s.fc2", "transition_s.fc3",
+     "transition_z.fc1", "transition_z.fc2", "transition_z.fc3")
+    + _BZ_TRI
+)
+BOLTZ_MSA_LINEARS = frozenset(
+    ("msa_transition.fc1", "msa_transition.fc2", "msa_transition.fc3",
+     "outer_product_mean.proj_a", "outer_product_mean.proj_b", "outer_product_mean.proj_o",
+     "pair_weighted_averaging.proj_g", "pair_weighted_averaging.proj_m",
+     "pair_weighted_averaging.proj_o", "pair_weighted_averaging.proj_z",
+     "z_transition.fc1", "z_transition.fc2", "z_transition.fc3")
+    + _BZ_TRI
+)
+BOLTZ_CONF_LINEARS = frozenset({
+    "confidence_heads.to_pae_logits", "confidence_heads.to_pde_logits",
+    "confidence_heads.to_plddt_logits", "confidence_heads.to_resolved_logits",
+    "dist_bin_pairwise_embed",
+    "input_embedder.atom_attention_encoder.atom_to_token_trans.0",
+    "input_embedder.atom_attention_encoder.c_to_p_trans_k.1",
+    "input_embedder.atom_attention_encoder.c_to_p_trans_q.1",
+    "input_embedder.atom_attention_encoder.embed_atom_features",
+    "input_embedder.atom_attention_encoder.embed_atompair_ref_pos",
+    "input_embedder.atom_attention_encoder.p_mlp.1",
+    "input_embedder.atom_attention_encoder.p_mlp.3",
+    "input_embedder.atom_attention_encoder.p_mlp.5",
+    "msa_module.msa_proj", "msa_module.s_proj", "rel_pos.linear_layer",
+    "s_diffusion_to_s", "s_init", "s_recycle", "s_to_z",
+    "s_to_z_prod_in1", "s_to_z_prod_in2", "s_to_z_prod_out", "s_to_z_transpose",
+    "z_init_1", "z_init_2", "z_recycle",
+})
+BOLTZ_DIFF_LINEARS = frozenset({
+    "out_token_feat_update.transition_block.a_to_b",
+    "out_token_feat_update.transition_block.adaln.s_bias",
+    "out_token_feat_update.transition_block.adaln.s_scale",
+    "out_token_feat_update.transition_block.b_to_a",
+    "out_token_feat_update.transition_block.output_projection.0",
+    "out_token_feat_update.transition_block.swish_gate.0",
+    "score_model.atom_attention_decoder.a_to_q_trans",
+    "score_model.atom_attention_decoder.atom_feat_to_atom_pos_update.1",
+    "score_model.atom_attention_encoder.atom_to_token_trans.0",
+    "score_model.atom_attention_encoder.r_to_q_trans",
+    "score_model.s_to_a_linear.1",
+    "score_model.single_conditioner.fourier_to_single",
+    "score_model.single_conditioner.single_embed",
+    "score_model.single_conditioner.transitions.0.fc1",
+    "score_model.single_conditioner.transitions.0.fc2",
+    "score_model.single_conditioner.transitions.0.fc3",
+    "score_model.single_conditioner.transitions.1.fc1",
+    "score_model.single_conditioner.transitions.1.fc2",
+    "score_model.single_conditioner.transitions.1.fc3",
+})
+BOLTZ_MSA_REST = frozenset({"msa_proj", "s_proj"})
+# LayerNorm feeds the named linear. Width is that linear's K, except where the comment says otherwise.
+_BZ_PAIR_LN = {
+    "attention.proj_q": "attn_s_ln",
+    "attention.proj_z.1": "attn_z_ln",
+    "transition_s.fc1": "trans_s_ln",
+    "transition_z.fc1": "trans_z_ln",
+    "tri_att_start.linear": "tri_att_start_ln",
+    "tri_att_end.linear": "tri_att_end_ln",
+    "tri_mul_in.p_in": "tri_mul_in_ln_in",
+    "tri_mul_out.p_in": "tri_mul_out_ln_in",
+    "tri_mul_in.p_out": "tri_mul_in_ln_out",
+    "tri_mul_out.p_out": "tri_mul_out_ln_out",
+}
+_BZ_PAIR_SILU = {"transition_s.fc1": "trans_s_silu", "transition_z.fc1": "trans_z_silu"}
+_BZ_PAIR_MUL = {"transition_s.fc2": "trans_s_mul", "transition_z.fc2": "trans_z_mul"}
+_BZ_MSA_LN = {
+    "msa_transition.fc1": "msa_trans_ln",
+    "z_transition.fc1": "z_trans_ln",
+    "outer_product_mean.proj_a": "opm_ln",
+    "pair_weighted_averaging.proj_m": "pwa_m_ln",
+    "pair_weighted_averaging.proj_z": "pwa_z_ln",
+    "tri_att_start.linear": "tri_att_start_ln",
+    "tri_att_end.linear": "tri_att_end_ln",
+    "tri_mul_in.p_in": "tri_mul_in_ln_in",
+    "tri_mul_out.p_in": "tri_mul_out_ln_in",
+    "tri_mul_in.p_out": "tri_mul_in_ln_out",
+    "tri_mul_out.p_out": "tri_mul_out_ln_out",
+}
+_BZ_MSA_SILU = {"msa_transition.fc1": "msa_trans_silu", "z_transition.fc1": "z_trans_silu"}
+_BZ_MSA_MUL = {"msa_transition.fc2": "msa_trans_mul", "z_transition.fc2": "z_trans_mul"}
+_BZ_CACHE_PREFIX = "diffusion.score_model.pairwise_conditioner."
+_BZ_CACHE_LN = {
+    _BZ_CACHE_PREFIX + "dim_pairwise_init_proj.1": "pair_init_ln",
+    _BZ_CACHE_PREFIX + "transitions.0.fc1": "pair_trans0_ln",
+    _BZ_CACHE_PREFIX + "transitions.1.fc1": "pair_trans1_ln",
+}
+_BZ_CACHE_SILU = {
+    _BZ_CACHE_PREFIX + "transitions.0.fc1": "pair_trans0_silu",
+    _BZ_CACHE_PREFIX + "transitions.1.fc1": "pair_trans1_silu",
+}
+_BZ_CACHE_MUL = {
+    _BZ_CACHE_PREFIX + "transitions.0.fc2": "pair_trans0_mul",
+    _BZ_CACHE_PREFIX + "transitions.1.fc2": "pair_trans1_mul",
+}
+_BZ_DIFF_LN = {
+    "score_model.single_conditioner.single_embed": "norm_single",
+    "score_model.single_conditioner.transitions.0.fc1": "single_trans0_ln",
+    "score_model.single_conditioner.transitions.1.fc1": "single_trans1_ln",
+    "score_model.s_to_a_linear.1": "s_to_a_ln",
+}
+_BZ_DIFF_SILU = {
+    "score_model.single_conditioner.transitions.0.fc1": "single_trans0_silu",
+    "score_model.single_conditioner.transitions.1.fc1": "single_trans1_silu",
+}
+_BZ_DIFF_MUL = {
+    "score_model.single_conditioner.transitions.0.fc2": "single_trans0_mul",
+    "score_model.single_conditioner.transitions.1.fc2": "single_trans1_mul",
+}
+_BZ_CACHE_SHAPES = (
+    (_BZ_CACHE_PREFIX + "dim_pairwise_init_proj.1", 256, 128, "pair"),
+    (_BZ_CACHE_PREFIX + "transitions.0.fc1", 128, 256, "pair"),
+    (_BZ_CACHE_PREFIX + "transitions.0.fc2", 128, 256, "pair"),
+    (_BZ_CACHE_PREFIX + "transitions.0.fc3", 256, 128, "pair"),
+    (_BZ_CACHE_PREFIX + "transitions.1.fc1", 128, 256, "pair"),
+    (_BZ_CACHE_PREFIX + "transitions.1.fc2", 128, 256, "pair"),
+    (_BZ_CACHE_PREFIX + "transitions.1.fc3", 256, 128, "pair"),
+)
+
+
+def _bz_by(layer: Layer) -> dict:
+    return {ln.name: ln for ln in layer.pair_linears}
+
+
+def _bz_lin(by: dict, name: str, k: int, n: int, rows: str) -> None:
+    lin = by.get(name)
+    if lin is None or (lin.k, lin.n, lin.rows) != (k, n, rows):
+        raise ValueError(f"boltz-1 {name} shape is not [{k}, {n}] on {rows}")
+
+
+def _bz_transition(by: dict, prefix: str, k: int, hidden: int, rows: str) -> None:
+    _bz_lin(by, f"{prefix}.fc1", k, hidden, rows)
+    _bz_lin(by, f"{prefix}.fc2", k, hidden, rows)
+    _bz_lin(by, f"{prefix}.fc3", hidden, k, rows)
+
+
+def _bz_triangle(by: dict) -> None:
+    for side in ("in", "out"):
+        _bz_lin(by, f"tri_mul_{side}.p_in", 128, 256, "pair")
+        _bz_lin(by, f"tri_mul_{side}.g_in", 128, 256, "pair")
+        _bz_lin(by, f"tri_mul_{side}.p_out", 128, 128, "pair")
+    for side in ("start", "end"):
+        _bz_lin(by, f"tri_att_{side}.linear", 128, 4, "pair")
+
+
+def _bz_check_pair(layer: Layer) -> None:
+    if {ln.name for ln in layer.pair_linears} != BOLTZ_PAIR_LINEARS:
+        raise ValueError("boltz-1 pairformer linears are not the published set")
+    by = _bz_by(layer)
+    _bz_lin(by, "attention.proj_q", 384, 384, "res")
+    _bz_lin(by, "attention.proj_z.1", 128, 16, "pair")
+    _bz_transition(by, "transition_s", 384, 1536, "res")
+    _bz_transition(by, "transition_z", 128, 512, "pair")
+    _bz_triangle(by)
+
+
+def _bz_check_msa(layer: Layer) -> None:
+    if {ln.name for ln in layer.pair_linears} != BOLTZ_MSA_LINEARS:
+        raise ValueError("boltz-1 msa linears are not the published set")
+    by = _bz_by(layer)
+    _bz_transition(by, "msa_transition", 64, 256, "msa")
+    _bz_transition(by, "z_transition", 128, 512, "pair")
+    _bz_lin(by, "outer_product_mean.proj_a", 64, 32, "msa")
+    _bz_lin(by, "pair_weighted_averaging.proj_m", 64, 256, "msa")
+    _bz_lin(by, "pair_weighted_averaging.proj_z", 128, 8, "pair")
+    _bz_triangle(by)
+
+
+def _bz_check_recycle(layer: Layer) -> None:
+    if len(layer.pair_linears) != 1:
+        raise ValueError("boltz-1 recycle projection is not one linear")
+    lin = layer.pair_linears[0]
+    if (lin.k, lin.n, lin.rows) not in ((384, 384, "res"), (128, 128, "pair")):
+        raise ValueError("boltz-1 recycle projection shape is not the published pair")
+
+
+def _bz_check_conf(layer: Layer) -> None:
+    if {ln.name for ln in layer.pair_linears} != BOLTZ_CONF_LINEARS:
+        raise ValueError("boltz-1 confidence linears are not the published set")
+    by = _bz_by(layer)
+    _bz_lin(by, "s_recycle", 384, 384, "res")
+    _bz_lin(by, "z_recycle", 128, 128, "pair")
+    _bz_lin(by, "s_diffusion_to_s", 768, 384, "res")
+    _bz_lin(by, "confidence_heads.to_plddt_logits", 384, 50, "res")
+    _bz_lin(by, "confidence_heads.to_pae_logits", 128, 64, "res")
+
+
+def _bz_check_cache(layer: Layer) -> None:
+    for name, k, n, rows in _BZ_CACHE_SHAPES:
+        found = [ln for ln in layer.pair_linears if ln.name == name]
+        if len(found) != 1 or (found[0].k, found[0].n, found[0].rows) != (k, n, rows):
+            raise ValueError(f"boltz-1 {name} shape is not [{k}, {n}] on {rows}")
+
+
+def _bz_check_diff(layer: Layer) -> None:
+    if {ln.name for ln in layer.pair_linears} != BOLTZ_DIFF_LINEARS:
+        raise ValueError("boltz-1 diffusion conditioner linears are not the published set")
+    by = _bz_by(layer)
+    _bz_lin(by, "score_model.single_conditioner.single_embed", 839, 768, "res")
+    _bz_lin(by, "score_model.single_conditioner.fourier_to_single", 256, 768, "res")
+    _bz_transition(by, "score_model.single_conditioner.transitions.0", 768, 1536, "res")
+    _bz_transition(by, "score_model.single_conditioner.transitions.1", 768, 1536, "res")
+    _bz_lin(by, "score_model.s_to_a_linear.1", 768, 768, "res")
+    _bz_lin(by, "score_model.atom_attention_decoder.a_to_q_trans", 768, 128, "atom")
+    _bz_lin(by, "out_token_feat_update.transition_block.a_to_b", 768, 1536, "res")
+
+
 def _of_who(model: ModelSpec) -> str:
     if model.id in ("openfold", "alphafold2"):
         return model.id
@@ -2504,6 +2741,18 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
         embed_by = {l.name: l for l in L.pair_linears}
         if set(embed_by) != OPENFOLD_EMBED_LINEARS:
             raise ValueError(f"{who} embed linears are not the published set")
+    elif kind == "bz_pair":
+        _bz_check_pair(L)
+    elif kind == "bz_msa":
+        _bz_check_msa(L)
+    elif kind == "bz_recycle":
+        _bz_check_recycle(L)
+    elif kind == "bz_conf":
+        _bz_check_conf(L)
+    elif kind == "bz_cache":
+        _bz_check_cache(L)
+    elif kind == "bz_diff":
+        _bz_check_diff(L)
     state_copies = _esmfold_state_copies(model) if kind == "esm_lddt" else 1
     for l in L.pair_linears:
         m = _pair_rows(l.rows, pd, b, s, ps, dap)
@@ -2562,6 +2811,51 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
             # Template pair stack's final LayerNorm, once per recycle, before pointwise attention.
             width = embed_by["template_pair_embedder.linear"].n
             ops.append(_esm_ln("tmpl_out_ln", m, width, li, rep, who))
+        elif kind == "bz_pair":
+            ln_name = _BZ_PAIR_LN.get(l.name)
+            if ln_name:
+                ops.append(_esm_ln(ln_name, m, l.k, li, rep, "boltz-1"))
+        elif kind == "bz_msa":
+            ln_name = _BZ_MSA_LN.get(l.name)
+            if ln_name:
+                ops.append(_esm_ln(ln_name, m, l.k, li, rep, "boltz-1"))
+        elif kind == "bz_recycle":
+            if (l.k, l.n, l.rows) == (384, 384, "res"):
+                ops.append(_esm_ln("s_ln", m, l.k, li, rep, "boltz-1"))
+            else:
+                ops.append(_esm_ln("z_ln", m, l.k, li, rep, "boltz-1"))
+        elif kind == "bz_conf" and l.name == "s_recycle":
+            # ConfidenceModule.imitate_trunk norms s before repeat_interleave(multiplicity).
+            rows = _pair_rows("res", pd, b, 1, 1, dap)
+            ops.append(_esm_ln("conf_s_ln", rows, l.k, li, rep_tok, "boltz-1"))
+        elif kind == "bz_conf" and l.name == "z_recycle":
+            rows = _pair_rows("pair", pd, b, 1, 1, dap)
+            ops.append(_esm_ln("conf_z_ln", rows, l.k, li, 1, "boltz-1"))
+        elif kind == "bz_conf" and l.name == "s_diffusion_to_s":
+            ops.append(_esm_ln("s_diff_ln", m, l.k, li, rep, "boltz-1"))
+        elif kind == "bz_conf" and l.name == "confidence_heads.to_plddt_logits":
+            ops.append(_esm_ln("final_s_ln", m, l.k, li, rep, "boltz-1"))
+        elif kind == "bz_conf" and l.name == "confidence_heads.to_pae_logits":
+            # final_z_norm runs on the pair grid after the sample expansion. The head GEMM stays on residue rows.
+            rows = _pair_rows("pair", pd, b, s, ps, dap)
+            ops.append(_esm_ln("final_z_ln", rows, 128, li, 1, "boltz-1"))
+        elif kind == "bz_cache":
+            ln_name = _BZ_CACHE_LN.get(l.name)
+            if ln_name:
+                ops.append(_esm_ln(ln_name, m, l.k, li, rep, "boltz-1"))
+        elif kind == "bz_diff" and l.name == "score_model.single_conditioner.fourier_to_single":
+            # FourierEmbedding is one vector per sample, not one per token. The GEMM row count stays as released.
+            ops.append(_esm_ln("fourier_ln", b * s, l.k, li, rep_tok, "boltz-1"))
+        elif kind == "bz_diff" and l.name == "score_model.atom_attention_decoder.a_to_q_trans":
+            rows = _pair_rows("res", pd, b, s, ps, dap)
+            ops.append(_esm_ln("a_ln", rows, 768, li, rep_tok, "boltz-1"))
+        elif kind == "bz_diff" and l.name == "out_token_feat_update.transition_block.a_to_b":
+            ops.append(_esm_ln("tok_upd_ln", m, l.k, li, rep, "boltz-1"))
+            ops.append(_esm_ln("tok_fourier_ln", b * s, 256, li, rep_tok, "boltz-1"))
+        elif kind == "bz_diff":
+            ln_name = _BZ_DIFF_LN.get(l.name)
+            if ln_name:
+                ops.append(_esm_ln(ln_name, m, l.k, li, rep, "boltz-1"))
         o = gemm(model, f"{L.stack}.{l.name}", li, m, l.k, l.n, l.role or "pair", stream=True, replicated=rep)
         ops.append(o)
         if kind == "esm_proj" and l.name == "mlp.1":
@@ -2595,6 +2889,34 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
                 ops.append(_esm_relu(relu_name, m * l.n, li, rep, model.act_fmt, who))
         elif kind == "of_embed" and l.name == "template_angle_embedder.linear_1":
             ops.append(_esm_relu("tmpl_angle_relu", m * l.n, li, rep, model.act_fmt, who))
+        elif kind == "bz_pair":
+            silu_name = _BZ_PAIR_SILU.get(l.name)
+            if silu_name:
+                ops.append(_bz_silu(silu_name, m * l.n, li, rep, model.act_fmt))
+            mul_name = _BZ_PAIR_MUL.get(l.name)
+            if mul_name:
+                ops.append(_bz_mul(mul_name, m * l.n, li, rep, model.act_fmt))
+        elif kind == "bz_msa":
+            silu_name = _BZ_MSA_SILU.get(l.name)
+            if silu_name:
+                ops.append(_bz_silu(silu_name, m * l.n, li, rep, model.act_fmt))
+            mul_name = _BZ_MSA_MUL.get(l.name)
+            if mul_name:
+                ops.append(_bz_mul(mul_name, m * l.n, li, rep, model.act_fmt))
+        elif kind == "bz_cache":
+            silu_name = _BZ_CACHE_SILU.get(l.name)
+            if silu_name:
+                ops.append(_bz_silu(silu_name, m * l.n, li, rep, model.act_fmt))
+            mul_name = _BZ_CACHE_MUL.get(l.name)
+            if mul_name:
+                ops.append(_bz_mul(mul_name, m * l.n, li, rep, model.act_fmt))
+        elif kind == "bz_diff":
+            silu_name = _BZ_DIFF_SILU.get(l.name)
+            if silu_name:
+                ops.append(_bz_silu(silu_name, m * l.n, li, rep, model.act_fmt))
+            mul_name = _BZ_DIFF_MUL.get(l.name)
+            if mul_name:
+                ops.append(_bz_mul(mul_name, m * l.n, li, rep, model.act_fmt))
         ops.append(Op(f"{L.stack}.{l.name}.ew", "vector", li, vec=m * (l.k + l.n) * 4, replicated=rep))
     has_col = any(c.kind == "col_att" for c in L.pair_cores)
     for i, c in enumerate(L.pair_cores):
