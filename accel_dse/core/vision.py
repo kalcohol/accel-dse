@@ -97,6 +97,11 @@ d1 FastConformer (``audio.py`` ``ConformerLayer``) bills each block's LayerNorms
 ``nn.ReLU`` calls (one clip, not ReLU6) and the ``_time_mask`` multiplies. The depthwise
 ``masked_fill``, the pad and the plain residual adds stay in the tail. The sinusoid table
 is not an op.
+Fun-ASR-Nano (kind ``sanm``) bills each block's input and post LayerNorm, ``ACT2FN["relu"]``
+(``nn.ReLU``, one clip) on the MLP intermediate, and the FSMN mask multiply. The output
+LayerNorm runs only on the two published layers. The projector ReLU and the adaptor's
+LayerNorms and ReLU use the same counts. The adaptor has no FSMN. Eval dropout is not an
+op. The ``sqrt(d)`` scale and the sinusoid add are not ops.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -373,7 +378,8 @@ class AudioSpec:
     # 0.272 Fun-ASR-Nano (kind "sanm"): Kaldi fbank (25 ms / 10 ms, snip_edges) → LFR stacking ``lfr`` = (m, n): m
     # frames stacked, stride n (80 × 7 = 560 inputs, 16.7 LFR frames / s); ``ad`` = adaptor (layers, d, heads, ffn)
     # after the projector Linears; ``kernel`` = FSMN depthwise kernel; ``maxf`` (sanm) = LFR positions available
-    # (positional_embedding rows − 1: positions counted from one)
+    # (positional_embedding rows − 1: positions counted from one).
+    # 0.414: ``sanm_final`` is the encoder layers whose output LayerNorm is not Identity.
     lfr: tuple[int, int] = ()
     ad: tuple[int, int, int, int] = ()
     # 0.272 Step-Audio-2-mini: ``mpad`` samples appended before the STFT (log_mel_spectrogram padding=479; frames =
@@ -416,6 +422,9 @@ class AudioSpec:
     # 0.395 OmniASR CTC (kind "w2v"): OmniASRForCTC.ctc_head is Linear(hidden, vocab) with bias,
     # applied to every encoder frame. Prompt tokens stay 0. LLM ports leave this false.
     ctc: bool = False
+    # 0.414 Fun-ASR-Nano: encoder layers that construct an output LayerNorm. Empty
+    # for every other kind. Identity layers are not in this tuple.
+    sanm_final: tuple[int, ...] = ()
 
     @property
     def samples_per_token(self) -> int:
@@ -1113,19 +1122,35 @@ def _sanm_spec(ac: dict, ad: dict) -> AudioSpec:
     output, LayerNorm, ReLU MLP fc1 / fc2 with bias]; bidirectional attention over the whole utterance (no chunking);
     final LayerNorm on layers L − n_tp − 1 and L − 1 only.  All L layers (incl. the n_tp timestamp-prediction layers)
     run in forward.  Projector: Linear d → P, ReLU, Linear P → D, then the adaptor's n blocks (d = D, no FSMN, ReLU MLP
-    D/4).  One LLM token per LFR frame.  Header: 233,741,920 params."""
+    D/4).  One LLM token per LFR frame.  Header: 233,741,920 params.
+
+    0.414 bills those LayerNorms, the ReLU, and the FSMN mask multiply in ``_sanm_ops``.
+    ``hidden_act`` / ``projector_hidden_act`` must be ``relu``. The two output-LayerNorm
+    layers must be distinct encoder indices. Anything else is refused.
+    """
+    if ac.get("hidden_act") != "relu" or ad.get("hidden_act") != "relu" or ad.get("projector_hidden_act") != "relu":
+        raise ValueError("fun_asr_nano hidden_act is not relu")
     d, L, nh, ffn, k = ac["hidden_size"], ac["num_hidden_layers"], ac["num_attention_heads"], ac["intermediate_size"], ac["fsmn_kernel_size"]
     m = ac.get("num_stacked_frames", 7)
     din = ac["num_mel_bins"] * m
     D, P, nl = ad["hidden_size"], ad["projector_hidden_size"], ad["num_hidden_layers"]
     adh, adf = ad["num_attention_heads"], ad["intermediate_size"]
+    n_tp = ac.get("num_timestamp_prediction_layers")
+    # Output LayerNorm exists only at (L - n_tp - 1) and (L - 1). The param total
+    # counts two of them (2 * 2 * d). A repeated or out-of-range index is refused.
+    if isinstance(n_tp, bool) or not isinstance(n_tp, int):
+        raise ValueError("fun_asr_nano timestamp layers are missing")
+    i0, i1 = L - n_tp - 1, L - 1
+    if not (0 <= i0 < i1 < L):
+        raise ValueError("fun_asr_nano final LayerNorm layers are not two encoder layers")
 
     def blk(i: int, dd: int, f: int, fsmn: bool) -> int:
         return 2 * i + 3 * _lin(i, dd) + _lin(dd, dd) + (dd * k if fsmn else 0) + 2 * dd + _lin(dd, f) + _lin(f, dd)
     params = (blk(din, d, ffn, True) + (L - 1) * blk(d, d, ffn, True) + 2 * 2 * d
               + _lin(d, P) + _lin(P, D) + nl * blk(D, D, adf, False))
     return AudioSpec(16000, (160,), (d,), (L,), k, ffn / d, D, params, kind="sanm", heads=nh, n_mels=din,
-                     lin=((d, P), (P, D)), maxf=ac["max_position_embeddings"] - 1, lfr=(m, 6), ad=(nl, D, adh, adf))
+                     lin=((d, P), (P, D)), maxf=ac["max_position_embeddings"] - 1, lfr=(m, 6), ad=(nl, D, adh, adf),
+                     sanm_final=(i0, i1))
 
 
 def _omniasr_ctc_ready(cfg: dict, ac: dict) -> bool:
@@ -1264,11 +1289,32 @@ def _w2v_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> li
 def _sanm_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> list[Op]:
     """0.272 Fun-ASR-Nano SAN-M encoder + projector + adaptor ops (see _sanm_spec): every layer on all T LFR positions
     of a clip (one pass per clip, bidirectional attention T × T per head); FSMN as a depthwise conv (2·k per output
-    element); final LayerNorms folded into the vector ops."""
+    element).
+
+    0.414: ``FunAsrNanoEncoderLayer`` (transformers ``modeling_fun_asr_nano.py``, sha ``a672eb5``)
+    runs input LayerNorm, attention, then the FSMN. ``FunAsrNanoFSMN`` multiplies by the
+    feature mask (cast to the activation dtype) before the depthwise conv. Post LayerNorm
+    and ``ACT2FN["relu"]`` follow. ``ACT2FN["relu"]`` is ``nn.ReLU``: ``max(x, 0)``, one
+    clip, no transcendental. Not ``nn.ReLU6``. The output LayerNorm is constructed only
+    for ``sanm_final``; other layers store ``nn.Identity``. Layer 0's input LayerNorm is
+    ``input_size`` (stacked mel), and its value projection is already ``hidden``. The
+    projector runs one ReLU between its two linears. Adaptor layers are the same block
+    with ``use_fsmn=False`` and ``add_norm=False``: no mask, no output LayerNorm.
+    LayerNorm reduces in fp32. ReLU and the mask do not upcast; the release is bf16.
+    A requested GEMM activation format does not change those dtypes. Eval dropout is
+    identity. The ``sqrt(d)`` scale, the sinusoid add, the pad and the plain residual
+    adds are not ops. The shared GEMM tail is not reduced. Softmax is not given an SFU.
+    """
+    final = a.sanm_final
+    depth = a.depths[0]
+    if len(final) != 2 or final[0] == final[1] or any(i < 0 or i >= depth for i in final):
+        raise ValueError("fun_asr_nano final LayerNorm layers are not two encoder layers")
     d, dh = a.dims[0], a.dims[0] // a.heads
     T = a.lfr_frames(seconds)
     R = T * clips
     ops: list[Op] = []
+    # Released checkpoint dtype. The class does not cast ReLU or the mask to the request.
+    act = "bf16"
 
     def gemm(name: str, m: int, k: int, n: int, li: int = 0) -> Op:
         return Op(name, "gemm", li, m=m, k=k, n=n, role="vision", w_params=k * n + n, w_bits=16.0, w_fmt="bf16",
@@ -1282,22 +1328,41 @@ def _sanm_ops(a: AudioSpec, seconds: float, clips: int, ab: float, af: str) -> l
                    orient=True),
                 Op(f"{p}{li}.softmax", "vector", li, vec=cnt * T * T * 5.0)]
     ff = int(a.mlp * d)
-    for li in range(a.depths[0]):
+    for li in range(depth):
+        # Layer 0 normalizes the stacked mel width. Later layers normalize hidden.
         i = a.n_mels if li == 0 else d
-        ops += [gemm(f"aud.{li}.qkv", R, i, 3 * d, li), gemm(f"aud.{li}.o", R, d, d, li),
-                Op(f"aud.{li}.fsmn", "vector", li, vec=R * d * 2.0 * a.kernel, act_bytes=2 * R * d * ab,
-                   w_params=d * a.kernel, w_bits=16.0),
-                gemm(f"aud.{li}.fc1", R, d, ff, li), gemm(f"aud.{li}.fc2", R, ff, d, li)]
+        ops.append(_ln_vec(f"aud.{li}.in_ln", li, R, i))
+        ops.append(gemm(f"aud.{li}.qkv", R, i, 3 * d, li))
         ops += attn("aud.", li, a.heads, dh)
-    L = a.depths[0]
+        ops.append(gemm(f"aud.{li}.o", R, d, d, li))
+        # Mask multiply reads v_proj, which is hidden wide even on layer 0.
+        ops.append(Op(f"aud.{li}.mask", "vector", li, vec=R * d, a_fmt=act))
+        ops.append(Op(f"aud.{li}.fsmn", "vector", li, vec=R * d * 2.0 * a.kernel, act_bytes=2 * R * d * ab,
+                      w_params=d * a.kernel, w_bits=16.0))
+        ops.append(_ln_vec(f"aud.{li}.post_ln", li, R, d))
+        ops.append(gemm(f"aud.{li}.fc1", R, d, ff, li))
+        ops.append(_relu_vec(f"aud.{li}.relu", li, R * ff, act))
+        ops.append(gemm(f"aud.{li}.fc2", R, ff, d, li))
+        if li in final:
+            ops.append(_ln_vec(f"aud.{li}.out_ln", li, R, d))
+    L = depth
+    if len(a.lin) != 2:
+        raise ValueError("fun_asr_nano projector is not two linears")
     for j, (k, n) in enumerate(a.lin):
         ops.append(gemm(f"aud.proj.linear{j}", R, k, n, L))
+        if j == 0:
+            ops.append(_relu_vec("aud.proj.relu", L, R * n, act))
     nl, D, h2, f2 = a.ad
     for j in range(nl):
         li = L + 1 + j
-        ops += [gemm(f"aud.ad{j}.qkv", R, D, 3 * D, li), gemm(f"aud.ad{j}.o", R, D, D, li),
-                gemm(f"aud.ad{j}.fc1", R, D, f2, li), gemm(f"aud.ad{j}.fc2", R, f2, D, li)]
+        ops.append(_ln_vec(f"aud.ad{j}.in_ln", li, R, D))
+        ops.append(gemm(f"aud.ad{j}.qkv", R, D, 3 * D, li))
         ops += attn(f"aud.ad{j}.", li, h2, D // h2)
+        ops.append(gemm(f"aud.ad{j}.o", R, D, D, li))
+        ops.append(_ln_vec(f"aud.ad{j}.post_ln", li, R, D))
+        ops.append(gemm(f"aud.ad{j}.fc1", R, D, f2, li))
+        ops.append(_relu_vec(f"aud.ad{j}.relu", li, R * f2, act))
+        ops.append(gemm(f"aud.ad{j}.fc2", R, f2, D, li))
     return ops
 
 
@@ -1521,6 +1586,14 @@ def _gelu_erf_vec(name: str, layer: int, n: int, af: str) -> Op:
 def _ln_vec(name: str, layer: int, rows: int, width: int) -> Op:
     """PyTorch layer_norm reduces in fp32. One rsqrt per row. The affine is already in the parameter total."""
     return Op(name, "vector", layer, vec=rows * width * 4, sfu=float(rows), a_fmt="fp32")
+
+
+def _relu_vec(name: str, layer: int, n: int, af: str) -> Op:
+    """``nn.ReLU`` / ``ACT2FN["relu"]`` is ``max(x, 0)``. One clip, no transcendental.
+
+    ``nn.ReLU6`` is two clips (``vec = n * 2``). This is not that op. The class does not upcast.
+    """
+    return Op(name, "vector", layer, vec=n, a_fmt=af)
 
 
 def _rms_vec(name: str, layer: int, rows: int, width: int) -> Op:
