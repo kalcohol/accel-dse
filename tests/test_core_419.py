@@ -197,7 +197,9 @@ def test_qwen3vl_refuses_other_acts_and_a_missing_dtype():
     assert "vis.pre_ln" in names and "vis.mgelu" in names and "vis.0.attn_ln" in names
     ernie = get_model("ernie-4.5-vl-28b-a3b")
     enames = [op.name for op in vision_ops(ernie.vision, image_grid(ernie.vision, 1024, 1024), 1)]
-    assert "vis.mgelu" not in enames and "vis.0.attn_ln" not in enames
+    # 0.433 bills ERNIE's own LayerNorm as attn_ln. The Qwen3-VL merger names stay off this tower.
+    assert "vis.mgelu" not in enames and "vis.pre_ln" not in enames and "vis.ds0.ln" not in enames
+    assert "vis.0.attn_ln" in enames and "vis.out_ln" in enames and "vis.sp_gelu" in enames
 
 
 def test_lfm2_vl_bills_layernorm_and_projector_erf_gelu():
