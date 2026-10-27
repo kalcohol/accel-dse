@@ -148,8 +148,10 @@ padded crop, and ``F.gelu`` (the default erf form) after the 2x2 unshuffle, on
 the valid rows and ``projector_hidden_size``. The tower MLP stays
 ``gelu_pytorch_tanh``. The trunk bills fp32 RMSNorm (operator, FFN, embedding,
 and per-head q/k) and ``F.silu(w1) * w3``. The decision scorer bills LayerNorm
-and ``nn.GELU()`` (erf) on marker rows. The head's ``TransformerEncoderLayer``
-keeps its constructor-default activation inside the GEMM tail.
+and ``nn.GELU()`` (erf) on marker rows. Each decision ``TransformerEncoderLayer``
+bills its two ``nn.LayerNorm`` calls (pre-attention and pre-FFN, width ``d``)
+and the constructor-default ``F.relu`` on the ``4 * d`` width. Dropout 0 and
+the full residual adds are not ops.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -1811,7 +1813,7 @@ def _ln_vec(name: str, layer: int, rows: int, width: int) -> Op:
 
 
 def _relu_vec(name: str, layer: int, n: int, af: str) -> Op:
-    """``nn.ReLU`` / ``ACT2FN["relu"]`` is ``max(x, 0)``. One clip, no transcendental.
+    """``nn.ReLU`` / ``ACT2FN["relu"]`` / ``F.relu`` is ``max(x, 0)``. One clip, no transcendental.
 
     ``nn.ReLU6`` is two clips (``vec = n * 2``). This is not that op. The class does not upcast.
     """
@@ -3078,9 +3080,13 @@ def d1_trunk_ops(v: VisionSpec, sequences: int, text: int, prefix: int, labels: 
     normalized per head at ``head_dim``; the weight is not the flattened hidden size.
     ``MLP.forward`` is ``w2(F.silu(w1(x)) * w3(x))``. SiLU and the product use the FFN
     width. ``F.silu`` does not upcast. The scorer is LayerNorm, Linear, ``nn.GELU()``,
-    Linear on marker rows. ``nn.GELU()`` is the erf form. The two
-    ``TransformerEncoderLayer`` blocks keep the constructor default (``F.relu``) inside
-    the GEMM tail. RoPE and the full residual adds are not ops. The requested GEMM
+    Linear on marker rows. ``nn.GELU()`` is the erf form. Each
+    ``TransformerEncoderLayer`` is built without ``activation``, so PyTorch 2.6
+    uses ``F.relu``. ``norm_first`` runs one LayerNorm before attention and one
+    before the FFN, both at ``d_model`` on the text rows. ``F.relu`` is
+    ``max(x, 0)`` on ``linear1``'s ``4 * d`` output. Dropout is 0. The residual
+    adds are the full branch. ``TransformerEncoder`` is constructed with
+    ``norm=None``. RoPE and those residual adds are not ops. The requested GEMM
     activation format is ignored; released weights are fp32.
     """
     del af
@@ -3147,7 +3153,10 @@ def d1_trunk_ops(v: VisionSpec, sequences: int, text: int, prefix: int, labels: 
     if text:
         ops.append(Op("head.type_emb", "lookup", -1, kv_read=sequences * h * ab, vec=sequences * h))
         for j in range(hl):
-            # norm_first TransformerEncoderLayer. Its LayerNorm and default F.relu stay in the tail.
+            # norm_first: LayerNorm, attention, full residual, LayerNorm, linear, F.relu, linear.
+            # Dropout is 0. The residual adds are the full branch. The padding mask stays in softmax.
+            # F.relu is max(x, 0) on the 4 * d width, not ReLU6 and not the hidden width.
+            ops.append(_ln_vec(f"head.{j}.attn_ln", j, m_text, h))
             ops += [gemm(f"head.{j}.in", m_text, h, 3 * h, j),
                     gemm(f"head.{j}.o", m_text, h, h, j)]
             cnt = sequences * hh
@@ -3156,8 +3165,10 @@ def d1_trunk_ops(v: VisionSpec, sequences: int, text: int, prefix: int, labels: 
                     Op(f"head.{j}.pv", "attn", j, m=text, k=text, n=hhd, count=cnt, causal=1.0,
                        act_bytes=cnt * text * hhd * ab, orient=True),
                     Op(f"head.{j}.softmax", "vector", j, vec=cnt * text * text * 5.0)]
-            ops += [gemm(f"head.{j}.fc1", m_text, h, hff, j),
-                    gemm(f"head.{j}.fc2", m_text, hff, h, j)]
+            ops.append(_ln_vec(f"head.{j}.mlp_ln", j, m_text, h))
+            ops.append(gemm(f"head.{j}.fc1", m_text, h, hff, j))
+            ops.append(_relu_vec(f"head.{j}.relu", j, m_text * hff, "fp32"))
+            ops.append(gemm(f"head.{j}.fc2", m_text, hff, h, j))
     if labels > 0 and text:
         m_score = sequences * labels
         # Sequential: LayerNorm, Linear, nn.GELU(), Linear. Marker rows only.
