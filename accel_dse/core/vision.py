@@ -37,6 +37,10 @@ docs/MODEL.md §20):
          Kimi-K3: no biases, RMSNorm, attention width ``qkv_hidden_size``, merger v2 (4h→4h → GELU → 4h→text,
          post RMSNorm).  Resize: ``navit_resize_image`` (≤ in_patch_limit patches, ≤ 512 patches per side, padded to
          multiples of patch·merge = 28 px).
+         0.427 bills the K2.5 / K2.7 ``nn.LayerNorm`` calls and the K3 ``nn.RMSNorm`` calls, plus
+         ``nn.GELU()`` (the erf form) after the merger's first linear. The tower MLP stays
+         ``PytorchGELUTanh`` and is not billed. RoPE, the full residual adds, and the
+         single-frame temporal mean stay in the tail.
   ds     DeepSeek-V4.1-Flash: Linear patch embed (3·14² → h), RMSNorm blocks (fused qkv with bias, SiLU-gated MLP w1 h→2I
          without bias, w2), final RMSNorm, aligner 3×3 unfold (9h → text dim → GELU → text dim).  Resize:
          ``plan_image_grid`` (≥ min_pixels, ≤ vision_max_n_token LLM positions incl. one newline token per row and
@@ -206,6 +210,17 @@ the SwiGLU, and once after the last block on the patch rows. ``F.silu`` is
 hidden size. SiLU, the product and GELU stay at the vision-role dtype. RMSNorm
 stays fp32. RoPE, the aligner pad and unfold, the full residual adds, and the
 image-span stores are not ops.
+Kimi-K2.5 and Kimi-K2.7-Code (``ln_mode`` ``k25``) bill ``nn.LayerNorm`` before
+attention, before the MLP, on every frame's patch rows after the blocks, and
+on the merged*merge² rows before the projector view. ``nn.GELU()`` after the
+first merger linear is the erf form, on merged rows at ``4 * hidden``.
+Kimi-K3 (``ln_mode`` ``k3``) bills ``nn.RMSNorm`` before attention, before the
+MLP, and after the blocks, all on hidden (one rsqrt per token, not per head
+and not over ``qkv_hidden_size``). Merger v2 bills the same erf-GELU, then
+``nn.RMSNorm`` on merged rows at the text hidden size. The tower MLP stays
+``PytorchGELUTanh``. GELU follows the one vision-role float. LayerNorm and
+RMSNorm stay fp32. RoPE, position interpolation, the full residual adds, and
+the single-frame temporal mean are not ops.
 The shared 3-wide tail stays on every GEMM. Softmax is not given a second SFU.  Image tokens into the LLM = merged positions
 (+ DeepSeek's processor-inserted newline / start / end positions); chat-template delimiters around an image are text
 tokens of the prompt.  The encoder weights are bf16 as released; activations bf16.
@@ -431,6 +446,7 @@ class VisionSpec:
     # 0.422 GLM-5.3-Flash SiLU, the SwiGLU product, and merger nn.GELU() use it too.
     # 0.423 MiMo-V2.6 gate SiLU, the SwiGLU product, and merger nn.GELU() use it too.
     # 0.426 DeepSeek-V4.1 vision F.silu, the product, and F.gelu use it too.
+    # 0.427 Kimi projector nn.GELU() uses it too.
     # LayerNorm and RMSNorm stay fp32.
     vec_fmt: str = ""
     # 0.419: "qwen3vl" bills Qwen3VLVisionBlock / Qwen3VLVisionPatchMerger LayerNorms
@@ -438,6 +454,9 @@ class VisionSpec:
     # 0.423: "mimo" bills MiMo-V2.6 RMSNorm, gate SiLU, ln_q and merger nn.GELU().
     # 0.424: "qwen35" bills Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp LayerNorms and the
     # merger nn.GELU(). The block MLP stays gelu_pytorch_tanh. Other qwen towers stay empty.
+    # 0.427: "k25" bills Kimi-K2.5 / K2.7-Code LayerNorms and projector nn.GELU().
+    # "k3" bills Kimi-K3 RMSNorms and the same projector nn.GELU(). The tower MLP
+    # stays PytorchGELUTanh.
     ln_mode: str = ""
     # 0.419: deepstack block indexes, in merger order. Empty when deepstack is 0.
     ds_idx: tuple[int, ...] = ()
@@ -3527,8 +3546,36 @@ def vision_spec(hf_id: str, cfg: dict) -> VisionSpec | None:
         hm = h * mk * mk
         params += (_lin(hm, hm, False) + _lin(hm, text_h, False) + text_h) if v2 else \
             (2 * h + _lin(hm, hm) + _lin(hm, text_h))
+        # PatchMergerMLP / PatchMergerMLPV2 hardcode nn.GELU(). projector_hidden_act
+        # is stored and is not read by the class. The released value is gelu, which
+        # matches that constructor. Anything else is not this module.
+        if vc.get("projector_hidden_act") != "gelu":
+            raise ValueError("kimi projector_hidden_act is not gelu")
+        if vc.get("mm_hidden_size") != h:
+            raise ValueError("kimi mm_hidden_size is not vt_hidden_size")
+        if v2:
+            # K3: norm_type rmsnorm, MLP activation PytorchGELUTanh (not billed),
+            # mlp_type mlp2, merger v2 with a post RMSNorm at the text width.
+            if vc.get("norm_type") != "rmsnorm":
+                raise ValueError("kimi v2 norm_type is not rmsnorm")
+            if vc.get("activation_func") != "gelu_pytorch_tanh":
+                raise ValueError("kimi v2 activation_func is not gelu_pytorch_tanh")
+            if vc.get("mlp_type", "mlp2") != "mlp2":
+                raise ValueError("kimi v2 mlp_type is not mlp2")
+            ln_mode = "k3"
+        else:
+            # K2.5 / K2.7: no norm_type key means LayerNorm. qkv width is hidden.
+            # The encoder is constructed with PytorchGELUTanh, not F.gelu.
+            if vc.get("norm_type") not in (None, "layernorm"):
+                raise ValueError("kimi moonvit norm_type is not layernorm")
+            if vc.get("activation_func") not in (None, "gelu_pytorch_tanh"):
+                raise ValueError("kimi moonvit activation_func is not gelu_pytorch_tanh")
+            if q != h:
+                raise ValueError("kimi moonvit qkv width is not hidden")
+            ln_mode = "k25"
         return VisionSpec("kimi", "MoonViT" + (" v2" if v2 else ""), p, 1, h, inter, L, nh, q, False, mk,
-                          ((hm, hm), (hm, text_h)), params, tuple(sorted(pre.items())), abias)
+                          ((hm, hm), (hm, text_h)), params, tuple(sorted(pre.items())), abias,
+                          ln_mode=ln_mode)
     if mt in ("qwen3_5", "qwen3_5_moe", "qwen4_exp", "qwen3_5_vision", "qwen3_5_moe_vision",
               "qwen3_vl", "qwen3_vl_moe", "qwen3_vl_vision"):
         # 0.191: transformers 5 names Qwen3.5 vision *_vision. 0.366: Qwen3-VL deepstack.
@@ -4039,7 +4086,9 @@ def vision_ops(v: VisionSpec, g: ImageGrid, images: int, af: str = "bf16") -> li
         n = g.ph * g.pw
         ops = _tower_ops(v, g.tframes * n, images, images * g.merged, "vis.", af)
         from .dtypes import fmt as _fmt
-        i = next(k for k, o in enumerate(ops) if o.name.startswith("vis.merger"))
+        # Final LN/RMS is before the temporal mean. K2.5 pre_norm is after the mean,
+        # so the insert point is that projector LN when the tower emits it.
+        i = next(k for k, o in enumerate(ops) if o.name.startswith(("vis.merger", "vis.proj_ln")))
         ops.insert(i, Op("vis.tpool", "vector", v.depth, vec=images * g.tframes * n * v.hidden,
                          act_bytes=images * (g.tframes + 1) * n * v.hidden * _fmt(af).bytes))
         return ops
@@ -4131,6 +4180,20 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         if (not v.gated or v.kv_heads or v.qkv != h or len(v.post) != 2
                 or v.post[0][0] != hm or v.post[0][1] != v.post[1][0] or v.post[1][0] != v.post[1][1]):
             raise ValueError("deepseek vision block is not fused qkv plus a two-linear aligner")
+    k25 = v.ln_mode == "k25"
+    k3 = v.ln_mode == "k3"
+    if k25 or k3:
+        # MoonViT LayerNorms (K2.5 / K2.7) or RMSNorms (K3), the final norm, and
+        # projector nn.GELU(). The block MLP stays PytorchGELUTanh. RoPE, the
+        # full residual, and the single-frame temporal mean are not ops.
+        if v.vec_fmt not in ("fp16", "bf16", "fp32"):
+            raise ValueError("kimi vision activation dtype is not a vision float")
+        hm = h * v.merge * v.merge
+        if (v.gated or v.kv_heads or len(v.post) != 2 or v.post[0] != (hm, hm)
+                or v.post[1][0] != hm):
+            raise ValueError("kimi vision block is not fused qkv plus a two-linear merger")
+        if k25 and v.qkv != h:
+            raise ValueError("kimi moonvit qkv width is not hidden")
     if q3:
         # Qwen3VLVisionBlock LayerNorms and Qwen3VLVisionPatchMerger nn.GELU().
         # The block MLP stays gelu_pytorch_tanh. Merger fc1 is Linear(4h, 4h).
@@ -4219,6 +4282,13 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # Block.norm1 is RMSNorm(hidden) on patch tokens, before the fused qkv.
             # One rsqrt per token. q and k are not normalized.
             ops.append(_rms_vec(pfx + f"{li}.norm1", li, rows, h))
+        if k25:
+            # norm0 is LayerNorm(hidden) on patch tokens, before the fused qkv.
+            ops.append(_ln_vec(pfx + f"{li}.attn_ln", li, rows, h))
+        if k3:
+            # norm0 is RMSNorm(hidden) on patch tokens, before the fused qkv.
+            # One rsqrt per token, not per head and not over qkv_hidden_size.
+            ops.append(_rms_vec(pfx + f"{li}.norm1", li, rows, h))
         ops.append(gemm(f"{li}.qkv", rows, h, qkv_n, li))
         if pixtral:
             # Attention runs before o_proj. One bidirectional block per image.
@@ -4268,6 +4338,14 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
         if dseek:
             # Block.norm2 is RMSNorm(hidden) before the SwiGLU. The residual add is the full branch.
+            ops.append(_rms_vec(pfx + f"{li}.norm2", li, rows, h))
+        if k25:
+            # norm1 is LayerNorm(hidden) before the MLP. The residual add is the full branch.
+            # The MLP activation is PytorchGELUTanh and is not billed.
+            ops.append(_ln_vec(pfx + f"{li}.mlp_ln", li, rows, h))
+        if k3:
+            # norm1 is RMSNorm(hidden) before the MLP. The residual add is the full branch.
+            # The MLP activation is PytorchGELUTanh and is not billed.
             ops.append(_rms_vec(pfx + f"{li}.norm2", li, rows, h))
         if longcat:
             # ls1 / ls2 are Parameter(embed_dim): branch * scale, then the residual add.
@@ -4366,6 +4444,14 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
         # and unfold. Width is hidden, not the text hidden size. The row count
         # is not the merged count. eps is not an op.
         ops.append(_rms_vec(pfx + "out_rms", v.depth, images * N0, h))
+    if k25:
+        # final_layernorm is LayerNorm(hidden) on every frame's patch rows,
+        # before the temporal mean. Width is hidden, not 4 * hidden.
+        ops.append(_ln_vec(pfx + "out_ln", v.depth, images * N0, h))
+    if k3:
+        # final_layernorm is RMSNorm(hidden) on the patch rows, before the
+        # merger view. Width is hidden, not qkv_hidden_size and not text hidden.
+        ops.append(_rms_vec(pfx + "out_rms", v.depth, images * N0, h))
     for i, kn in enumerate(v.post):
         k, n = kn[:2]
         m_ = merger_rows(kn)
@@ -4377,7 +4463,21 @@ def _tower_ops(v: VisionSpec, N: int, images: int, mrows: int | None, pfx: str, 
             # mlp1.norm is RMSNorm on the shuffled rows. Width is 4 * hidden, not
             # projector_hidden_size. eps is not an op. relu2 after linear1 is not this op.
             ops.append(_rms_vec(pfx + "proj_rms", v.depth, m_, k))
+        if k25 and i == 0:
+            # PatchMergerMLP.pre_norm is LayerNorm(hidden) on the merged * merge^2
+            # rows, after the temporal mean and before the view to 4 * hidden.
+            # Width is hidden, not 4 * hidden. On a still those rows are the patches.
+            ops.append(_ln_vec(pfx + "proj_ln", v.depth, m_ * v.merge * v.merge, h))
         ops.append(gemm(f"merger.{i}", m_, k, n, v.depth))
+        if (k25 or k3) and i == 0:
+            # nn.GELU() default approximate is 'none': the erf form. Width is the
+            # first linear's N (4 * hidden), not the text hidden size. The block
+            # MLP's PytorchGELUTanh is not this op.
+            ops.append(_gelu_erf_vec(pfx + "mgelu", v.depth, m_ * n, v.vec_fmt))
+        if k3 and i == 1:
+            # post_norm is RMSNorm(text hidden) on the merged rows, after the
+            # second linear. One rsqrt per merged token. Width is not 4 * hidden.
+            ops.append(_rms_vec(pfx + "post_rms", v.depth, m_, n))
         if dseek and i == 0:
             # Aligner.forward is w2(F.gelu(w1(x))). F.gelu's default approximate
             # is 'none': the erf form. Rows are the merged count, including the

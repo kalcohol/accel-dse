@@ -4341,6 +4341,7 @@ def _whisper_vision_fmt(rel: dict, label: str = "whisper") -> str:
     MiMo RMSNorm and LayerNorm stay fp32.
     DeepSeek-V4.1 vision ``F.silu``, the product, and ``F.gelu`` use it.
     DeepSeek RMSNorm stays fp32.
+    Kimi projector ``nn.GELU()`` uses it. Kimi LayerNorm and RMSNorm stay fp32.
     Qwen3.5 / Qwen3.5-MoE / Qwen4-Exp merger ``nn.GELU()`` uses it the same way.
     Those LayerNorms stay fp32. A vision role with more than one dtype is not
     given this value.
@@ -4919,6 +4920,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
             if rel is None:
                 raise ValueError("deepseek vision role is missing")
             vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "deepseek"))
+        if vs is not None and vs.family == "kimi" and vs.ln_mode in ("k25", "k3"):
+            # 0.427: projector nn.GELU() follows the one vision-role float.
+            # GEMM w_fmt stays bf16. LayerNorm and RMSNorm stay fp32.
+            if rel is None:
+                raise ValueError("kimi vision role is missing")
+            vs = replace(vs, vec_fmt=_whisper_vision_fmt(rel, "kimi"))
         from .echo import ECHO_REASON
         spec = replace(spec, coverage_reasons=_coverage_reasons(c, spec, rel_gap) + ((vs.approx,) if vs is not None and vs.approx else ())
                        + ((ECHO_REASON,) if spec.echo is not None else ()),
@@ -5122,6 +5129,35 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "文本侧的 swiglu_limit 和 rms_norm_eps 视觉塔没有读。"
                 "RoPE 的 cos/sin、pad、unfold、整份残差加、"
                 "image_start / image_newline / image_end 的下标写入不单列。"
+                "通用 GEMM 尾项不减。",))
+        if vs is not None and vs.ln_mode == "k25":
+            spec = replace(spec, notes=spec.notes + (
+                "Kimi MoonViT：每一层注意力前和 MLP 前各一次 nn.LayerNorm(hidden)。"
+                "块之后的 final_layernorm 仍在每一帧的 patch 行上，宽度是 hidden，在时间均值之前。"
+                "PatchMergerMLP 的 pre_norm 是 LayerNorm(hidden)，在时间均值之后、view 到 4*hidden 之前。"
+                "行数是合并位置乘 merge 的平方，静图上等于 patch 数，宽度不是 4*hidden。"
+                "nn.GELU() 在第一级 Linear 之后，默认 approximate='none'，erf 形式。"
+                "行数是合并后的位置，宽度是 4*hidden，不是文本 hidden。"
+                "塔内 MLP 是 PytorchGELUTanh，不单列。"
+                f"GELU 不升精度，a_fmt 是 vision 角色的 {vs.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
+                "RoPE、位置插值、整份残差加、单帧时间均值不单列。"
+                "通用 GEMM 尾项不减。",))
+        if vs is not None and vs.ln_mode == "k3":
+            spec = replace(spec, notes=spec.notes + (
+                "Kimi-K3 MoonViT：每一层注意力前和 MLP 前各一次 nn.RMSNorm(hidden)。"
+                "升到 fp32，每行一次 rsqrt，不是按头，也不是按 qkv_hidden_size。"
+                "块之后的最终 RMSNorm 仍在 patch 行上，宽度是 hidden。"
+                "PatchMergerMLPV2 先 view，再 Linear、nn.GELU()、Linear，然后 post RMSNorm。"
+                "nn.GELU() 默认 approximate='none'，erf 形式。"
+                "行数是合并后的位置，宽度是 4*hidden，不是文本 hidden。"
+                "post RMSNorm 的宽度是文本 hidden，行数是合并后的位置。"
+                "塔内 MLP 是 PytorchGELUTanh，不单列。"
+                f"GELU 不升精度，a_fmt 是 vision 角色的 {vs.vec_fmt}，"
+                "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
+                "RMSNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
+                "RoPE、位置插值、整份残差加不单列。"
                 "通用 GEMM 尾项不减。",))
     return spec
 
