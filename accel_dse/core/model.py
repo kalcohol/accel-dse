@@ -4812,6 +4812,20 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "embed_audio 的 RMSNorm 没有 scale，不单列。"
                 "softcap、softplus、clamp、整份残差加和正弦表不单列。"
                 "视觉 hidden_activation 仍是 gelu_pytorch_tanh。通用 GEMM 尾项不减。",))
+        if (vs is not None and getattr(vs, "audio", None) is not None and vs.audio.kind == "sanm"):
+            au = vs.audio
+            spec = replace(spec, notes=spec.notes + (
+                "Fun-ASR-Nano：SAN-M 每一层是输入 LayerNorm、注意力、FSMN 的 mask 乘、post LayerNorm、"
+                "ACT2FN['relu']。输出 LayerNorm 只在第 "
+                f"{au.sanm_final[0]} 层和第 {au.sanm_final[1]} 层，其余是 Identity。"
+                "第 0 层的输入 LayerNorm 宽度是堆叠后的 mel，不是 hidden。"
+                "nn.ReLU 是 max(x, 0)，一次截断，不是 relu6。"
+                "投影器在两层 Linear 之间再跑一次 ReLU，宽度是 projector_hidden_size。"
+                "adaptor 没有 FSMN，也没有输出 LayerNorm，仍有两次 LayerNorm 和一次 ReLU，"
+                "ReLU 的宽度是 adaptor 的 intermediate。"
+                "LayerNorm 在 fp32 归约。ReLU 和 mask 乘不升精度，发布权重是 bf16。"
+                "eval 的 Dropout 是恒等。配置里的 activation_dropout 类没有读。"
+                "sqrt(d) 和正弦位置表不单列。通用 GEMM 尾项不减。",))
     return spec
 
 
