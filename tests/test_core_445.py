@@ -79,7 +79,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_445():
-    assert __version__ == "0.460.0"
+    assert __version__ == "0.461.0"
 
 
 def test_llama_carbons_bill_fp32_rmsnorm_and_the_product():

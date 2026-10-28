@@ -80,12 +80,13 @@ def test_whisper_family_keeps_the_tower_and_the_vision_dtype():
     assert get_model("distil-whisper-large-v2").vision.audio.vec_fmt == "fp16"
     text = " ".join(get_model(W3).notes)
     for needle in (
-        "erf", "gelu_pytorch_tanh", "quick_gelu", "按 SiLU", "torch_dtype",
+        "erf", "gelu_pytorch_tanh", "quick_gelu", "0.461", "torch_dtype",
         "vision 角色的 fp16", "历史的 bf16", "fp32", "Dropout", "F.normalize",
-        "nn.ReLU", "nn.SiLU", "通用 GEMM 尾项不减",
+        "nn.ReLU", "nn.SiLU", "通用 GEMM 尾项不减", "没有 mlp_mul",
     ):
         assert needle in text, needle
-    assert "GELU 激活按 SiLU 的逐元素开销计「近似」" in text
+    assert "GELU 激活按 SiLU 的逐元素开销计「近似」" not in text
+    assert "解码器仍把 GELU 按 SiLU" not in text
 
 
 def test_whisper_large_v3_bills_erf_gelu_and_layernorm():

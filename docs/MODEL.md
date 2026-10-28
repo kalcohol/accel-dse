@@ -10337,3 +10337,7 @@ ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有
 ## §376 模板点注意力输出乘 mask（0.460）
 
 `openfold` 和 `alphafold2` 两行，都在前 60 条目录之外。OpenFold `TemplateEmbedder.forward` 在 `template_pointwise_att` 之后执行 `t = t * t_mask`，`t_mask` 是 `sum(template_mask, dim=-1) > 0` 再广播到 pair。AlphaFold 2 `TemplateEmbedding.__call__` 执行 `embedding *= (sum(template_mask) > 0).astype(embedding.dtype)`。两边都是已经执行的一次乘法，dtype 跟激活，没有超越函数，也不升精度。宽度是 `linear_o` 的 N，也就是 `c_z`，网格是 pair（N × N），不是模板通道 `c_t`，也不是 T × N × N。造 mask（求和、比较、广播）不单列。名字是 `tmpl_out_mask`，插在 `template_pointwise_att.mha.linear_o` 和它的 `.ew` 之间。逐线性 `.ew` 不减。`vec_kind` 仍是 `of_embed`，随 recycle 重复。AlphaFold 2 的 `Transition` 仍不乘。三角更新里和 sigmoid 绑在一起的 mask、OPM 的除以 `num_mask.clamp`、IPA 的 softplus、扭转角 clamp 仍不单列。Boltz 和 Protenix 的原子对 mask 乘仍不单列。
+
+## §377 Whisper 解码器的 erf-GELU 与 LayerNorm（0.461）
+
+十七行 Whisper 与 Distil-Whisper，都在前 60 条目录之外。入账的是文本解码器，不是编码器。`WhisperDecoderLayer` 是 pre-LN 自注意力、pre-LN 交叉注意力，然后 fc2 读取 fc1 之后的 erf-GELU。`activation_function` 的发布值是 `gelu`，公式是 `0.5 * x * (1 + erf(x / sqrt(2)))`，和 ESM-2、Whisper 编码器已经入账的 erf-GELU 相同。`gelu` 夹在 `mlp.up` 和 `mlp.down` 中间，不升精度，`a_fmt` 跟解码器激活 dtype。不是门控，没有 `mlp_mul`。`self_attn_layer_norm`、`encoder_attn_layer_norm`、`final_layer_norm` 和块末 `layer_norm` 都是 `nn.LayerNorm`，在 fp32 归约，每行一次 rsqrt。`final_norm` 的宽度是 hidden。`vec_kind` 是 `whisper`，因为现成的 `esm2` 标签走全序列前向，`carbon_llama` 是 SiLU 加门乘。编码器仍走 vision 图。Qwen2-Audio、Qwen2.5-Omni、Step-Audio、Kimi、Ming 只共用编码器，不打这个标签。学习的位置表不改成删掉现有的 `rope` 向量。

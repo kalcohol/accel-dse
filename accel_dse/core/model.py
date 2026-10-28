@@ -404,6 +404,8 @@ class Layer:
     # and SiLU product, with no q/k norm. Residual scalars are not 0.5.
     # 0.449 Qwen3-14B dense: qwen3 is the same pre-norm T5 RMSNorm, SiLU
     # product, and head_dim q/k RMSNorm. Front-60 Qwen3 rows stay untagged.
+    # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
+    # up and down, and fp32 LayerNorm on the four published norms.
     # "" keeps the shared full-forward assumption.
     vec_kind: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -578,6 +580,8 @@ class ModelSpec:
     # 0.448: "granite" (pre-norm GraniteRMSNorm, same final RMSNorm, no q/k norm).
     # 0.449: "qwen3" (pre-norm Qwen3RMSNorm, same final RMSNorm, head_dim q/k).
     # 0.456: OmniASR LLM text reuses carbon_llama (LlamaRMSNorm, no q/k norm).
+    # 0.461: "whisper" bills the decoder LayerNorm (fp32, one rsqrt per token
+    # row). final_norm_params is weight + bias, so the rsqrt count is one.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -2200,7 +2204,7 @@ def _build_whisper(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
                             cross=replace(ccore, causal=False, cross=True)))
     notes = [f"编码器-解码器（Whisper）：解码器每层自注意力 + 交叉注意力（{L} 层），交叉 K/V 每请求在 prefill 时由编码器"
              f"输出算一次并缓存（每 30 s 窗 {c.get('max_source_positions', 1500)} 个位置），解码每步只读不写「来源」",
-             "无 RoPE（学习的绝对位置表，查表）；GELU 激活按 SiLU 的逐元素开销计「近似」"]
+             "无 RoPE（学习的绝对位置表，查表）"]
     return layers, [], notes, "full"
 
 
@@ -5528,6 +5532,103 @@ def _tag_ernie_moe_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="carbon_llama", notes=spec.notes + (note,))
 
 
+_WHISPER_DEC = frozenset({
+    "whisper-large-v3",
+    "whisper-large-v3-turbo",
+    "whisper-tiny",
+    "whisper-base",
+    "whisper-small",
+    "whisper-medium",
+    "whisper-large",
+    "whisper-large-v2",
+    "whisper-tiny.en",
+    "whisper-base.en",
+    "whisper-small.en",
+    "whisper-medium.en",
+    "distil-whisper-small.en",
+    "distil-whisper-medium.en",
+    "distil-whisper-large-v2",
+    "distil-whisper-large-v3",
+    "distil-whisper-large-v3.5",
+})
+
+
+def _tag_whisper_decoder_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.461: bill published Whisper decoder erf-GELU and LayerNorm.
+
+    WhisperDecoderLayer is pre-LN self-attention, pre-LN cross-attention,
+    then fc2(ACT2FN["gelu"](fc1(x))). ACT2FN["gelu"] is the erf form already
+    billed on ESM-2 and the Whisper encoder. nn.LayerNorm reduces in fp32.
+    The MLP is not gated, so there is no product. vec_kind is whisper because
+    no existing tag means autoregressive erf-GELU between up and down.
+    The encoder stays on the vision graph. These ids sit outside the first
+    60 catalog rows.
+    """
+    if spec.id not in _WHISPER_DEC:
+        return spec
+    if c.get("model_type") != "whisper":
+        raise ValueError("whisper decoder model_type is not whisper")
+    if c.get("architectures") != ["WhisperForConditionalGeneration"]:
+        raise ValueError("whisper decoder architecture is not whisper")
+    if c.get("activation_function") != "gelu":
+        raise ValueError("whisper decoder activation is not gelu")
+    for key in ("dropout", "activation_dropout", "attention_dropout"):
+        if c.get(key) not in (0, 0.0):
+            raise ValueError("whisper decoder dropout is not 0")
+    if c.get("scale_embedding") is not False:
+        raise ValueError("whisper decoder scale_embedding is not false")
+    if c.get("max_source_positions") != 1500:
+        raise ValueError("whisper decoder encoder positions are not 1500")
+    if spec.act_fmt != "bf16":
+        raise ValueError("whisper decoder activation dtype is not bf16")
+    wfmt = spec.fmt("mlp").fmt
+    if wfmt not in ("fp16", "fp32") or spec.fmt("attn").fmt != wfmt:
+        raise ValueError("whisper decoder weight dtype is not the released float")
+    h = c.get("hidden_size")
+    heads = c.get("num_attention_heads")
+    layers_n = c.get("num_hidden_layers")
+    ff = c.get("intermediate_size")
+    if (not isinstance(h, int) or isinstance(h, bool) or h <= 0
+            or not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0
+            or not isinstance(layers_n, int) or isinstance(layers_n, bool) or layers_n <= 0
+            or not isinstance(ff, int) or isinstance(ff, bool) or ff <= 0
+            or h % heads != 0):
+        raise ValueError("whisper decoder hidden is not heads times head_dim")
+    hd = h // heads
+    if spec.n_layers != layers_n or len(spec.layers) != layers_n:
+        raise ValueError("whisper decoder layer count does not match")
+    if spec.final_norm_params != 2 * h:
+        raise ValueError("whisper decoder final norm is not weight plus bias")
+    if spec.enc_ctx != 1500:
+        raise ValueError("whisper decoder enc_ctx is not 1500")
+    misc = 3 * h + 3 * h + (ff + h) + 3 * 2 * h
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or L.ffn.gated or L.ffn.d_ff != ff:
+            raise ValueError("whisper decoder mlp is not dense gelu")
+        if [ln.name for ln in L.ffn_linears] != ["up", "down"]:
+            raise ValueError("whisper decoder mlp is not up then down")
+        if L.core.kind != "gqa" or L.core.n_q != heads or L.core.n_kv != heads or L.core.qk_dim != hd:
+            raise ValueError("whisper decoder attention is not mha")
+        if L.cross is None or L.cross.kind != "gqa" or L.cross.n_q != heads:
+            raise ValueError("whisper decoder cross attention is missing")
+        if [ln.name for ln in L.cross_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("whisper decoder cross linears are not q k v o")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("whisper decoder attention is not q k v o")
+        if L.misc_params != misc:
+            raise ValueError("whisper decoder norm and bias count does not match")
+    layers = tuple(replace(L, vec_kind="whisper") for L in spec.layers)
+    note = (
+        "0.461：解码器 ACT2FN['gelu'] 是 erf 形式（0.5 * x * (1 + erf(x / sqrt(2)))），"
+        "夹在 fc1 和 fc2 之间，不升精度，a_fmt 跟解码器激活 dtype。"
+        "不是门控，没有 mlp_mul。self_attn_layer_norm、encoder_attn_layer_norm、"
+        "final_layer_norm 和块末 LayerNorm 都在 fp32 归约，每行一次 rsqrt。"
+        "仿射已经在参数里。编码器仍走 vision 图，不在这里改。"
+        "学习的位置表、RoPE 向量、eval 的 Dropout 不单列。通用 GEMM 尾项不减。"
+    )
+    return replace(spec, layers=layers, vec_kind="whisper", notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -6208,7 +6309,6 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 f"GELU、SiLU 和 ReLU 不升精度，a_fmt 是 vision 角色的 {au.vec_fmt}，"
                 "不读 config 的 torch_dtype，也不跟请求里的 GEMM 激活格式走。"
                 "LayerNorm 在 fp32 归约。GEMM 的 w_fmt 仍是历史的 bf16，通用 GEMM 尾项不减。"
-                "解码器仍把 GELU 按 SiLU 的逐元素开销计，这次不改。"
                 "eval 的 Dropout 是恒等，不单列。"
                 "fp16 clamp、Omni 乘 long 的 mask、Ming 的 F.normalize 不单列。",))
         if (vs is not None and getattr(vs, "audio", None) is not None and vs.audio.kind == "aut"):
@@ -6475,7 +6575,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_ernie_moe_vectors(
+    return _tag_whisper_decoder_vectors(
+        _tag_ernie_moe_vectors(
         _tag_moshi_vectors(
             _tag_omniasr_vectors(
                 _tag_qwen2_text_vectors(
@@ -6485,7 +6586,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

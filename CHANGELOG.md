@@ -6,6 +6,23 @@
 
 
 
+## [0.461.0] — 2026-10-28
+
+### Whisper 与 Distil-Whisper 解码器补上已执行的 erf-GELU 和 LayerNorm
+
+- **修正。** 没有新开目录行，也没有新的激活种类。改的是已经入库、而且不在前 60 条里的十七行：`whisper-large-v3`、`whisper-large-v3-turbo`、`whisper-tiny`、`whisper-base`、`whisper-small`、`whisper-medium`、`whisper-large`、`whisper-large-v2`、`whisper-tiny.en`、`whisper-base.en`、`whisper-small.en`、`whisper-medium.en`、`distil-whisper-small.en`、`distil-whisper-medium.en`、`distil-whisper-large-v2`、`distil-whisper-large-v3`、`distil-whisper-large-v3.5`。只给这十七行的解码器打 `vec_kind = whisper`。现成的 `carbon_llama` 是 SiLU 加门乘，`esm2` 走全序列前向，都不表示这条自回归路径，所以这一次用已有的 `gelu` 算子，另开一个路由标签，不新写超越函数。2026-10-28 再读 transformers 的 `WhisperDecoderLayer`：`self_attn_layer_norm`、`encoder_attn_layer_norm`、`final_layer_norm` 都是 `nn.LayerNorm`，块末还有一次 `layer_norm`。MLP 是 `fc2(ACT2FN["gelu"](fc1(x)))`。`activation_function` 的发布值是 `gelu`，也就是 `0.5 * x * (1 + erf(x / sqrt(2)))`：五个逐元素运算，一次 erf，不升精度。不是门控，没有相乘。`gelu` 插在 `mlp.up` 和 `mlp.down` 中间。三处块范数仍叫 `attn_norm`、`cross_norm`、`ffn_norm`，`a_fmt` 改成 fp32，每行一次 rsqrt。`final_norm` 同样是 fp32，宽度是 hidden，不是 `2 * hidden`（那是 weight 加 bias）。编码器仍走 vision 图，这次不改。最大的一行是 large / large-v2 / large-v3：32 层乘 intermediate 5120，每个 token 的 GELU 元素是 `163,840`。`model_type` 不是 `whisper`、架构不是 `WhisperForConditionalGeneration`、`activation_function` 不是 `gelu`、dropout 不是 0、`scale_embedding` 不是 false、激活不是 bf16、权重不是发布的 fp16 或 fp32、hidden 不是头数乘 `head_dim`、FFN 不是 `up` 然后 `down`、交叉注意力不是 `q/k/v/o`，会拒绝。
+- **默认窗口。** 提示长度 4096。`whisper-large-v3`：32 层，隐藏 1280，intermediate 5120，20 头，`head_dim` 64，权重 fp16，激活 bf16。`gelu` 的 `vec` 是 `4096 * 5120 * 5`，`sfu` 是 `4096 * 5120`，`a_fmt` 是 bf16。`attn_norm`、`cross_norm`、`ffn_norm` 的 `vec` 是 `4096 * 1280 * 4`，`sfu` 是 4096，`a_fmt` 是 fp32。`mlp.up` 的 M、K、N 是 4096、1280、5120。`mlp.down` 的 M、K、N 是 4096、5120、1280。`w_fmt` 是 fp16。顺序是 `attn_norm`、`attn.qkv`、`rope`、`cross_norm`、`cross.q`、`ffn_norm`、`mlp.up`、`gelu`、`mlp.down`、`residual`。没有名为 `act` 或 `mlp_mul` 的算子。`final_norm` 的 `vec` 是 `4096 * 1280 * 4`，`sfu` 是 4096，`layer` 是 32。`whisper-tiny` 的权重是 fp32，`gelu` 的 `a_fmt` 仍是 bf16，`vec` 是 `4096 * 1536 * 5`。Distil-Whisper large-v3 只有 2 层。编码器 `aud.0.gelu` 的 `a_fmt` 仍跟 vision 角色。向量 FLOPs 是 0。GEMM 的名字、形状和 FLOPs 不变。
+- **TP2、batch 和请求 fp8。** 没有发布的 fp8 行。TP2 切中间维，不复制范数。本地 intermediate 是 2560，`gelu` 的 `vec` 是 `4096 * 2560 * 5`。`mlp.down` 的 K 是 2560。`attn_norm` 和 `cross_norm` 的宽度仍是 1280。`cross_allreduce` 在 `cross.o` 之后、`ffn_norm` 之前。`mlp_allreduce` 在 `mlp.down` 之后。batch 2 把 token 行加倍。请求 fp8（把 `act_fmt` 换成 fp8，不重跑打标）：`gelu` 的 `a_fmt` 是 fp8。四处范数仍是 fp32。GEMM 的 `a_fmt` 是 fp8，`w_fmt` 仍是 fp16。解码步不投影交叉 K/V，`gelu` 仍在 `mlp.up` 和 `mlp.down` 之间。
+- **不单列。** 不把学习的位置表改成删掉现有的 `rope` 向量。不改编码器。不把同一笔扩到 Qwen2-Audio、Qwen2.5-Omni、Step-Audio、Kimi、Ming。不新写 tanh-GELU、`quick_gelu`、`gelu_new`、`gelu_pytorch_tanh`、mRoPE、MoE 相乘、`1 + weight` RMSNorm。不改 GEMM 名字、形状和 FLOPs。不新开目录行。前 60 个目录条目不含这十七行（末尾仍是 `wan2.1-14b` 和 `wan2.1-1.3b`）。stage 指纹仍是 `f54f33dfa13cdd41`，默认 pipe 指纹仍是 `1e15ae85430a04f3`。去掉 DeepSeek-V4 之后仍是 `5c058c9ed0f8f61e` / `8a5fa1d0881da387`。`esmfold` 的 KPI 哈希仍是 `3bbede544308`，ESM-2 3B 仍是 `34f7544287cd`，Wan2.1-1.3B 仍是 `309919c00604`。
+- **未纳入：**
+  - **前 60 条里的 Llama / Qwen2.5 / Qwen3。** 更大，扩过去会改指纹。
+  - **Qwen3-VL MoE、Qwen3-Coder-480B。** 专家相乘不在一份融合 `gate_up` 和 `down` 中间。不新开 MoE 相乘槽。
+  - **Qwen3-TTS / Qwen3-ASR 的 mRoPE，Fun-ASR-Nano，ERNIE-4.5 0.3B，ERNIE-4.5-VL。** 头宽或 `mrope_section` 对不上现成门。不放宽。
+  - **Olmo、Jais、Qwen3.5、Evo2 vortex RMS、Granite 语音和残差乘数、Wan DiT、MiniMax swigluoai。** 整段投影 q/k、分组 RMSNorm、`1 + weight`、vortex、AdaLN 加 tanh-GELU、非 0.5 残差，都对不上现成配方。
+  - **Boltz / Protenix 余下的算子、AlphaFold 2 的 Transition、三角更新的 sigmoid mask、OPM 除法、IPA softplus、扭转角 clamp。** 不是已经分开的一次乘法或现成的 LayerNorm / SiLU。
+  - **Moshi depformer、Mimi LayerScale、Omni talker、FireRed DiT、WeVisOne 视觉 `gelu_pytorch_tanh`、CosyVoice / Ming 的 flow。** 对不上这一份解码器 GELU。
+  - **已经入账、这次不重写。** 编码器 erf-GELU 仍是 0.415。OpenFold 与 AlphaFold 2 的模板输出乘仍是 0.460。OpenFold 过渡层 mask 仍是 0.459。ERNIE-4.5 MoE、Moshi、OmniASR、CosyVoice / Ming、WeVisOne、Qwen3 语音主干、Qwen2 文本塔、Mistral-Small、Step-Audio-2、Qwen3-14B、Granite 稠密、EXAONE-4、Carbon、Qwen3-VL 稠密文本、Evo2 第 0 层、蛋白质 LayerNorm 家族、Pixtral 视觉塔都不改。
+
 ## [0.460.0] — 2026-10-28
 
 ### OpenFold 与 AlphaFold 2 补上模板点注意力之后已执行的输出乘 mask

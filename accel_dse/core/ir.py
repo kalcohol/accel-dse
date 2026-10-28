@@ -1351,6 +1351,11 @@ def _exaone_dense(L: Layer) -> bool:
     return L.vec_kind == "exaone4"
 
 
+def _whisper_dec(L: Layer) -> bool:
+    """WhisperDecoderLayer: published erf-GELU between fc1 and fc2, fp32 LayerNorm."""
+    return L.vec_kind == "whisper"
+
+
 def _qk_rms_who(kind: str) -> str:
     if kind == "carbon_qwen":
         return "carbon-x"
@@ -1437,7 +1442,10 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     if L.gres_n:
         ops.append(_gres_op(model, li, L, t, tp, "attn"))
     else:
-        if _carbon_dense(L):
+        if _carbon_dense(L) or _whisper_dec(L):
+            # WhisperDecoderLayer.self_attn_layer_norm is nn.LayerNorm. The
+            # reduction is fp32. One rsqrt per token row. Affine is already
+            # in misc. The op name stays attn_norm.
             ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
         elif not _exaone_dense(L):
             # EXAONE-4 is post-norm. The same attn_norm op is emitted after
@@ -1531,7 +1539,9 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             Nh = L.gres_n * h
             ops.append(Op("gres_head", "vector", li, replicated=tp, vec=t * (4 * Nh + 4 * Nh + 2 * Nh)))
     else:
-        if _carbon_dense(L):
+        if _carbon_dense(L) or _whisper_dec(L):
+            # WhisperDecoderLayer.final_layer_norm is the pre-MLP LayerNorm,
+            # not a second copy after both linears. fp32, one rsqrt per row.
             ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
         elif not _exaone_dense(L):
             # EXAONE-4 post_feedforward_layernorm is emitted after mlp.down
@@ -1580,6 +1590,21 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 if l.name == "gate_up":
                     ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
                     ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
+        elif _whisper_dec(L):
+            # WhisperDecoderLayer: fc2(ACT2FN["gelu"](fc1(x))). gelu is
+            # x * 0.5 * (1 + erf(x / sqrt(2))): five element-ops, one erf.
+            # The class does not upcast, so a_fmt follows the activation
+            # dtype. Not gated, so there is no mlp_mul. The product sits
+            # between up and down because fc2 reads gelu(fc1).
+            if f.gated or [l.name for l in L.ffn_linears] != ["up", "down"]:
+                raise ValueError("whisper decoder mlp is not up then down")
+            nact = t * _cdiv(f.d_ff, tp)
+            af = model.act_fmt
+            for l in L.ffn_linears:
+                k, n = _lin_local(l, tp)
+                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
+                if l.name == "up":
+                    ops.append(Op("gelu", "vector", li, vec=nact * 5, sfu=float(nact), a_fmt=af))
         else:
             for l in L.ffn_linears:
                 k, n = _lin_local(l, tp)
@@ -1719,7 +1744,12 @@ def _cross_decode_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard,
     ab, kvb, rb = _fmt(model.act_fmt).bytes, _fmt(model.kv_fmt).bytes, red_bytes(model)
     t, q = b_loc * ph.q, ph.q
     first = ph.kind == "prefill" and ph.ctx == 0
-    ops = [Op("cross_norm", "vector", li, vec=t * h * 4, sfu=t)]
+    # WhisperDecoderLayer.encoder_attn_layer_norm is nn.LayerNorm on the
+    # decoder hidden, before cross q. fp32 reduction, one rsqrt per row.
+    if _whisper_dec(L):
+        ops = [Op("cross_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32")]
+    else:
+        ops = [Op("cross_norm", "vector", li, vec=t * h * 4, sfu=t)]
     for l in L.cross_linears:
         if l.name in ("k", "v") and not first:
             continue
@@ -1872,13 +1902,15 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
                 Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
     if model.vec_kind in (
             "carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4", "granite", "qwen3",
-            "step_audio", "mistral_small", "qwen2_text"):
+            "step_audio", "mistral_small", "qwen2_text", "whisper"):
         # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm /
         # GraniteRMSNorm / Qwen2RMSNorm / MistralRMSNorm / Moshi rms_norm_f32 /
-        # Ernie4_5_MoeRMSNorm on every token row, then the head reads the last
-        # rows. Kimi-Audio
+        # Ernie4_5_MoeRMSNorm / Whisper decoder LayerNorm on every token row,
+        # then the head reads the last rows. Kimi-Audio
         # publishes two Qwen2RMSNorms (norm and mimo_norm); final_norm_params
-        # is 2 * hidden.
+        # is 2 * hidden. Whisper's final_norm_params is also 2 * hidden, but
+        # that is one LayerNorm (weight + bias), so the rsqrt count stays one
+        # per token row. The reduction width is hidden, not 2 * hidden.
         rows = b_loc * ph.q
         nrm = 2 if (
             model.vec_kind == "qwen2_text" and model.final_norm_params == 2 * model.hidden) else 1
@@ -3601,6 +3633,10 @@ def _repl_full(l: Linear, tp: int, sp: int) -> int:
 def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -> list[Op]:
     if L.pair_linears or L.pair_cores:
         return _pair_layer_ops(model, li, L, ph, sh)
+    if L.vec_kind == "whisper":
+        # The decoder is autoregressive (prefill / decode). A full-sequence
+        # phase would bill SiLU after both linears and drop the fp32 mark.
+        raise ValueError("whisper decoder vectors are the autoregressive path")
     if not (L.attn_linears or L.ffn_linears or L.cross_linears or L.cross is not None or L.core.kind != "none"):
         # 0.75: a parameter-holder layer (misc_params only — e.g. ESMFold's esm_s combine / esm I/O norms, read with
         # the hot set by memplan) has no block: it emitted a phantom pre-norm / FFN-norm / residual (+ TP all-reduces)
