@@ -1332,6 +1332,36 @@ def _evo2_dense(L: Layer) -> bool:
     return L.vec_kind in ("evo2_gelu", "evo2_id")
 
 
+def _carbon_dense(L: Layer) -> bool:
+    return L.vec_kind in ("carbon_llama", "carbon_qwen")
+
+
+def _carbon_qk_rms(L: Layer, li: int, t: int, tp: int) -> list[Op]:
+    """Qwen3RMSNorm on head_dim after q_proj and k_proj.
+
+    The class comment says the norm is on the head dim, unlike Olmo.
+    One rsqrt per head. Llama Carbon checkpoints have no q/k norm.
+    """
+    if L.vec_kind != "carbon_qwen":
+        return []
+    hd = L.core.qk_dim
+    if hd <= 0:
+        raise ValueError("carbon-x head_dim is not positive")
+    by = {l.name: l for l in L.attn_linears}
+    if "q" not in by or "k" not in by:
+        raise ValueError("carbon-x attention is not q then k")
+    ops: list[Op] = []
+    for name in ("q", "k"):
+        lin = by[name]
+        _k, n = _lin_local(lin, tp, L.core)
+        if n % hd != 0:
+            raise ValueError("carbon-x qk norm width is not a whole number of heads")
+        heads = n // hd
+        ops.append(Op(f"{name}_rms", "vector", li, vec=float(t * n * 4),
+                      sfu=float(t * heads), a_fmt="fp32", replicated=_repl(lin, tp)))
+    return ops
+
+
 def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: Layer | None = None) -> list[Op]:
     L = layer if layer is not None else model.layers[li]
     if ph.kind == "full":
@@ -1377,7 +1407,10 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     if L.gres_n:
         ops.append(_gres_op(model, li, L, t, tp, "attn"))
     else:
-        ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t))
+        if _carbon_dense(L):
+            ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
+        else:
+            ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t))
     if L.core.dea_q:
         ops.extend(_dea_ops(model, li, L, ph, sh, b_loc))
     fq = _qkv_fusable(L, tp) if FUSE_QKV else None
@@ -1412,6 +1445,9 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
         gc = groups_local(l, tp)[0] if l.groups > 1 else 1
         ops.append(gemm(model, f"attn.{l.name}", li, m, k, n, l.role or "attn", count=gc, params=k * n * gc,
                         replicated=_repl(l, tp)))
+    # 0.445 Carbon-X: q_norm / k_norm sit on the projected heads, before the score.
+    # Fused qkv still keeps the unfused q and k linears, so the widths come from those.
+    ops.extend(_carbon_qk_rms(L, li, t, tp))
     ops.extend(_attn_core_ops(model, li, L.core, ph, sh, b_loc, L.kv_alias))
     if L.core.out_gate_fn == "softplus":
         # 0.292 k2_horizon: attn_output · softplus(gate_proj x, β = ln 2) per element before o_proj 「来源」
@@ -1458,7 +1494,10 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             Nh = L.gres_n * h
             ops.append(Op("gres_head", "vector", li, replicated=tp, vec=t * (4 * Nh + 4 * Nh + 2 * Nh)))
     else:
-        ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t))
+        if _carbon_dense(L):
+            ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
+        else:
+            ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t))
     f = L.ffn
     if f.kind == "dense":
         if _evo2_dense(L):
@@ -1473,6 +1512,19 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
                 if l.name == "gate_up":
                     ops.extend(_evo2_mlp_vecs(L.vec_kind, nact, li, af))
+        elif _carbon_dense(L):
+            # down(silu(gate) * up). SiLU stays the existing act op. The product is mlp_mul.
+            # Both sit between the fused gate_up GEMM and down.
+            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("carbon mlp is not gate_up then down")
+            nact = t * _cdiv(f.d_ff, tp)
+            af = model.act_fmt
+            for l in L.ffn_linears:
+                k, n = _lin_local(l, tp)
+                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
+                if l.name == "gate_up":
+                    ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
         else:
             for l in L.ffn_linears:
                 k, n = _lin_local(l, tp)
@@ -1751,8 +1803,16 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
                    vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
                 gemm(model, "label_head", model.n_layers, m, model.hidden, L, role, stream=True),
                 Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
-    ops = [Op("final_norm", "vector", model.n_layers,
-              vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
+    if model.vec_kind in ("carbon_llama", "carbon_qwen"):
+        # LlamaRMSNorm / Qwen3RMSNorm on every token row, then the head reads the last rows.
+        rows = b_loc * ph.q
+        final = Op("final_norm", "vector", model.n_layers,
+                   vec=0 if model.final_norm_params == 0 else rows * model.hidden * 4,
+                   sfu=0 if model.final_norm_params == 0 else rows, a_fmt="fp32")
+    else:
+        final = Op("final_norm", "vector", model.n_layers,
+                   vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4)
+    ops = [final,
            gemm(model, "lm_head", model.n_layers, m, model.hidden, n, role, stream=True),
            # 0.321: + 1 multiply per logit for a learned logit scale (Dory)
            Op("sample", "vector", model.n_layers, vec=m * n * (4 if model.logit_scale else 3), sfu=m * n)]

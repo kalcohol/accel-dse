@@ -2391,7 +2391,18 @@ and sine table, the padding mask, and the two residual adds stay on that path. A
 is not `silu`, or that carries a QK-norm tensor, is refused.
 
 **Carbon-500M / 3B / 8B** are stock `LlamaForCausalLM` checkpoints with the 155,776-entry hybrid vocabulary
-(6-mer DNA + Qwen3 BPE), released in BF16. They are evaluated as LLMs with no special casing.
+(6-mer DNA + Qwen3 BPE), released in BF16. The workload is still that causal Llama forward. Other Llama
+catalog rows are not retagged.
+
+**0.445 vector billing.** `LlamaRMSNorm` is the T5 recipe in fp32 (`pow(2).mean`, one `rsqrt`, times `weight`).
+Block `attn_norm` / `ffn_norm` already counted `vec = tokens * hidden * 4` and one `rsqrt` per token; those
+ops now use `a_fmt = fp32`, and `final_norm` adds the same `rsqrt` (`sfu = token rows`). The MLP is
+`down_proj(silu(gate_proj(x)) * up_proj(x))`. SiLU stays the existing `act` op (`vec = elements * 4`,
+`sfu = elements * 2`). The gate times up product is `mlp_mul`, one multiply, between `mlp.gate_up` and
+`mlp.down`. There is no q/k norm. Both the product and SiLU follow the billed activation dtype (bf16 as
+released, fp8 on a what-if). Vector flops stay 0. GEMM names, shapes, and FLOPs stay on the causal path.
+A checkpoint whose `hidden_act` is not `silu`, whose `model_type` is not `llama`, or whose MLP is not
+`gate_up` then `down`, is refused.
 
 **Attention-mask mode** (`Scenario.attn_mode = "bidir"`, a what-if, prefill only). `model.with_attn_mode` turns
 every causal GQA / MLA self-attention core non-causal. Windowed, top-k and compressed cores keep their key-count
@@ -10005,6 +10016,7 @@ Source: Olgun et al. (ETH), "Understanding the Power Consumption of Modern High 
 ### §282.2 Carbon-X
 - `HuggingFaceBio/Carbon-X` — public `Qwen3ForCausalLM` + `dna_config` 6-mer tags, bf16 as released, 14.822B params, param_err 0 「来源」.
 - Catalog id `carbon-x` (same SERIES prefix `carbon-` as carbon-8b / 3b / 500m). DNA tagging is metadata only; workload is stock Qwen3 causal LM.
+- **0.445.** `Qwen3RMSNorm` is the same T5 recipe as Llama (`eps` inside `rsqrt`, not `1 + weight`). Block norms and `final_norm` are fp32 with one `rsqrt` per token row. `q_norm` / `k_norm` are that RMSNorm on `head_dim` after the projections (one `rsqrt` per head). SiLU stays `act`. The gate times up product is `mlp_mul`. Other Qwen3 catalog rows are not retagged, so the first-60 fingerprints stay put.
 
 ### §282.3 Speech pick not added
 - **Qwen3-TTS** (`qwen3_tts`: talker + codebooks + tokenizer-12Hz) has newly public usable config but needs a new TTS builder — pending (same posture as OmniASR CTC).

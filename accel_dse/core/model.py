@@ -395,6 +395,9 @@ class Layer:
     # 0.444 Evo 2: evo2_gelu on layer 0 (F.gelu erf plus the product),
     # evo2_id on later layers (product only). Vortex RMSNorm is not the
     # T5 recipe and stays on the generic norm tail.
+    # 0.445 Carbon causal siblings: carbon_llama (LlamaRMSNorm + SwiGLU
+    # product) and carbon_qwen (the same, plus Qwen3 q/k RMSNorm on
+    # head_dim). Other Llama and Qwen3 checkpoints stay on the shared tail.
     # "" keeps the shared full-forward assumption.
     vec_kind: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -563,7 +566,9 @@ class ModelSpec:
     adaln: bool = False                      # AdaLN modulation (shift/scale/gate) around each norm
     # 0.437: "esm2" bills the published EsmEncoder final LayerNorm and EsmLMHead
     # (erf-GELU, LayerNorm, decoder bias). 0.438: "generanno" bills the published
-    # final GenerannoRMSNorm. "" keeps the shared full-forward formulas.
+    # final GenerannoRMSNorm. 0.445: "carbon_llama" / "carbon_qwen" bill the
+    # published final RMSNorm (fp32, one rsqrt per token row).
+    # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
     vocab_head: bool = True                  # encoders: MLM decoder over the vocab on every token (0.106: False =
@@ -4499,6 +4504,72 @@ def _minimax_vision_fmt(rel: dict, patch_params: int, vision_params: int) -> tup
     return "bf16", (bf["bytes"] + fp["bytes"]) / vision_params
 
 
+_CARBON_LLAMA = frozenset({"carbon-8b", "carbon-3b", "carbon-500m"})
+_CARBON_QWEN = frozenset({"carbon-x"})
+
+
+def _tag_carbon_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.445: bill published Llama / Qwen3 RMSNorm and the SwiGLU product.
+
+    LlamaRMSNorm and Qwen3RMSNorm are the T5 recipe: fp32 mean of squares,
+    one rsqrt, times weight. The gate times up product is one multiply.
+    Qwen3 also norms q and k on head_dim. Other Llama and Qwen3 rows stay
+    on the shared tail so the first-60 fingerprints do not move.
+    """
+    mid = spec.id
+    if mid not in _CARBON_LLAMA and mid not in _CARBON_QWEN:
+        return spec
+    kind = "carbon_llama" if mid in _CARBON_LLAMA else "carbon_qwen"
+    if kind == "carbon_llama":
+        if c.get("model_type") != "llama":
+            raise ValueError("carbon llama model_type is not llama")
+        if c.get("mlp_bias") is not False:
+            raise ValueError("carbon mlp_bias is not false")
+        if c.get("pretraining_tp") != 1:
+            raise ValueError("carbon pretraining_tp is not 1")
+        if c.get("rope_scaling") is not None:
+            raise ValueError("carbon rope_scaling is not null")
+    else:
+        if c.get("model_type") != "qwen3":
+            raise ValueError("carbon-x model_type is not qwen3")
+        if c.get("mlp_bias") not in (None, False):
+            raise ValueError("carbon-x mlp_bias is not false")
+        if c.get("rope_scaling") is not None:
+            raise ValueError("carbon-x rope_scaling is not null")
+        rp = c.get("rope_parameters") or {}
+        if rp.get("rope_type") not in (None, "default"):
+            raise ValueError("carbon-x rope_type is not default")
+        if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+            raise ValueError("carbon-x layer_types is not full_attention")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("carbon hidden_act is not silu")
+    if c.get("attention_bias") is not False:
+        raise ValueError("carbon attention_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0, None):
+        raise ValueError("carbon attention_dropout is not 0")
+    hd = c.get("head_dim") or (c["hidden_size"] // c["num_attention_heads"])
+    if c["hidden_size"] != c["num_attention_heads"] * hd:
+        raise ValueError("carbon hidden is not heads times head_dim")
+    if kind == "carbon_qwen" and c.get("head_dim") != hd:
+        raise ValueError("carbon-x head_dim is missing")
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("carbon mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("carbon mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd:
+            raise ValueError("carbon attention is not gqa head_dim")
+    layers = tuple(replace(L, vec_kind=kind) for L in spec.layers)
+    if kind == "carbon_qwen":
+        note = ("0.445：Qwen3RMSNorm 是 T5 配方，fp32 归约。"
+                "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。"
+                "q_norm 和 k_norm 是 head_dim 上的 RMSNorm，每个头一次 rsqrt。")
+    else:
+        note = ("0.445：LlamaRMSNorm 是 T5 配方，fp32 归约。"
+                "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。没有 q/k norm。")
+    return replace(spec, layers=layers, vec_kind=kind, notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -5446,7 +5517,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return spec
+    return _tag_carbon_vectors(spec, c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
