@@ -80,7 +80,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_447():
-    assert __version__ == "0.447.0"
+    assert __version__ == "0.448.0"
 
 
 def test_post_rmsnorm_qk_and_the_product():
@@ -235,10 +235,14 @@ def test_non_vector_schedule_and_other_models():
         assert _sched(m, ph, shard) == _sched(bare, ph, shard)
     for mid in ("qwen3-32b", "qwen3-14b", "llama-3.1-8b",
                 "qwen3-vl-235b-a22b", "qwen3-vl-30b-a3b",
-                "granite-4.1-30b", "granite-4.2-8b",
                 "olmo-3-32b-think", "qwen3-coder-480b-a35b"):
         other = get_model(mid)
         assert other.vec_kind == ""
+        assert all(L.vec_kind != "exaone4" for L in other.layers)
+    # 0.448 bills these two as granite. They stay off the EXAONE post-norm path.
+    for mid in ("granite-4.1-30b", "granite-4.2-8b"):
+        other = get_model(mid)
+        assert other.vec_kind == "granite"
         assert all(L.vec_kind != "exaone4" for L in other.layers)
     carbon = get_model("carbon-x")
     assert carbon.vec_kind == "carbon_qwen"

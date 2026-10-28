@@ -400,6 +400,8 @@ class Layer:
     # head_dim). Other Llama and Qwen3 checkpoints stay on the shared tail.
     # 0.447 EXAONE-4: exaone4 is the same T5 RMSNorm and SiLU product, but
     # the two hidden norms are post-attention and post-feedforward.
+    # 0.448 Granite-4.1 / 4.2 dense LMs: granite is the pre-norm T5 RMSNorm
+    # and SiLU product, with no q/k norm. Residual scalars are not 0.5.
     # "" keeps the shared full-forward assumption.
     vec_kind: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -571,6 +573,7 @@ class ModelSpec:
     # final GenerannoRMSNorm. 0.445: "carbon_llama" / "carbon_qwen" bill the
     # published final RMSNorm (fp32, one rsqrt per token row).
     # 0.446: "qwen3vl_text". 0.447: "exaone4" (post-norm, same final RMSNorm).
+    # 0.448: "granite" (pre-norm GraniteRMSNorm, same final RMSNorm, no q/k norm).
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -4690,6 +4693,62 @@ def _tag_exaone_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="exaone4", notes=spec.notes + (note,))
 
 
+_GRANITE = frozenset({
+    "granite-4.1-30b", "granite-4.1-30b-fp8",
+    "granite-4.1-8b", "granite-4.1-8b-fp8",
+    "granite-4.1-3b", "granite-4.1-3b-fp8",
+    "granite-4.2-30b", "granite-4.2-30b-fp8",
+    "granite-4.2-8b", "granite-4.2-8b-fp8",
+    "granite-4.2-3b", "granite-4.2-3b-fp8",
+    "granite-4.2-30b-mxfp4", "granite-4.2-30b-nvfp4",
+    "granite-4.2-8b-mxfp4", "granite-4.2-8b-nvfp4",
+    "granite-4.2-3b-mxfp4", "granite-4.2-3b-nvfp4",
+})
+
+
+def _tag_granite_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.448: bill published Granite RMSNorm and the SwiGLU product.
+
+    GraniteRMSNorm matches T5LayerNorm: fp32 mean of squares, one rsqrt,
+    times weight. The MLP is down(silu(gate) * up). SiLU stays the existing
+    act op. The product is mlp_mul between fused gate_up and down. There is
+    no q/k norm. The hidden norms stay pre-norm. Residual, attention,
+    embedding, and logits scalars are not 0.5 and are not billed. Speech
+    ids stay untagged. Other catalog rows stay on the shared tail.
+    """
+    if spec.id not in _GRANITE:
+        return spec
+    if c.get("model_type") != "granite":
+        raise ValueError("granite model_type is not granite")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("granite hidden_act is not silu")
+    if c.get("attention_bias") is not False:
+        raise ValueError("granite attention_bias is not false")
+    if c.get("mlp_bias") is not False:
+        raise ValueError("granite mlp_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("granite attention_dropout is not 0")
+    h = c["hidden_size"]
+    heads = c["num_attention_heads"]
+    if not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0 or h % heads != 0:
+        raise ValueError("granite hidden is not heads times head_dim")
+    hd = h // heads
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("granite mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("granite mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd:
+            raise ValueError("granite attention is not gqa head_dim")
+        if L.misc_params != 2 * h:
+            raise ValueError("granite has no qk norm")
+    layers = tuple(replace(L, vec_kind="granite") for L in spec.layers)
+    note = ("0.448：GraniteRMSNorm 是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。没有 q/k norm。"
+            "残差乘数、attention_multiplier、embedding_multiplier、logits_scaling 不是 0.5，不入账。")
+    return replace(spec, layers=layers, vec_kind="granite", notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -5637,7 +5696,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_exaone_vectors(_tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c)
+    return _tag_granite_vectors(
+        _tag_exaone_vectors(_tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
