@@ -4886,6 +4886,79 @@ def _tag_step_audio_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="step_audio", notes=spec.notes + (note,))
 
 
+_MISTRAL_SMALL = frozenset({
+    "mistral-small-3.2-24b-instruct-2506",
+    "mistral-small-3.1-24b-instruct-2503",
+    "magistral-small-2509",
+})
+
+
+def _tag_mistral_small_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.451: bill published Mistral-Small text-tower RMSNorm and the SwiGLU product.
+
+    Mistral3Model loads the text tower with AutoModel.from_config(text_config).
+    That config is model_type mistral, so the tower is MistralModel.
+    MistralRMSNorm matches T5LayerNorm: fp32 mean of squares, one rsqrt, times
+    weight. MistralMLP is down(act_fn(gate) * up). Linear bias is hardcoded
+    False. The published hidden_act is silu. There is no q/k norm. Hidden
+    norms stay pre-norm. sliding_window is null, so the mask is causal.
+    These three ids are outside the first 60 catalog rows. The Pixtral vision
+    tower already bills its own RMSNorm, SiLU, and projector erf-GELU.
+    """
+    if spec.id not in _MISTRAL_SMALL:
+        return spec
+    if c.get("model_type") != "mistral":
+        raise ValueError("mistral small model_type is not mistral")
+    if c.get("architectures") != ["Mistral3ForConditionalGeneration"]:
+        raise ValueError("mistral small architecture is not mistral3")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("mistral small hidden_act is not silu")
+    if c.get("attention_bias") not in (None, False):
+        raise ValueError("mistral small attention_bias is not false")
+    if c.get("mlp_bias") not in (None, False):
+        raise ValueError("mistral small mlp_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("mistral small attention_dropout is not 0")
+    if c.get("sliding_window") is not None:
+        raise ValueError("mistral small sliding_window is not null")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("mistral small use_sliding_window is not false")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("mistral small rope_scaling is not null")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("mistral small layer_types is not full_attention")
+    hd = c.get("head_dim")
+    if "head_dim" not in c or isinstance(hd, bool) or not isinstance(hd, int) or hd <= 0:
+        raise ValueError("mistral small head_dim is missing")
+    h = c["hidden_size"]
+    heads = c["num_attention_heads"]
+    hkv = c["num_key_value_heads"]
+    # Published q width is num_attention_heads * head_dim (4096), not hidden (5120).
+    if (not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0
+            or not isinstance(hkv, int) or isinstance(hkv, bool) or hkv <= 0
+            or not isinstance(h, int) or isinstance(h, bool) or h <= 0):
+        raise ValueError("mistral small attention heads are not positive")
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("mistral small mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("mistral small mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd or L.core.window is not None:
+            raise ValueError("mistral small attention is not gqa head_dim")
+        if L.misc_params != 2 * h:
+            raise ValueError("mistral small has no qk norm")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("mistral small attention is not q then k")
+        if by["q"].n != heads * hd or by["k"].n != hkv * hd:
+            raise ValueError("mistral small qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="mistral_small") for L in spec.layers)
+    note = ("0.451：MistralRMSNorm 是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。没有 q/k norm。"
+            "Pixtral 视觉塔的 RMSNorm、SiLU 和投影 erf-GELU 不改。")
+    return replace(spec, layers=layers, vec_kind="mistral_small", notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -5833,10 +5906,11 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_step_audio_vectors(
-        _tag_qwen3_vectors(
-            _tag_granite_vectors(
-                _tag_exaone_vectors(_tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c), c)
+    return _tag_mistral_small_vectors(
+        _tag_step_audio_vectors(
+            _tag_qwen3_vectors(
+                _tag_granite_vectors(
+                    _tag_exaone_vectors(_tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

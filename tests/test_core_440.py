@@ -80,7 +80,7 @@ _ANGLE_RELU = (
 
 
 def test_version_is_440():
-    assert __version__ == "0.450.0"
+    assert __version__ == "0.451.0"
 
 
 def test_esmfold_trunk_bills_eleven_layernorms_and_two_relus():
