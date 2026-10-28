@@ -10294,3 +10294,7 @@ ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有
 
 `qwen3-14b` 和 `qwen3-14b-fp8` 两行，都在前 60 条目录之外。`Qwen3RMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm：`input_layernorm` 在注意力前面，`post_attention_layernorm` 在 MLP 前面。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32，`final_norm` 每个 token 行一次 rsqrt。q/k RMSNorm 做在 `head_dim` 上，每个头一次 rsqrt。q 宽等于 hidden 5120，`q_rms` 的 `vec` 与 `attn_norm` 相同，`sfu` 仍是头数。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。算子顺序与 Carbon-X、Qwen3-VL 共用的助手相同：`q_rms` / `k_rms` 在注意力 GEMM 之后、打分之前。前 60 条里的 Qwen3、MoE 文本和语音行不打这个标签。
 
+## §366 Step-Audio-2 文本塔的 RMSNorm 与 SwiGLU 相乘（0.450）
+
+`step-audio-2-r1.1`、`step-audio-2-mini`、`step-audio-2-mini-base`、`step-audio-2-mini-think` 四行，都在前 60 条目录之外。语言栈是 `Qwen2Model(text_config)`。`Qwen2RMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm：`input_layernorm` 在注意力前面，`post_attention_layernorm` 在 MLP 前面。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32，`final_norm` 每个 token 行一次 rsqrt。没有 q/k RMSNorm。q/k/v 的 Linear bias 是 True，o 是 False，已经在 `misc_params` 里。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。发布 JSON 省略了 `hidden_act`，`StepAudio2TextConfig` 的默认值是 `silu`。音频编码器的 erf-GELU 和 adaptor 的 ReLU 不改。前 60 条里的 Qwen2.5、Qwen2-Audio、Qwen2.5-Omni 不打这个标签。
+
