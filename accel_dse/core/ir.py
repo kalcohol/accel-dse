@@ -1833,9 +1833,15 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
         from .tts import tts_head_ops
         if getattr(ts, "kind", "") == "firered":      # 0.275 FireRedTTS3 (core/fireredtts3.py)
             from .fireredtts3 import fire_head_ops as tts_head_ops
-        return [Op("final_norm", "vector", model.n_layers,
-                   vec=0 if model.final_norm_params == 0 else b_loc * model.hidden * 4)] + \
-            tts_head_ops(ts, b_loc, model.n_layers, replicated=sh.tp, af=model.act_fmt)
+        # 0.453: FireRedTTS3's backbone norm is Qwen3RMSNorm. The TTS head still
+        # reads one row per sequence, not every prompt token. One rsqrt, fp32.
+        if model.vec_kind == "qwen3" and model.final_norm_params != 0:
+            final = Op("final_norm", "vector", model.n_layers,
+                       vec=b_loc * model.hidden * 4, sfu=float(b_loc), a_fmt="fp32")
+        else:
+            final = Op("final_norm", "vector", model.n_layers,
+                       vec=0 if model.final_norm_params == 0 else b_loc * model.hidden * 4)
+        return [final] + tts_head_ops(ts, b_loc, model.n_layers, replicated=sh.tp, af=model.act_fmt)
     if model.readout_rows and not (ph.labels and ph.kind == "prefill"):
         # 0.291 a decision checkpoint (pplx-decider) has no vocab head: outside a decision readout every row it
         # projects reads the whole readout (all answer-code rows)

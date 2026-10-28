@@ -4752,18 +4752,25 @@ def _tag_granite_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="granite", notes=spec.notes + (note,))
 
 
-_QWEN3_DENSE = frozenset({"qwen3-14b", "qwen3-14b-fp8"})
+_QWEN3_DENSE = frozenset({
+    "qwen3-14b", "qwen3-14b-fp8",
+    "qwen3-8b-dspine", "moss-tts", "fireredtts3-base",
+})
+# 0.453 ids. DSpine's five draft layers are the published Qwen3 decoder
+# and take the same per-layer checks. MOSS and FireRed have no draft layers.
+_QWEN3_453 = frozenset({"qwen3-8b-dspine", "moss-tts", "fireredtts3-base"})
 
 
 def _tag_qwen3_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
-    """0.449: bill published Qwen3-14B RMSNorm and the SwiGLU product.
+    """0.449 / 0.453: bill published Qwen3 RMSNorm and the SwiGLU product.
 
     Qwen3RMSNorm matches T5LayerNorm: fp32 mean of squares, one rsqrt,
     times weight. The MLP is down(silu(gate) * up) with Linear bias False.
     q_norm and k_norm run on head_dim after the head view, one rsqrt per
-    head. Hidden norms stay pre-norm. These two ids are outside the first
-    60 catalog rows. Front-60 Qwen3 rows, MoE rows, and speech rows stay
-    on the shared tail. rope stays after the score.
+    head. Hidden norms stay pre-norm. 0.449 covers Qwen3-14B. 0.453 adds
+    qwen3-8b-dspine (target layers and the five draft layers), moss-tts,
+    and fireredtts3-base. Those ids are outside the first 60 catalog rows.
+    Front-60 Qwen3 rows stay on the shared tail. rope stays after the score.
     """
     if spec.id not in _QWEN3_DENSE:
         return spec
@@ -4795,7 +4802,8 @@ def _tag_qwen3_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
         raise ValueError("qwen3 sliding_window is not null")
     if any(t != "full_attention" for t in (c.get("layer_types") or [])):
         raise ValueError("qwen3 layer_types is not full_attention")
-    for L in spec.layers:
+
+    def _one(L: Layer) -> None:
         if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
             raise ValueError("qwen3 mlp is not dense swiglu")
         if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
@@ -4809,12 +4817,28 @@ def _tag_qwen3_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             raise ValueError("qwen3 attention is not q then k")
         if by["q"].n != hq * hd or by["k"].n != hkv * hd:
             raise ValueError("qwen3 qk width is not heads times head_dim")
+
+    for L in spec.layers:
+        _one(L)
+    mtp = spec.mtp_layers
+    if spec.id in _QWEN3_453:
+        for L in spec.mtp_layers:
+            _one(L)
+        mtp = tuple(replace(L, vec_kind="qwen3") for L in spec.mtp_layers)
     layers = tuple(replace(L, vec_kind="qwen3") for L in spec.layers)
     note = ("0.449：Qwen3RMSNorm 是 T5 配方，fp32 归约。"
             "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。"
             "q_norm 和 k_norm 是 head_dim 上的 RMSNorm，每个头一次 rsqrt。"
             "q 宽等于 hidden，sfu 仍是头数。前 60 条里的 Qwen3 不打这个标签。")
-    return replace(spec, layers=layers, vec_kind="qwen3", notes=spec.notes + (note,))
+    notes = spec.notes + (note,)
+    if spec.id in _QWEN3_453:
+        notes = notes + (
+            "0.453：同一份 Qwen3RMSNorm、按头 q/k 和 mlp_mul。"
+            "qwen3-8b-dspine 的目标层和五层草稿都入账。"
+            "moss-tts 只入账语言塔，音频头不入账。"
+            "fireredtts3-base 只入账主干，DiT 和 RedAE 不入账。"
+            "前 60 条里的 qwen3-8b 和 qwen3-1.7b 不打这个标签。",)
+    return replace(spec, layers=layers, mtp_layers=mtp, vec_kind="qwen3", notes=notes)
 
 
 _STEP_AUDIO = frozenset({
