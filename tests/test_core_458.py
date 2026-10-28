@@ -163,7 +163,8 @@ def test_non_vector_schedule_and_other_models():
     for mid in _SHAPE:
         m = get_model(mid)
         cleared = _bare(m)
-        for shard in (Shard(), Shard(tp=2)):
+        # MoE layers require ep * etp == tp * dp. Dense FFN still splits on tp.
+        for shard in (Shard(), Shard(tp=2, ep=2)):
             assert _sched(m, ph, shard) == _sched(cleared, ph, shard)
     for mid in ("qwen3-32b", "qwen3-8b", "qwen3-1.7b", "qwen2.5-72b", "llama-3.1-8b",
                 "olmo-3-32b-think", "jais-3-32b",
