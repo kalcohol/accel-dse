@@ -4584,18 +4584,25 @@ _QWEN3VL_TEXT = frozenset({
     "qwen3-vl-8b", "qwen3-vl-8b-fp8",
     "qwen3-vl-4b", "qwen3-vl-4b-fp8",
     "qwen3-vl-2b", "qwen3-vl-2b-fp8",
+    "wevisone-vl-4b", "wevisone-vl-2b",
 })
+# 0.454 ids. Same Qwen3VLTextRMSNorm recipe as the dense Qwen3-VL rows.
+# Safetensors are fp32; activations stay bf16. rope_parameters carries the
+# published mRoPE sections and does not add an op.
+_QWEN3VL_454 = frozenset({"wevisone-vl-4b", "wevisone-vl-2b"})
 
 
 def _tag_qwen3vl_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
-    """0.446: bill published Qwen3-VL text RMSNorm and the SwiGLU product.
+    """0.446 / 0.454: bill published Qwen3-VL text RMSNorm and the SwiGLU product.
 
     Qwen3VLTextRMSNorm matches T5LayerNorm: fp32 mean of squares, one rsqrt,
     times weight. The MLP is down(silu(gate) * up) with Linear bias False.
     q_norm and k_norm run on head_dim after the head view, one rsqrt per
-    head. Dense ids only. MoE text stays on the shared tail because the
-    expert product is not between one fused gate_up and down. Vision is a
-    separate tower and is not retagged. mRoPE does not change these ops.
+    head. Dense ids only. 0.446 covers Qwen3-VL dense text. 0.454 adds
+    WeVisOne-VL-4B and WeVisOne-VL-2B, outside the first 60 catalog rows.
+    MoE text stays on the shared tail because the expert product is not
+    between one fused gate_up and down. Vision is a separate tower and is
+    not retagged. mRoPE does not change these ops. WeVisOne weights stay fp32.
     """
     if spec.id not in _QWEN3VL_TEXT:
         return spec
@@ -4616,8 +4623,24 @@ def _tag_qwen3vl_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     hd = c["head_dim"]
     if any(t != "full_attention" for t in (c.get("layer_types") or [])):
         raise ValueError("qwen3-vl layer_types is not full_attention")
+    if spec.id in _QWEN3VL_454:
+        if spec.act_fmt != "bf16":
+            raise ValueError("qwen3-vl activation dtype is not bf16")
+        if spec.fmt("mlp").fmt != "fp32" or spec.fmt("attn").fmt != "fp32":
+            raise ValueError("qwen3-vl weight dtype is not fp32")
+        if c.get("rope_scaling") is not None:
+            raise ValueError("qwen3-vl rope_scaling is not null")
+        rp = c.get("rope_parameters") or {}
+        if (rp.get("rope_type") != "default" or rp.get("mrope_interleaved") is not True
+                or rp.get("mrope_section") != [24, 20, 20]):
+            raise ValueError("qwen3-vl rope_parameters is not mrope default")
+        if c.get("use_sliding_window") not in (None, False):
+            raise ValueError("qwen3-vl use_sliding_window is not false")
+        if c.get("sliding_window") is not None:
+            raise ValueError("qwen3-vl sliding_window is not null")
     hq = c["num_attention_heads"]
     hkv = c["num_key_value_heads"]
+    h = c["hidden_size"]
     for L in spec.layers:
         if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
             raise ValueError("qwen3-vl mlp is not dense swiglu")
@@ -4625,6 +4648,8 @@ def _tag_qwen3vl_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             raise ValueError("qwen3-vl mlp is not gate_up then down")
         if L.core.kind != "gqa" or L.core.qk_dim != hd:
             raise ValueError("qwen3-vl attention is not gqa head_dim")
+        if spec.id in _QWEN3VL_454 and L.misc_params != 2 * h + 2 * hd:
+            raise ValueError("qwen3-vl qk norm is not head_dim")
         by = {ln.name: ln for ln in L.attn_linears}
         if "q" not in by or "k" not in by:
             raise ValueError("qwen3-vl attention is not q then k")
@@ -4635,7 +4660,14 @@ def _tag_qwen3vl_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。"
             "q_norm 和 k_norm 是 head_dim 上的 RMSNorm，每个头一次 rsqrt。"
             "视觉塔不改。")
-    return replace(spec, layers=layers, vec_kind="qwen3vl_text", notes=spec.notes + (note,))
+    notes = spec.notes + (note,)
+    if spec.id in _QWEN3VL_454:
+        notes = notes + (
+            "0.454：同一份 Qwen3VLTextRMSNorm、按头 q/k 和 mlp_mul。"
+            "WeVisOne 文本塔的权重是 fp32，激活仍是 bf16。"
+            "4B 的 q 宽大于 hidden。rope_parameters 里的 mRoPE 不新开算子。"
+            "视觉塔的 gelu_pytorch_tanh 不改。",)
+    return replace(spec, layers=layers, vec_kind="qwen3vl_text", notes=notes)
 
 
 _EXAONE4 = frozenset({"exaone-4.0-32b", "exaone-4.0.1-32b", "exaone-4.0-1.2b"})
