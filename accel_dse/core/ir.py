@@ -1333,11 +1333,13 @@ def _evo2_dense(L: Layer) -> bool:
 
 
 def _carbon_dense(L: Layer) -> bool:
-    # GraniteRMSNorm, Qwen3RMSNorm, and Qwen2RMSNorm (Step-Audio text) are
-    # the same pre-norm T5 recipe. Granite and Step-Audio have no q/k norm.
-    # Qwen3 norms q and k on head_dim.
+    # GraniteRMSNorm, Qwen3RMSNorm, Qwen2RMSNorm (Step-Audio text), and
+    # MistralRMSNorm (Mistral-Small text) are the same pre-norm T5 recipe.
+    # Granite, Step-Audio, and Mistral-Small have no q/k norm. Qwen3 norms
+    # q and k on head_dim.
     return L.vec_kind in (
-        "carbon_llama", "carbon_qwen", "qwen3vl_text", "granite", "qwen3", "step_audio")
+        "carbon_llama", "carbon_qwen", "qwen3vl_text", "granite", "qwen3", "step_audio",
+        "mistral_small")
 
 
 def _exaone_dense(L: Layer) -> bool:
@@ -1558,6 +1560,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     who = "qwen3"
                 elif L.vec_kind == "step_audio":
                     who = "step audio"
+                elif L.vec_kind == "mistral_small":
+                    who = "mistral small"
                 else:
                     who = "carbon"
                 raise ValueError(f"{who} mlp is not gate_up then down")
@@ -1852,10 +1856,11 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
                 gemm(model, "label_head", model.n_layers, m, model.hidden, L, role, stream=True),
                 Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
     if model.vec_kind in (
-            "carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4", "granite", "qwen3", "step_audio"):
+            "carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4", "granite", "qwen3",
+            "step_audio", "mistral_small"):
         # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm /
-        # GraniteRMSNorm / Qwen2RMSNorm on every token row, then the head
-        # reads the last rows.
+        # GraniteRMSNorm / Qwen2RMSNorm / MistralRMSNorm on every token row,
+        # then the head reads the last rows.
         rows = b_loc * ph.q
         final = Op("final_norm", "vector", model.n_layers,
                    vec=0 if model.final_norm_params == 0 else rows * model.hidden * 4,

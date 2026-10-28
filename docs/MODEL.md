@@ -10298,3 +10298,7 @@ ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有
 
 `step-audio-2-r1.1`、`step-audio-2-mini`、`step-audio-2-mini-base`、`step-audio-2-mini-think` 四行，都在前 60 条目录之外。语言栈是 `Qwen2Model(text_config)`。`Qwen2RMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm：`input_layernorm` 在注意力前面，`post_attention_layernorm` 在 MLP 前面。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32，`final_norm` 每个 token 行一次 rsqrt。没有 q/k RMSNorm。q/k/v 的 Linear bias 是 True，o 是 False，已经在 `misc_params` 里。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。发布 JSON 省略了 `hidden_act`，`StepAudio2TextConfig` 的默认值是 `silu`。音频编码器的 erf-GELU 和 adaptor 的 ReLU 不改。前 60 条里的 Qwen2.5、Qwen2-Audio、Qwen2.5-Omni 不打这个标签。
 
+## §367 Mistral-Small 文本塔的 RMSNorm 与 SwiGLU 相乘（0.451）
+
+`mistral-small-3.2-24b-instruct-2506`、`mistral-small-3.1-24b-instruct-2503`、`magistral-small-2509` 三行，都在前 60 条目录之外。语言塔是 `AutoModel.from_config(text_config)` 装出来的 `MistralModel`。`MistralRMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm：`input_layernorm` 在注意力前面，`post_attention_layernorm` 在 MLP 前面。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32，`final_norm` 每个 token 行一次 rsqrt。没有 q/k RMSNorm。q 宽是 `32 * 128 = 4096`，小于 hidden 5120，块范数的宽度仍是 hidden。q/k/v/o 的 Linear bias 写死 False。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。`sliding_window` 是 null。Pixtral 视觉塔的 RMSNorm、SiLU 和投影 erf-GELU 不改。前 60 条里的 Mistral-Large、Mixtral、Mistral-7B，以及 Qwen2-Audio、Qwen2.5-Omni 不打这个标签。
+
