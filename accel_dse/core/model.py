@@ -5393,6 +5393,141 @@ def _tag_moshi_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="carbon_llama", notes=spec.notes + (note,))
 
 
+_ERNIE_MOE = frozenset({
+    "ernie-4.5-21b-a3b-pt",
+    "ernie-4.5-21b-a3b-base-pt",
+    "ernie-4.5-21b-a3b-thinking",
+    "ernie-4.5-300b-a47b-pt",
+    "ernie-4.5-300b-a47b-base-pt",
+    "ernie-4.5-300b-a47b-base",
+})
+
+
+def _ernie_moe_layer(c: dict, n_layers: int, i: int) -> bool:
+    """Published interval test (modeling_ernie4_5_moe.py). Scalar indexes only."""
+    interval = c.get("moe_layer_interval") or 1
+    start = c.get("moe_layer_start_index") or 0
+    end_raw = c.get("moe_layer_end_index")
+    if isinstance(interval, (list, tuple)) or isinstance(start, (list, tuple)):
+        raise ValueError("ernie moe interval is not a scalar")
+    if isinstance(end_raw, (list, tuple)):
+        raise ValueError("ernie moe interval is not a scalar")
+    interval = int(interval)
+    start = int(start)
+    if interval != 1:
+        raise ValueError("ernie moe interval is not 1")
+    end = n_layers - 1 if end_raw is None or int(end_raw) < 0 else int(end_raw)
+    return ((i + 1) % interval == 0) and start <= i <= end
+
+
+def _tag_ernie_moe_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.458: bill LlamaRMSNorm and the dense SwiGLU product on ERNIE-4.5 MoE.
+
+    Ernie4_5_MoeRMSNorm subclasses LlamaRMSNorm and adds nothing. That is the
+    T5 recipe: fp32 mean of squares, one rsqrt, times weight. Dense layers
+    before moe_layer_start_index are Qwen3MoeMLP, down(silu(gate) * up), with
+    Linear bias false. SiLU stays the existing act op. The product is mlp_mul
+    between fused gate_up and down. vec_kind reuses carbon_llama. MoE layers
+    use the same pre-norm, so they take the same kind, but the emitter inserts
+    mlp_mul only for a dense gate_up/down pair. Expert and shared-expert
+    products stay on expert_act. There is no q/k norm. head_dim is
+    hidden // heads. These six ids sit outside the first 60 catalog rows.
+    The 0.3B class is Ernie4_5RMSNorm and its head_dim is not hidden // heads,
+    so it is not in this set. VL rows publish mRoPE in rope_scaling and are
+    not in this set. Stored MTP blocks are not run by the published forward
+    and keep an empty vec_kind.
+    """
+    if spec.id not in _ERNIE_MOE:
+        return spec
+    if c.get("model_type") != "ernie4_5_moe":
+        raise ValueError("ernie moe model_type is not ernie4_5_moe")
+    if c.get("architectures") != ["Ernie4_5_MoeForCausalLM"]:
+        raise ValueError("ernie moe architecture is not ernie4_5_moe")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("ernie moe hidden_act is not silu")
+    if c.get("use_bias") is not False:
+        raise ValueError("ernie moe use_bias is not false")
+    if c.get("attention_bias") not in (None, False):
+        raise ValueError("ernie moe attention_bias is not false")
+    if c.get("attention_dropout") not in (None, 0, 0.0):
+        raise ValueError("ernie moe attention_dropout is not 0")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("ernie moe rope_scaling is not null")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("ernie moe layer_types is not full_attention")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("ernie moe use_sliding_window is not false")
+    if spec.act_fmt != "bf16":
+        raise ValueError("ernie moe activation dtype is not bf16")
+    if spec.fmt("mlp").fmt != "bf16" or spec.fmt("attn").fmt != "bf16":
+        raise ValueError("ernie moe weight dtype is not bf16")
+    if spec.fmt("expert").fmt != "bf16":
+        raise ValueError("ernie moe expert dtype is not bf16")
+    h = c.get("hidden_size")
+    heads = c.get("num_attention_heads")
+    hkv = c.get("num_key_value_heads")
+    if (not isinstance(h, int) or isinstance(h, bool) or h <= 0
+            or not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0
+            or not isinstance(hkv, int) or isinstance(hkv, bool) or hkv <= 0
+            or h % heads != 0):
+        raise ValueError("ernie moe hidden is not heads times head_dim")
+    hd = h // heads
+    published = c.get("head_dim")
+    if published is not None and published != hd:
+        raise ValueError("ernie moe head_dim is not hidden // heads")
+    experts = c.get("moe_num_experts")
+    if isinstance(experts, bool) or not isinstance(experts, int) or experts <= 0:
+        raise ValueError("ernie moe expert count is not a positive int")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("ernie moe final norm is not one")
+    dense = 0
+    n_layers = len(spec.layers)
+    for i, L in enumerate(spec.layers):
+        if L.core.kind != "gqa" or L.core.qk_dim != hd or L.core.window is not None:
+            raise ValueError("ernie moe attention is not gqa head_dim")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("ernie moe attention is not q then k")
+        if by["q"].n != heads * hd or by["k"].n != hkv * hd or by["q"].n != h:
+            raise ValueError("ernie moe qk width is not heads times head_dim")
+        if _ernie_moe_layer(c, n_layers, i):
+            if L.ffn.kind != "moe":
+                raise ValueError("ernie moe layer is not moe")
+            if L.misc_params != 2 * h + experts:
+                raise ValueError("ernie moe norm is not two hidden")
+            names = [ln.name for ln in L.ffn_linears]
+            if names[:1] != ["router"] or "gate_up" in names:
+                raise ValueError("ernie moe experts are not a fused gate_up down pair")
+        else:
+            if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+                raise ValueError("ernie moe mlp is not dense swiglu")
+            if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("ernie moe mlp is not gate_up then down")
+            if L.misc_params != 2 * h:
+                raise ValueError("ernie moe norm is not two hidden")
+            dense += 1
+    if dense <= 0:
+        raise ValueError("ernie moe has no dense swiglu layer")
+    for L in spec.mtp_layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("ernie moe mtp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("ernie moe mtp is not gate_up then down")
+        if L.misc_params != 4 * h:
+            raise ValueError("ernie moe mtp norm is not the stored block")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd:
+            raise ValueError("ernie moe mtp attention is not gqa head_dim")
+    layers = tuple(replace(L, vec_kind="carbon_llama") for L in spec.layers)
+    note = ("0.458：Ernie4_5_MoeRMSNorm 继承 LlamaRMSNorm，是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。稠密层的门和值相乘是 mlp_mul，"
+            "夹在融合的 gate_up 和 down 中间。"
+            "MoE 层只把块范数改成同一份 fp32 RMSNorm。"
+            "专家相乘和共享专家相乘不在这份融合对中间，不新开相乘槽。"
+            "没有 q/k norm。MTP 的 vec_kind 仍是空的。"
+            "0.3B 和带 mRoPE 的 VL 行不打这个标签。")
+    return replace(spec, layers=layers, vec_kind="carbon_llama", notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -6340,15 +6475,17 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_moshi_vectors(
-        _tag_omniasr_vectors(
-            _tag_qwen2_text_vectors(
-                _tag_mistral_small_vectors(
-                    _tag_step_audio_vectors(
-                        _tag_qwen3_vectors(
-                            _tag_granite_vectors(
-                                _tag_exaone_vectors(
-                                    _tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c)
+    return _tag_ernie_moe_vectors(
+        _tag_moshi_vectors(
+            _tag_omniasr_vectors(
+                _tag_qwen2_text_vectors(
+                    _tag_mistral_small_vectors(
+                        _tag_step_audio_vectors(
+                            _tag_qwen3_vectors(
+                                _tag_granite_vectors(
+                                    _tag_exaone_vectors(
+                                        _tag_qwen3vl_vectors(
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
