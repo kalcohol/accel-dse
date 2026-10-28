@@ -6,6 +6,21 @@
 
 
 
+## [0.459.0] — 2026-10-28
+
+### OpenFold 过渡层补上已执行的输出乘 mask
+
+- **修正。** 没有新开目录行，也没有新的激活种类，也没有新的 `vec_kind`。改的是已经入库、而且不在前 60 条里的 `openfold`（`gh:aqlaboratory/openfold`，`finetuning_ptm_2`）。2026-10-28 再读 OpenFold main `be2ec1841f16` 的 `pair_transition.py`、`evoformer.py` 和 `model.py`，以及 `config.py` 的 `model_config('finetuning_ptm')`。`MSATransition._transition` 与 `PairTransition._transition` 都执行 `linear_2(x) * mask`。mask 省略时模块用 `new_ones` 再 `unsqueeze`，乘法仍然执行。造 mask 不单列。发布的 `model._mask_trans` 是 False，`model.py` 把它传进模板栈、extra MSA 和 Evoformer。Evoformer 的 MSA、以及 Evoformer / extra MSA / 模板的 pair 过渡因此乘全 1。`ExtraMSABlock` 不看这个开关，MSA 过渡传入真实的 `msa_mask`。宽度是 `linear_2` 的 N，不是 ReLU 的隐藏宽。一次乘法，`sfu` 是 0，`a_fmt` 跟激活 dtype，不升精度。名字是 `msa_trans_mask` / `pair_trans_mask`，插在对应 `linear_2` 和它的 `.ew` 之间。逐线性 `.ew` 不减。`vec_kind` 仍是 `of_block`。只在 `model.id == "openfold"` 时插入。AlphaFold 2 的 `Transition` 把 mask 扩出来后 `return act`，不乘。
+- **默认窗口。** 512 残基，MSA 行 `(512 + 4) * 512`，extra MSA `1024 * 512`，模板 pair `4 * 512 * 512`，主干 4 遍。下面是一次执行。Evoformer：`msa_trans_mask` 的 `vec` 是 `516 * 512 * 256`，`pair_trans_mask` 的 `vec` 是 `512 * 512 * 128`，`a_fmt` 是 bf16。`msa_transition.linear_2` 的 M、K、N 是 `516 * 512`、1024、256，`w_fmt` 是 fp32。`pair_transition.linear_2` 的 M、K、N 是 `512 * 512`、512、128。`.ew` 仍是 `行 * (K + N) * 4`。顺序是 `linear_2`、`msa_trans_mask` 或 `pair_trans_mask`、`.ew`。`linear_1` 后面仍是 ReLU 然后 `.ew`。extra MSA：`msa_trans_mask` 的 `vec` 是 `1024 * 512 * 64`，`pair_trans_mask` 的 `vec` 是 `512 * 512 * 128`。模板 pair 块只有 `pair_trans_mask`，`vec` 是 `4 * 512 * 512 * 64`，没有 `msa_trans_mask`。48 个 Evoformer、4 个 extra MSA、2 个模板块加总，一次主干是 `5,259,657,216` 个元素，4 遍是 `21,038,628,864`。向量 FLOPs 是 0。GEMM 的 FLOPs 不变，`seq_len=384` 的闭式仍是 221.443 TFLOP。没有名为 `gelu`、`silu`、`sigmoid`、`softplus`、`clamp`、`mask_mul` 的算子。
+- **DAP2 和请求 fp8。** 没有发布的 fp8 行。DAP2 切 MSA / pair 行，不复制这些向量。Evoformer 本地 MSA 行 `258 * 512`，`msa_trans_mask` 的 `vec` 是 `258 * 512 * 256`；pair 行 `256 * 512`，`pair_trans_mask` 的 `vec` 是 `256 * 512 * 128`。`replicated` 是 1。请求 fp8 时这两条的 `a_fmt` 是 fp8。LayerNorm 仍是 fp32。GEMM 的 `w_fmt` 仍是 fp32。
+- **不单列。** 不把同一笔扩到 AlphaFold 2。不记模板嵌入在点注意力之后的 `t * t_mask`。不记 OPM 的除以 `num_mask.clamp`、sigmoid 门、IPA 的 softplus、扭转角 clamp。不改 Boltz、Protenix、ESMFold。不改 GEMM 名字、形状和 FLOPs。不新开目录行。前 60 个目录条目不含 `openfold`（末尾仍是 `wan2.1-14b` 和 `wan2.1-1.3b`）。stage 指纹仍是 `f54f33dfa13cdd41`，默认 pipe 指纹仍是 `1e15ae85430a04f3`。去掉 DeepSeek-V4 之后仍是 `5c058c9ed0f8f61e` / `8a5fa1d0881da387`。`esmfold` 的 KPI 哈希仍是 `3bbede544308`，ESM-2 3B 仍是 `34f7544287cd`，Wan2.1-1.3B 仍是 `309919c00604`。
+- **未纳入：**
+  - **AlphaFold 2。** JAX `Transition` 把 mask 扩出来，但返回的是激活本身，没有乘到输出上。不入账。
+  - **Boltz-1 / Protenix 的 mask 乘、AdaLN、扩散 SwiGLU、sigmoid 门、OPM 除法。** 对不上这一份 `linear_2 * mask`，或者和 clamp 绑在一起。
+  - **前 60 条里的 Llama / Qwen2.5 / Qwen3。** 更大，扩过去会改指纹。
+  - **Qwen3-VL MoE、Qwen3-Coder-480B、Qwen3-TTS / ASR 的 mRoPE、Fun-ASR-Nano、ERNIE-4.5 0.3B、ERNIE-4.5-VL、Olmo、Jais、Qwen3.5、Evo2 vortex RMS、Granite 语音。** 对不上现成配方，或门拒绝。
+  - **已经入账、这次不重写。** ERNIE-4.5 MoE 稠密前缀仍是 0.458。Moshi 仍是 0.457。OmniASR、CosyVoice / Ming、WeVisOne、Qwen3 语音主干、Qwen2 文本塔、Mistral-Small、Step-Audio-2、Qwen3-14B、Granite 稠密、EXAONE-4、Carbon、Qwen3-VL 稠密文本、Evo2 第 0 层、蛋白质 LayerNorm 家族、Pixtral 视觉塔都不改。
+
 ## [0.458.0] — 2026-10-28
 
 ### ERNIE-4.5 MoE 的稠密层补上已执行的 Llama RMSNorm 和门控 MLP 相乘

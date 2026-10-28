@@ -7,7 +7,9 @@ the IPA loop keeps 8 iterations of LayerNorm and ReLU.
 pLDDT is LayerNorm, ReLU, Linear, ReLU, Linear on the final single, once.
 Recycling norms, the template-angle ReLU, and the template-stack LayerNorm
 run once per recycle. Vector flops stay 0. The generic .ew tail stays.
-Mask multiplies, sigmoid gates, IPA softplus, and the angle clamp are not billed.
+AlphaFold 2 does not multiply the transition output. OpenFold's product is
+msa_trans_mask / pair_trans_mask (0.459), not the name mask_mul.
+Sigmoid gates, IPA softplus, and the angle clamp are not billed.
 """
 from __future__ import annotations
 
@@ -107,7 +109,7 @@ def _touch(ops, gemm: str, before: tuple[str, ...] = (), after: str | None = Non
 
 
 def test_version_is_441():
-    assert __version__ == "0.458.0"
+    assert __version__ == "0.459.0"
 
 
 def test_openfold_and_alphafold2_block_layernorm_and_relu():
