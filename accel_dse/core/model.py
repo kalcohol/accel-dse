@@ -577,6 +577,7 @@ class ModelSpec:
     # 0.446: "qwen3vl_text". 0.447: "exaone4" (post-norm, same final RMSNorm).
     # 0.448: "granite" (pre-norm GraniteRMSNorm, same final RMSNorm, no q/k norm).
     # 0.449: "qwen3" (pre-norm Qwen3RMSNorm, same final RMSNorm, head_dim q/k).
+    # 0.456: OmniASR LLM text reuses carbon_llama (LlamaRMSNorm, no q/k norm).
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -5195,6 +5196,91 @@ def _tag_qwen2_text_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="qwen2_text", notes=notes)
 
 
+_OMNIASR_LLAMA = frozenset({
+    "omniasr-llm-300m-v2",
+    "omniasr-llm-1b-v2",
+    "omniasr-llm-3b-v2",
+    "omniasr-llm-7b-v2",
+})
+
+
+def _tag_omniasr_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.456: bill published OmniASR Llama RMSNorm and the SwiGLU product.
+
+    The text tower is Llama geometry inside OmniASRForConditionalGeneration.
+    LlamaRMSNorm is the T5 recipe: fp32 mean of squares, one rsqrt, times
+    weight. SiLU stays the existing act op. The gate times up product is
+    mlp_mul. There is no q/k norm. Hidden norms stay pre-norm. The four ids
+    share one decoder and sit outside the first 60 catalog rows. Weights stay
+    fp32. Activations stay bf16. The audio tower is not retagged. vec_kind
+    reuses carbon_llama, so the emitter does not grow a new kind.
+    """
+    if spec.id not in _OMNIASR_LLAMA:
+        return spec
+    if c.get("model_type") != "llama":
+        raise ValueError("omniasr text model_type is not llama")
+    if c.get("architectures") != ["OmniASRForConditionalGeneration"]:
+        raise ValueError("omniasr text architecture is not omniasr")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("omniasr text hidden_act is not silu")
+    if c.get("attention_bias") is not False:
+        raise ValueError("omniasr text attention_bias is not false")
+    if c.get("mlp_bias") is not False:
+        raise ValueError("omniasr text mlp_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("omniasr text attention_dropout is not 0")
+    if c.get("pretraining_tp") != 1:
+        raise ValueError("omniasr text pretraining_tp is not 1")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("omniasr text rope_scaling is not null")
+    rp = c.get("rope_parameters") or {}
+    if (not isinstance(rp, dict) or rp.get("rope_type") != "default"
+            or rp.get("mrope_section") is not None
+            or rp.get("type") not in (None, "default")):
+        raise ValueError("omniasr text rope_type is not default")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("omniasr text layer_types is not full_attention")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("omniasr text use_sliding_window is not false")
+    if spec.act_fmt != "bf16":
+        raise ValueError("omniasr text activation dtype is not bf16")
+    if spec.fmt("mlp").fmt != "fp32" or spec.fmt("attn").fmt != "fp32":
+        raise ValueError("omniasr text weight dtype is not fp32")
+    h = c.get("hidden_size")
+    heads = c.get("num_attention_heads")
+    hkv = c.get("num_key_value_heads")
+    hd = c.get("head_dim")
+    if (not isinstance(h, int) or isinstance(h, bool) or h <= 0
+            or not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0
+            or not isinstance(hkv, int) or isinstance(hkv, bool) or hkv <= 0
+            or not isinstance(hd, int) or isinstance(hd, bool) or hd <= 0
+            or h != heads * hd):
+        raise ValueError("omniasr text hidden is not heads times head_dim")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("omniasr text final norm is not one")
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("omniasr text mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("omniasr text mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd or L.core.window is not None:
+            raise ValueError("omniasr text attention is not gqa head_dim")
+        if L.misc_params != 2 * h:
+            raise ValueError("omniasr text norm is not two hidden")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("omniasr text attention is not q then k")
+        if by["q"].n != heads * hd or by["k"].n != hkv * hd:
+            raise ValueError("omniasr text qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="carbon_llama") for L in spec.layers)
+    note = ("0.456：LlamaRMSNorm 是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。没有 q/k norm。"
+            "文本塔的权重是 fp32，激活仍是 bf16。"
+            "最终范数盖住全部提示 token，每个 token 行一次 rsqrt。"
+            "音频塔不改。")
+    return replace(spec, layers=layers, vec_kind="carbon_llama", notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -6142,13 +6228,14 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_qwen2_text_vectors(
-        _tag_mistral_small_vectors(
-            _tag_step_audio_vectors(
-                _tag_qwen3_vectors(
-                    _tag_granite_vectors(
-                        _tag_exaone_vectors(
-                            _tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c), c), c), c)
+    return _tag_omniasr_vectors(
+        _tag_qwen2_text_vectors(
+            _tag_mistral_small_vectors(
+                _tag_step_audio_vectors(
+                    _tag_qwen3_vectors(
+                        _tag_granite_vectors(
+                            _tag_exaone_vectors(
+                                _tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

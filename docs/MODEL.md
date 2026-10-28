@@ -10317,3 +10317,7 @@ ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有
 ## §371 CosyVoice / Ming 的 Qwen2.5-0.5B 语言塔 RMSNorm 与 SwiGLU 相乘（0.455）
 
 `cosyvoice2-0.5b`、`fun-cosyvoice3-0.5b-2512`、`ming-3.0-tts-0.5b`、`ming-omni-tts-0.5b` 四行，都在前 60 条目录之外。语言塔是 `llm_config` 里的 Qwen2.5-0.5B：`Qwen2ForCausalLM`，`hidden_act` 是 `silu`，24 层，隐藏 896，inner 4864，14 / 2 头，`head_dim` 64。配方与 0.452 的 Qwen2 文本塔相同。`Qwen2RMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm。`attn_norm` / `ffn_norm` 的 `a_fmt` 是 fp32。没有 q/k RMSNorm。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。`use_sliding_window` 为 false 时，JSON 里的 `sliding_window` 不打开层窗口。CosyVoice 的权重是 fp32，激活仍是 bf16，`final_norm` 盖住全部提示 token。Ming 的权重是 bf16。DiTAR 头仍只读每个序列一行，`final_norm` 的 `vec` 不按提示长度放大，`sfu` 是序列数。flow、HiFT 和 DiTAR 不入账。前 60 条里的 Llama / Qwen2.5 / Qwen3 不打这个标签。
+
+## §372 OmniASR LLM 文本塔 RMSNorm 与 SwiGLU 相乘（0.456）
+
+`omniasr-llm-300m-v2`、`omniasr-llm-1b-v2`、`omniasr-llm-3b-v2`、`omniasr-llm-7b-v2` 四行，都在前 60 条目录之外。文本塔是同一份 Llama 解码器：`OmniASRForConditionalGeneration` 里的 `text_config`，`model_type` 是 `llama`，`hidden_act` 是 `silu`，12 层，隐藏 4096，inner 2816，8 / 8 头，`head_dim` 512。名字里的尺寸差在音频塔。配方与 0.445 的 Carbon Llama 相同，所以 `vec_kind` 复用 `carbon_llama`，不新开种类。`LlamaRMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32。没有 q/k RMSNorm。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。权重是 fp32，激活仍是 bf16。`final_norm` 盖住全部提示 token。音频塔的 erf-GELU 和 LayerNorm 不改。前 60 条里的 Llama / Qwen2.5 / Qwen3 不打这个标签。
