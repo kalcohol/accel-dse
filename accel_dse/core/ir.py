@@ -1336,20 +1336,27 @@ def _carbon_dense(L: Layer) -> bool:
     return L.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text")
 
 
+def _exaone_dense(L: Layer) -> bool:
+    return L.vec_kind == "exaone4"
+
+
 def _qk_rms_who(kind: str) -> str:
     if kind == "carbon_qwen":
         return "carbon-x"
     if kind == "qwen3vl_text":
         return "qwen3-vl"
+    if kind == "exaone4":
+        return "exaone4"
     return ""
 
 
 def _carbon_qk_rms(L: Layer, li: int, t: int, tp: int) -> list[Op]:
     """RMSNorm on head_dim after q_proj and k_proj.
 
-    Qwen3RMSNorm and Qwen3VLTextRMSNorm both say the norm is on the head
-    dim, unlike Olmo. One rsqrt per head. Llama Carbon checkpoints have no
-    q/k norm. The reduction is the published T5 recipe (fp32).
+    Qwen3RMSNorm, Qwen3VLTextRMSNorm, and Exaone4RMSNorm all say the norm
+    is on the head dim, unlike Olmo. One rsqrt per head. Llama Carbon
+    checkpoints have no q/k norm. The reduction is the published T5 recipe
+    (fp32).
     """
     who = _qk_rms_who(L.vec_kind)
     if not who:
@@ -1419,7 +1426,9 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     else:
         if _carbon_dense(L):
             ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
-        else:
+        elif not _exaone_dense(L):
+            # EXAONE-4 is post-norm. The same attn_norm op is emitted after
+            # the attention all-reduce, not before qkv.
             ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t))
     if L.core.dea_q:
         ops.extend(_dea_ops(model, li, L, ph, sh, b_loc))
@@ -1483,6 +1492,11 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(Op("rope", "vector", li, vec=t * hq * max(L.core.rope_dim, L.core.qk_dim // 2) * 3))
     if tp > 1:
         ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
+    if _exaone_dense(L):
+        # Exaone4DecoderLayer.post_attention_layernorm is T5 RMSNorm on the
+        # full hidden, after the row-parallel o_proj all-reduce. One rsqrt
+        # per token row. The residual add stays the combined residual below.
+        ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
     if L.cross is not None and model.enc_ctx:
         ops += _cross_decode_ops(model, li, L, ph, sh, b_loc)
     if L.hc:
@@ -1506,7 +1520,9 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     else:
         if _carbon_dense(L):
             ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
-        else:
+        elif not _exaone_dense(L):
+            # EXAONE-4 post_feedforward_layernorm is emitted after mlp.down
+            # and the MLP all-reduce.
             ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t))
     f = L.ffn
     if f.kind == "dense":
@@ -1522,11 +1538,16 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
                 if l.name == "gate_up":
                     ops.extend(_evo2_mlp_vecs(L.vec_kind, nact, li, af))
-        elif _carbon_dense(L):
+        elif _carbon_dense(L) or _exaone_dense(L):
             # down(silu(gate) * up). SiLU stays the existing act op. The product is mlp_mul.
             # Both sit between the fused gate_up GEMM and down.
             if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
-                who = "qwen3-vl" if L.vec_kind == "qwen3vl_text" else "carbon"
+                if L.vec_kind == "qwen3vl_text":
+                    who = "qwen3-vl"
+                elif L.vec_kind == "exaone4":
+                    who = "exaone4"
+                else:
+                    who = "carbon"
                 raise ValueError(f"{who} mlp is not gate_up then down")
             nact = t * _cdiv(f.d_ff, tp)
             af = model.act_fmt
@@ -1543,6 +1564,10 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(Op("act", "vector", li, vec=t * _cdiv(f.d_ff, tp) * 4, sfu=t * _cdiv(f.d_ff, tp) * 2))   # silu: exp + rcp
         if tp > 1:
             ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
+        if _exaone_dense(L):
+            # post_feedforward_layernorm sees the full hidden. A row-parallel
+            # down must all-reduce first.
+            ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
     elif f.kind == "moe":
         sh.check_moe()
         T = ph.tokens                       # global tokens in the stage step
@@ -1814,9 +1839,9 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
                    vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
                 gemm(model, "label_head", model.n_layers, m, model.hidden, L, role, stream=True),
                 Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
-    if model.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text"):
-        # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm on every token row,
-        # then the head reads the last rows.
+    if model.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4"):
+        # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm
+        # on every token row, then the head reads the last rows.
         rows = b_loc * ph.q
         final = Op("final_norm", "vector", model.n_layers,
                    vec=0 if model.final_norm_params == 0 else rows * model.hidden * 4,

@@ -53,7 +53,7 @@ def _bad(edit):
 
 
 def test_version_is_437():
-    assert __version__ == "0.446.0"
+    assert __version__ == "0.447.0"
 
 
 def test_esm2_650m_bills_layernorm_and_erf_gelu():
