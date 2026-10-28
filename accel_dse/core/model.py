@@ -779,10 +779,17 @@ def _tc(cfg: dict) -> dict:
         # looked up and summed per 12.5 Hz frame (from_release lookup_params).  Depformer + Mimi → core/moshi.py
         lm = cfg["lm"]
         d, L = lm["dim"], lm["num_layers"]
+        # 0.457 keeps the published gating / norm / layer_scale on this dict so
+        # the vector tag can refuse a checkpoint that is no longer rms_norm_f32
+        # plus SiLU. They do not change GEMM shapes.
         return {"model_type": "moshi", "hidden_size": d, "num_hidden_layers": L, "num_attention_heads": lm["num_heads"],
                 "num_key_value_heads": lm["num_heads"], "intermediate_size": int(2 * lm["hidden_scale"] * d / 3),
                 "vocab_size": lm["text_card"], "tie_word_embeddings": False, "max_position_embeddings": 10 ** 6,
-                "layer_types": ["sliding_attention"] * L, "sliding_window": lm["context"], "torch_dtype": "bfloat16"}
+                "layer_types": ["sliding_attention"] * L, "sliding_window": lm["context"], "torch_dtype": "bfloat16",
+                "gating": lm.get("gating"), "norm": lm.get("norm"), "layer_scale": lm.get("layer_scale"),
+                "hidden_scale": lm.get("hidden_scale"), "positional_embedding": lm.get("positional_embedding"),
+                "causal": lm.get("causal"), "attention_bias": lm.get("attention_bias"),
+                "rope_scaling": lm.get("rope_scaling"), "architectures": cfg.get("architectures")}
     if _is_kimi(cfg):
         # 0.273 Kimi-Audio-7B-Instruct (modeling_moonshot_kimia.py 「来源」; KimiAudioConfig(Qwen2Config) — no model_type
         # of its own): 28 Qwen2 layers (q / k / v bias) + kimia_mimo_layers 6 more of the same shape that branch off
@@ -5281,6 +5288,111 @@ def _tag_omniasr_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="carbon_llama", notes=spec.notes + (note,))
 
 
+_MOSHI_TEXT = frozenset({
+    "moshiko-7b",
+    "moshika-7b",
+})
+
+
+def _moshi_swiglu_width(dim: int, hidden_scale: float) -> int:
+    """ActivationGating hidden width (kyutai moshi modules/gating.py).
+
+    ``dim_feedforward`` is ``int(hidden_scale * dim)``. The 4 * dim branch uses
+    ``(21 * dim) // 8``. Every other width uses ``(2 * dim_feedforward) // 3``.
+    """
+    dim_ff = int(hidden_scale * dim)
+    if dim_ff == 4 * dim:
+        return (21 * dim) // 8
+    return (2 * dim_ff) // 3
+
+
+def _tag_moshi_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.457: bill published Moshi RMSNorm and the SwiGLU product.
+
+    The temporal transformer is the catalog stack. ``_lm_kwargs`` sets
+    ``norm`` to ``rms_norm_f32`` and ``gating`` to ``silu``, and
+    ``layer_scale`` to None. ``_rms_norm`` upcasts to fp32, adds eps to the
+    mean of squares, takes one rsqrt, and multiplies by alpha. That is the
+    T5 recipe. ``F.silu(gate) * up`` sits between the fused ``linear_in`` and
+    ``linear_out``. SiLU stays the existing act op. The product is mlp_mul.
+    There is no q/k norm. Hidden norms stay pre-norm. The residual add is
+    unchanged because layer_scale is None. The two ids share one temporal
+    decoder and sit outside the first 60 catalog rows. Weights stay bf16.
+    Activations stay bf16. vec_kind reuses carbon_llama. The depformer and
+    Mimi codec are not retagged.
+    """
+    if spec.id not in _MOSHI_TEXT:
+        return spec
+    if c.get("model_type") != "moshi":
+        raise ValueError("moshi model_type is not moshi")
+    if c.get("architectures") != ["MoshiLMModel"]:
+        raise ValueError("moshi architecture is not moshi")
+    if c.get("gating") != "silu":
+        raise ValueError("moshi gating is not silu")
+    if c.get("norm") != "rms_norm_f32":
+        raise ValueError("moshi norm is not rms_norm_f32")
+    if c.get("layer_scale") is not None:
+        raise ValueError("moshi layer_scale is not null")
+    if c.get("positional_embedding") != "rope":
+        raise ValueError("moshi positional_embedding is not rope")
+    if c.get("causal") is not True:
+        raise ValueError("moshi causal is not true")
+    if c.get("attention_bias") not in (None, False):
+        raise ValueError("moshi attention_bias is not false")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("moshi rope_scaling is not null")
+    hs = c.get("hidden_scale")
+    if isinstance(hs, bool) or not isinstance(hs, (int, float)) or hs != 4.125:
+        raise ValueError("moshi hidden_scale is not 4.125")
+    if c.get("sliding_window") != 3000:
+        raise ValueError("moshi attention window is not 3000")
+    types = c.get("layer_types") or []
+    if not types or any(t != "sliding_attention" for t in types):
+        raise ValueError("moshi layer_types is not sliding_attention")
+    if spec.act_fmt != "bf16":
+        raise ValueError("moshi activation dtype is not bf16")
+    if spec.fmt("mlp").fmt != "bf16" or spec.fmt("attn").fmt != "bf16":
+        raise ValueError("moshi weight dtype is not bf16")
+    h = c.get("hidden_size")
+    heads = c.get("num_attention_heads")
+    hkv = c.get("num_key_value_heads")
+    if (not isinstance(h, int) or isinstance(h, bool) or h <= 0
+            or not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0
+            or not isinstance(hkv, int) or isinstance(hkv, bool) or hkv <= 0
+            or h % heads != 0 or heads != hkv):
+        raise ValueError("moshi hidden is not heads times head_dim")
+    hd = h // heads
+    width = _moshi_swiglu_width(h, float(hs))
+    if c.get("intermediate_size") != width or width <= 0:
+        raise ValueError("moshi swiglu width is not the published gating")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("moshi final norm is not one")
+    if len(spec.layers) != len(types):
+        raise ValueError("moshi layer_types is not sliding_attention")
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != width:
+            raise ValueError("moshi mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("moshi mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd or L.core.window != 3000:
+            raise ValueError("moshi attention is not gqa head_dim")
+        if L.misc_params != 2 * h:
+            raise ValueError("moshi norm is not two hidden")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("moshi attention is not q then k")
+        if by["q"].n != heads * hd or by["k"].n != hkv * hd:
+            raise ValueError("moshi qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="carbon_llama") for L in spec.layers)
+    note = ("0.457：rms_norm_f32 是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。没有 q/k norm。"
+            "layer_scale 是 null，残差仍是原来的一条。"
+            "时间塔的权重是 bf16，激活仍是 bf16。"
+            "最终范数盖住全部提示 token，每个 token 行一次 rsqrt。"
+            "depformer 和 Mimi 不入账。")
+    return replace(spec, layers=layers, vec_kind="carbon_llama", notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -6228,14 +6340,15 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_omniasr_vectors(
-        _tag_qwen2_text_vectors(
-            _tag_mistral_small_vectors(
-                _tag_step_audio_vectors(
-                    _tag_qwen3_vectors(
-                        _tag_granite_vectors(
-                            _tag_exaone_vectors(
-                                _tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c)
+    return _tag_moshi_vectors(
+        _tag_omniasr_vectors(
+            _tag_qwen2_text_vectors(
+                _tag_mistral_small_vectors(
+                    _tag_step_audio_vectors(
+                        _tag_qwen3_vectors(
+                            _tag_granite_vectors(
+                                _tag_exaone_vectors(
+                                    _tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
