@@ -100,7 +100,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_448():
-    assert __version__ == "0.456.0"
+    assert __version__ == "0.457.0"
 
 
 def test_granite_bills_fp32_rmsnorm_and_the_product():

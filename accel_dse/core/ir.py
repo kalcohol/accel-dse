@@ -1337,7 +1337,8 @@ def _carbon_dense(L: Layer) -> bool:
     # Qwen2.5-Omni / Kimi text), and MistralRMSNorm (Mistral-Small text) are
     # the same pre-norm T5 recipe. Granite, Step-Audio, Mistral-Small, and
     # Qwen2 text have no q/k norm. Qwen3 norms q and k on head_dim. Kimi's
-    # second final norm is head-side only.
+    # second final norm is head-side only. Moshi rms_norm_f32 (0.457) is the
+    # same pre-norm recipe and reuses carbon_llama. It has no q/k norm.
     return L.vec_kind in (
         "carbon_llama", "carbon_qwen", "qwen3vl_text", "granite", "qwen3", "step_audio",
         "mistral_small", "qwen2_text")
@@ -1870,9 +1871,10 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
             "carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4", "granite", "qwen3",
             "step_audio", "mistral_small", "qwen2_text"):
         # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm /
-        # GraniteRMSNorm / Qwen2RMSNorm / MistralRMSNorm on every token row,
-        # then the head reads the last rows. Kimi-Audio publishes two
-        # Qwen2RMSNorms (norm and mimo_norm); final_norm_params is 2 * hidden.
+        # GraniteRMSNorm / Qwen2RMSNorm / MistralRMSNorm / Moshi rms_norm_f32
+        # on every token row, then the head reads the last rows. Kimi-Audio
+        # publishes two Qwen2RMSNorms (norm and mimo_norm); final_norm_params
+        # is 2 * hidden.
         rows = b_loc * ph.q
         nrm = 2 if (
             model.vec_kind == "qwen2_text" and model.final_norm_params == 2 * model.hidden) else 1

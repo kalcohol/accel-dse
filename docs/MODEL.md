@@ -10321,3 +10321,7 @@ ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有
 ## §372 OmniASR LLM 文本塔 RMSNorm 与 SwiGLU 相乘（0.456）
 
 `omniasr-llm-300m-v2`、`omniasr-llm-1b-v2`、`omniasr-llm-3b-v2`、`omniasr-llm-7b-v2` 四行，都在前 60 条目录之外。文本塔是同一份 Llama 解码器：`OmniASRForConditionalGeneration` 里的 `text_config`，`model_type` 是 `llama`，`hidden_act` 是 `silu`，12 层，隐藏 4096，inner 2816，8 / 8 头，`head_dim` 512。名字里的尺寸差在音频塔。配方与 0.445 的 Carbon Llama 相同，所以 `vec_kind` 复用 `carbon_llama`，不新开种类。`LlamaRMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32。没有 q/k RMSNorm。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。权重是 fp32，激活仍是 bf16。`final_norm` 盖住全部提示 token。音频塔的 erf-GELU 和 LayerNorm 不改。前 60 条里的 Llama / Qwen2.5 / Qwen3 不打这个标签。
+
+## §373 Moshi 时间塔 RMSNorm 与 SwiGLU 相乘（0.457）
+
+`moshiko-7b` 和 `moshika-7b` 两行，都在前 60 条目录之外。入账的是时间变换器，不是 depformer，也不是 Mimi。`loaders.py` 的 `_lm_kwargs` 把 `norm` 设成 `rms_norm_f32`，`gating` 设成 `silu`，`layer_scale` 设成 null。`_rms_norm` 在 fp32 里算 `eps + mean(x**2)`，一次 `rsqrt`，再乘 `alpha`。这就是 T5 的 `rsqrt(mean(x**2) + eps) * weight`。`ActivationGating` 是 `F.silu(gate) * up`，夹在融合的 `linear_in` 和 `linear_out` 中间。所以 `vec_kind` 复用 `carbon_llama`，不新开种类。仍是 pre-norm。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32。没有 q/k RMSNorm。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`。`layer_scale` 是 null，残差仍是原来的一条。权重是 bf16，激活仍是 bf16。32 层，隐藏 4096，inner 11264，32 / 32 头，`head_dim` 128。上下文 3000 仍是原来的滑窗。depformer 的逐步权重和 Mimi 的 LayerNorm 加 LayerScale 不入账。前 60 条里的 Llama / Qwen2.5 / Qwen3 不打这个标签。
