@@ -2412,6 +2412,17 @@ def _bz_mul(name: str, n: int, li: int, rep: float, af: str) -> Op:
     return Op(name, "vector", li, vec=float(n), a_fmt=af, replicated=rep)
 
 
+def _of_mask(name: str, n: int, li: int, rep: float, af: str) -> Op:
+    """OpenFold MSATransition / PairTransition: linear_2(x) * mask.
+
+    One multiply. Building the mask (ones, or unsqueeze of the caller mask) is not an op.
+    No transcendental and no upcast. Width is linear_2's N, not the ReLU hidden width.
+    """
+    if n <= 0:
+        raise ValueError(f"openfold {name} has no elements")
+    return Op(name, "vector", li, vec=float(n), a_fmt=af, replicated=rep)
+
+
 def _esmfold_state_copies(model: ModelSpec) -> int:
     """lddt reads structure['states'], one row-block per StructureModule iteration."""
     found = [L.iters for L in model.layers if L.vec_kind == "esm_sm"]
@@ -2540,6 +2551,12 @@ _OF_BLOCK_LN_BEFORE = {
 _OF_BLOCK_RELU_AFTER = {
     "msa_transition.linear_1": "msa_trans_relu",
     "pair_transition.linear_1": "pair_trans_relu",
+}
+# Output multiply follows linear_2. OpenFold only: the published forward always multiplies.
+# AlphaFold 2's Transition expands the mask and returns the activation without this product.
+_OF_BLOCK_MASK_AFTER = {
+    "msa_transition.linear_2": "msa_trans_mask",
+    "pair_transition.linear_2": "pair_trans_mask",
 }
 # AlphaFold 2 haiku names for the same StructureModule loop (initial_projection is the preamble).
 ALPHAFOLD2_SM_LINEARS = frozenset({
@@ -3509,9 +3526,14 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
             if ln_name:
                 ops.append(_esm_ln(ln_name, m, l.n, li, rep))
         elif kind == "of_block":
-            relu_name = _OF_BLOCK_RELU_AFTER.get(_strip_core(l.name))
+            bare = _strip_core(l.name)
+            relu_name = _OF_BLOCK_RELU_AFTER.get(bare)
             if relu_name:
                 ops.append(_esm_relu(relu_name, m * l.n, li, rep, model.act_fmt, who))
+            if model.id == "openfold":
+                mul_name = _OF_BLOCK_MASK_AFTER.get(bare)
+                if mul_name:
+                    ops.append(_of_mask(mul_name, m * l.n, li, rep, model.act_fmt))
         elif kind == "of_sm":
             relu_name = _OF_SM_RELU_AFTER.get(l.name)
             if relu_name:
