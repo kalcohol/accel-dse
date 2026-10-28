@@ -1312,6 +1312,26 @@ def _dea_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard, b_loc: i
     return ops
 
 
+def _evo2_mlp_vecs(kind: str, nact: int, li: int, af: str) -> list[Op]:
+    """ParallelGatedMLP product, and F.gelu on layer 0 only.
+
+    F.gelu defaults to approximate='none': x * 0.5 * (1 + erf(x / sqrt(2))).
+    That is four arithmetic ops and one erf. The class does not upcast.
+    Later layers set the activation to Identity, so only the multiply remains.
+    """
+    if kind not in ("evo2_gelu", "evo2_id"):
+        raise ValueError("evo2 vector kind is not gelu or identity")
+    ops: list[Op] = []
+    if kind == "evo2_gelu":
+        ops.append(Op("gelu", "vector", li, vec=nact * 5, sfu=float(nact), a_fmt=af))
+    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
+    return ops
+
+
+def _evo2_dense(L: Layer) -> bool:
+    return L.vec_kind in ("evo2_gelu", "evo2_id")
+
+
 def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: Layer | None = None) -> list[Op]:
     L = layer if layer is not None else model.layers[li]
     if ph.kind == "full":
@@ -1441,10 +1461,23 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
         ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t))
     f = L.ffn
     if f.kind == "dense":
-        for l in L.ffn_linears:
-            k, n = _lin_local(l, tp)
-            ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
-        ops.append(Op("act", "vector", li, vec=t * _cdiv(f.d_ff, tp) * 4, sfu=t * _cdiv(f.d_ff, tp) * 2))   # silu: exp + rcp
+        if _evo2_dense(L):
+            # l3(act(l1(z)) * l2(z)). The fused GEMMs stay gate_up then down.
+            # The activation and the product sit between them, on one branch.
+            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("evo2 mlp is not gate_up then down")
+            nact = t * _cdiv(f.d_ff, tp)
+            af = model.act_fmt
+            for l in L.ffn_linears:
+                k, n = _lin_local(l, tp)
+                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
+                if l.name == "gate_up":
+                    ops.extend(_evo2_mlp_vecs(L.vec_kind, nact, li, af))
+        else:
+            for l in L.ffn_linears:
+                k, n = _lin_local(l, tp)
+                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
+            ops.append(Op("act", "vector", li, vec=t * _cdiv(f.d_ff, tp) * 4, sfu=t * _cdiv(f.d_ff, tp) * 2))   # silu: exp + rcp
         if tp > 1:
             ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
     elif f.kind == "moe":
@@ -3502,9 +3535,22 @@ def _full_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
                             + t * _cdiv(f.n_shared * f.d_shared, tp)) * 2
                            + t * n_route + t * dense_ff * 2)))   # SiLU; sigmoid router + top-k (6 / class)
     else:
-        ops += [lin("mlp", l, l.role if l.role == "mlp_bf16" or l.role.startswith("mtp_") else "mlp")
-                for l in L.ffn_linears]
-        if L.vec_kind == "esm2":
+        if _evo2_dense(L):
+            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("evo2 mlp is not gate_up then down")
+            nact = t * _cdiv(f.d_ff, tp)
+            af = model.act_fmt
+            for l in L.ffn_linears:
+                ops.append(lin("mlp", l, l.role if l.role == "mlp_bf16" or l.role.startswith("mtp_") else "mlp"))
+                if l.name == "gate_up":
+                    ops.extend(_evo2_mlp_vecs(L.vec_kind, nact, li, af))
+        else:
+            ops += [lin("mlp", l, l.role if l.role == "mlp_bf16" or l.role.startswith("mtp_") else "mlp")
+                    for l in L.ffn_linears]
+        if _evo2_dense(L):
+            # gelu and the product were inserted between gate_up and down.
+            pass
+        elif L.vec_kind == "esm2":
             # modeling_esm.gelu: x * 0.5 * (1 + erf(x / sqrt(2))). Four arithmetic ops and one erf.
             # The class does not upcast, so a_fmt follows the activation dtype.
             nact = t * _cdiv(L.ffn.d_ff, tp)

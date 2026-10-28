@@ -392,6 +392,9 @@ class Layer:
     # of_heads, and of_embed. esm_sm_pre stores the structure pair width.
     # 0.442 Boltz-1 uses bz_pair, bz_msa, bz_recycle, bz_conf, bz_cache,
     # and bz_diff for published LayerNorm and Transition SiLU.
+    # 0.444 Evo 2: evo2_gelu on layer 0 (F.gelu erf plus the product),
+    # evo2_id on later layers (product only). Vortex RMSNorm is not the
+    # T5 recipe and stays on the generic norm tail.
     # "" keeps the shared full-forward assumption.
     vec_kind: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -1822,7 +1825,20 @@ def _build_hyena(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
       hcs / hcm / hcl  hyena operator: projections h → 3h, short FIR (short_filter_length) over the 3h channels,
                        split x2, x1, v; inner filter on x1·v (se: hcs_filter_length taps, mr: hcm_filter_length taps,
                        lr: modal long filter of state_size poles), gate by x2 (+ D skip on mr / lr), out_filter_dense
-      attn             MHA (num_attention_heads, Wqkv 3h, out_proj with bias), RoPE; the only layers with a KV cache."""
+      attn             MHA (num_attention_heads, Wqkv 3h, out_proj with bias), RoPE; the only layers with a KV cache.
+    0.444: ParallelGatedMLP with mlp_activation gelu is F.gelu (erf) on layer 0 and Identity after that
+    when evo2_style_activations is true. The product is billed on every layer. Vortex RMSNorm keeps eps
+    outside the norm, so it is not the T5 recipe and is not newly billed."""
+    if c.get("model_type") != "stripedhyena2":
+        raise ValueError("evo2 model_type is not stripedhyena2")
+    if c.get("mlp_activation") != "gelu":
+        raise ValueError("evo2 mlp_activation is not gelu")
+    if c.get("evo2_style_activations") is not True:
+        raise ValueError("evo2 evo2_style_activations is not true")
+    if c.get("use_flash_rmsnorm") is not False:
+        raise ValueError("evo2 use_flash_rmsnorm is not false")
+    if c.get("intermediate_size") != c.get("inner_mlp_size"):
+        raise ValueError("evo2 intermediate_size is not inner_mlp_size")
     h = c["hidden_size"]
     H = c["num_attention_heads"]
     L = c["num_hidden_layers"]
@@ -1848,11 +1864,15 @@ def _build_hyena(c: dict) -> tuple[list[Layer], list[Layer], list[str], str]:
             # short FIR taps, out_filter_dense bias; se: filter.h [groups, 1, taps]; mr: + D; lr: D, log_poles, residues
             misc = 3 * h * sf + h + {"se": grp * ln, "mr": grp * ln + h, "lr": h + 2 * h * modes}[t]
         ffn, flin = _ffn_dense(h, c["intermediate_size"])
-        layers.append(Layer(alin, core, ffn, flin, misc + 2 * h))
+        # Layer 0 runs F.gelu. Later layers replace it with Identity (evo2_style_activations).
+        layers.append(Layer(alin, core, ffn, flin, misc + 2 * h,
+                            vec_kind="evo2_gelu" if i == 0 else "evo2_id"))
     n = {t: sum(1 for i in range(L) if kind.get(i, "attn") == t) for t in ("se", "mr", "lr", "attn")}
     notes = [f"StripedHyena 2：{n['se']} 层 Hyena-SE（{c.get('hcs_filter_length')} 抽头 FIR）、{n['mr']} 层 Hyena-MR"
              f"（{c.get('hcm_filter_length')} 抽头，预填充走 FFT 卷积）、{n['lr']} 层 Hyena-LR（{c.get('state_size')} 模态"
-             f"长滤波，FFT 卷积 / 解码递推）、{n['attn']} 层 MHA（唯一有 KV cache 的层）"]
+             f"长滤波，FFT 卷积 / 解码递推）、{n['attn']} 层 MHA（唯一有 KV cache 的层）",
+             "0.444：第 0 层门控 MLP 按 F.gelu（erf）再乘；其余层是恒等再乘。"
+             "vortex RMSNorm 的 eps 在范数外面，不按 T5 RMSNorm 另计"]
     return layers, [], notes, "full"
 
 
