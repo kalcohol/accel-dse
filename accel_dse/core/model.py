@@ -398,6 +398,8 @@ class Layer:
     # 0.445 Carbon causal siblings: carbon_llama (LlamaRMSNorm + SwiGLU
     # product) and carbon_qwen (the same, plus Qwen3 q/k RMSNorm on
     # head_dim). Other Llama and Qwen3 checkpoints stay on the shared tail.
+    # 0.447 EXAONE-4: exaone4 is the same T5 RMSNorm and SiLU product, but
+    # the two hidden norms are post-attention and post-feedforward.
     # "" keeps the shared full-forward assumption.
     vec_kind: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -568,6 +570,7 @@ class ModelSpec:
     # (erf-GELU, LayerNorm, decoder bias). 0.438: "generanno" bills the published
     # final GenerannoRMSNorm. 0.445: "carbon_llama" / "carbon_qwen" bill the
     # published final RMSNorm (fp32, one rsqrt per token row).
+    # 0.446: "qwen3vl_text". 0.447: "exaone4" (post-norm, same final RMSNorm).
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -4629,6 +4632,64 @@ def _tag_qwen3vl_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="qwen3vl_text", notes=spec.notes + (note,))
 
 
+_EXAONE4 = frozenset({"exaone-4.0-32b", "exaone-4.0.1-32b", "exaone-4.0-1.2b"})
+
+
+def _tag_exaone_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.447: bill published EXAONE-4 RMSNorm and the SwiGLU product.
+
+    Exaone4RMSNorm matches T5LayerNorm: fp32 mean of squares, one rsqrt,
+    times weight. The MLP is down(silu(gate) * up) with Linear bias False.
+    q_norm and k_norm run on head_dim after the head view, one rsqrt per
+    head. The two hidden norms are post-attention and post-feedforward,
+    not the pre-norm tail. Hybrid full layers stay NoPE. llama3 rope
+    scaling does not change these ops. Other catalog rows stay untagged.
+    """
+    if spec.id not in _EXAONE4:
+        return spec
+    if c.get("model_type") != "exaone4":
+        raise ValueError("exaone4 model_type is not exaone4")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("exaone4 hidden_act is not silu")
+    if c.get("attention_bias") is True:
+        raise ValueError("exaone4 attention_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("exaone4 attention_dropout is not 0")
+    if c.get("mlp_bias") is True:
+        raise ValueError("exaone4 mlp_bias is not false")
+    if "head_dim" not in c or not isinstance(c.get("head_dim"), int):
+        raise ValueError("exaone4 head_dim is missing")
+    if c["head_dim"] <= 0:
+        raise ValueError("exaone4 head_dim is not positive")
+    hd = c["head_dim"]
+    if c["hidden_size"] != c["num_attention_heads"] * hd:
+        raise ValueError("exaone4 hidden is not heads times head_dim")
+    types = c.get("layer_types") or []
+    if not types or any(t not in ("sliding_attention", "full_attention") for t in types):
+        raise ValueError("exaone4 layer_types is not sliding_attention or full_attention")
+    hq = c["num_attention_heads"]
+    hkv = c["num_key_value_heads"]
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("exaone4 mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("exaone4 mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd:
+            raise ValueError("exaone4 attention is not gqa head_dim")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("exaone4 attention is not q then k")
+        if by["q"].n != hq * hd or by["k"].n != hkv * hd:
+            raise ValueError("exaone4 qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="exaone4") for L in spec.layers)
+    note = ("0.447：Exaone4RMSNorm 是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。"
+            "q_norm 和 k_norm 是 head_dim 上的 RMSNorm，每个头一次 rsqrt。"
+            "块上的两份 RMSNorm 在注意力之后和 FFN 之后，不是 pre-norm。"
+            "全注意力的 NoPE 层仍不做 RoPE。llama3 的 rope_scaling 不改 GEMM。")
+    return replace(spec, layers=layers, vec_kind="exaone4", notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -5576,7 +5637,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c)
+    return _tag_exaone_vectors(_tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

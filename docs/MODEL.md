@@ -10282,3 +10282,7 @@ Image/video ViT forward (storage only); Thinker→Talker projection traffic deta
 
 ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有公开权重；StartLux 的 bf16 家族已经在目录中。
 
+## §363 EXAONE-4 的 post-RMSNorm 与 SwiGLU 相乘（0.447）
+
+`exaone-4.0-32b`、`exaone-4.0.1-32b`、`exaone-4.0-1.2b` 三行。`Exaone4RMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。块上没有 pre-norm。`post_attention_layernorm` 在注意力输出（以及 TP 的 all-reduce）之后，`post_feedforward_layernorm` 在 `mlp.down`（以及 MLP all-reduce）之后。仍用现成的 `attn_norm` / `ffn_norm`，`a_fmt` 是 fp32，不新开 `post_norm`。残差仍是原来的一条。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。q/k RMSNorm 做在 `head_dim` 上，每个头一次 rsqrt；32B 和 1.2B 的 q 宽等于 hidden，`sfu` 仍是头数而不是 token 数。混合模型的全注意力层是 global NoPE，不记 RoPE。`rope_scaling` 是 llama3，不改 GEMM，也不改这些向量。已有的 `rope` 仍排在打分后面。
+
