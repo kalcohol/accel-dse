@@ -122,7 +122,7 @@ def _geom(row):
 
 
 def test_version_is_452():
-    assert __version__ == "0.454.0"
+    assert __version__ == "0.455.0"
 
 
 def test_qwen2_text_bills_fp32_rmsnorm_and_the_product():
@@ -306,9 +306,10 @@ def test_non_vector_schedule_and_other_models():
         bare = _bare(m)
         for shard in (Shard(), Shard(tp=2), Shard(tp=4)):
             assert _sched(m, ph, shard) == _sched(bare, ph, shard)
+    # 0.455 bills the Ming-0.5B Qwen2 backbone as qwen2_text. Qwen3-TTS stays off it.
     for mid in ("qwen3-32b", "qwen2.5-72b", "llama-3.1-8b", "mistral-large", "mistral-7b",
                 "mixtral-8x22b", "magistral-small", "olmo-3-32b-think", "qwen3-vl-235b-a22b",
-                "qwen3-coder-480b-a35b", "ming-3.0-tts-0.5b"):
+                "qwen3-coder-480b-a35b", "qwen3-tts-1.7b-base"):
         other = get_model(mid)
         assert other.vec_kind != "qwen2_text"
         assert all(L.vec_kind != "qwen2_text" for L in other.layers)

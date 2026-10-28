@@ -95,7 +95,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_450():
-    assert __version__ == "0.454.0"
+    assert __version__ == "0.455.0"
 
 
 def test_step_audio_bills_fp32_rmsnorm_and_the_product():

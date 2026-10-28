@@ -1833,9 +1833,11 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
         from .tts import tts_head_ops
         if getattr(ts, "kind", "") == "firered":      # 0.275 FireRedTTS3 (core/fireredtts3.py)
             from .fireredtts3 import fire_head_ops as tts_head_ops
-        # 0.453: FireRedTTS3's backbone norm is Qwen3RMSNorm. The TTS head still
-        # reads one row per sequence, not every prompt token. One rsqrt, fp32.
-        if model.vec_kind == "qwen3" and model.final_norm_params != 0:
+        # 0.453 / 0.455: FireRedTTS3's backbone norm is Qwen3RMSNorm. Ming's
+        # backbone norm is Qwen2RMSNorm. The TTS head still reads one row per
+        # sequence, not every prompt token. One rsqrt, fp32. The vec is not
+        # scaled by the prompt length.
+        if model.vec_kind in ("qwen3", "qwen2_text") and model.final_norm_params != 0:
             final = Op("final_norm", "vector", model.n_layers,
                        vec=b_loc * model.hidden * 4, sfu=float(b_loc), a_fmt="fp32")
         else:
