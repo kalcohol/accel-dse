@@ -1333,13 +1333,14 @@ def _evo2_dense(L: Layer) -> bool:
 
 
 def _carbon_dense(L: Layer) -> bool:
-    # GraniteRMSNorm, Qwen3RMSNorm, Qwen2RMSNorm (Step-Audio text), and
-    # MistralRMSNorm (Mistral-Small text) are the same pre-norm T5 recipe.
-    # Granite, Step-Audio, and Mistral-Small have no q/k norm. Qwen3 norms
-    # q and k on head_dim.
+    # GraniteRMSNorm, Qwen3RMSNorm, Qwen2RMSNorm (Step-Audio text, Qwen2 /
+    # Qwen2.5-Omni / Kimi text), and MistralRMSNorm (Mistral-Small text) are
+    # the same pre-norm T5 recipe. Granite, Step-Audio, Mistral-Small, and
+    # Qwen2 text have no q/k norm. Qwen3 norms q and k on head_dim. Kimi's
+    # second final norm is head-side only.
     return L.vec_kind in (
         "carbon_llama", "carbon_qwen", "qwen3vl_text", "granite", "qwen3", "step_audio",
-        "mistral_small")
+        "mistral_small", "qwen2_text")
 
 
 def _exaone_dense(L: Layer) -> bool:
@@ -1562,6 +1563,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     who = "step audio"
                 elif L.vec_kind == "mistral_small":
                     who = "mistral small"
+                elif L.vec_kind == "qwen2_text":
+                    who = "qwen2 text"
                 else:
                     who = "carbon"
                 raise ValueError(f"{who} mlp is not gate_up then down")
@@ -1857,14 +1860,17 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
                 Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
     if model.vec_kind in (
             "carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4", "granite", "qwen3",
-            "step_audio", "mistral_small"):
+            "step_audio", "mistral_small", "qwen2_text"):
         # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm /
         # GraniteRMSNorm / Qwen2RMSNorm / MistralRMSNorm on every token row,
-        # then the head reads the last rows.
+        # then the head reads the last rows. Kimi-Audio publishes two
+        # Qwen2RMSNorms (norm and mimo_norm); final_norm_params is 2 * hidden.
         rows = b_loc * ph.q
+        nrm = 2 if (
+            model.vec_kind == "qwen2_text" and model.final_norm_params == 2 * model.hidden) else 1
         final = Op("final_norm", "vector", model.n_layers,
-                   vec=0 if model.final_norm_params == 0 else rows * model.hidden * 4,
-                   sfu=0 if model.final_norm_params == 0 else rows, a_fmt="fp32")
+                   vec=0 if model.final_norm_params == 0 else rows * model.hidden * 4 * nrm,
+                   sfu=0 if model.final_norm_params == 0 else float(rows * nrm), a_fmt="fp32")
     else:
         final = Op("final_norm", "vector", model.n_layers,
                    vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4)

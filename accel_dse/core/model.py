@@ -4959,6 +4959,129 @@ def _tag_mistral_small_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="mistral_small", notes=spec.notes + (note,))
 
 
+_QWEN2_TEXT = frozenset({
+    "qwen2.5-omni-7b",
+    "qwen2.5-omni-3b",
+    "qwen2-audio-7b-instruct",
+    "qwen2-audio-7b",
+    "kimi-audio-7b-instruct",
+    "kimi-audio-7b",
+})
+
+
+def _qwen2_text_family(mid: str) -> str:
+    if mid.startswith("qwen2.5-omni-"):
+        return "omni"
+    if mid.startswith("qwen2-audio-"):
+        return "audio"
+    if mid.startswith("kimi-audio-"):
+        return "kimi"
+    raise ValueError("qwen2 text id is not a published tower")
+
+
+def _tag_qwen2_text_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.452: bill published Qwen2 text-tower RMSNorm and the SwiGLU product.
+
+    Qwen2RMSNorm and Qwen2_5OmniRMSNorm match T5LayerNorm: fp32 mean of
+    squares, one rsqrt, times weight. The MLP is down(act(gate) * up).
+    SiLU stays the existing act op. There is no q/k norm. Hidden norms stay
+    pre-norm. Kimi-Audio imports the same Qwen2MLP and Qwen2RMSNorm, and
+    publishes a second final norm (mimo_norm) already counted in
+    final_norm_params. These six ids are outside the first 60 catalog rows.
+    mRoPE does not add an op. The audio towers and the Omni talker stay on
+    their existing graphs.
+    """
+    if spec.id not in _QWEN2_TEXT:
+        return spec
+    family = _qwen2_text_family(spec.id)
+    if family == "omni":
+        if c.get("model_type") != "qwen2_5_omni_text":
+            raise ValueError("qwen2 text model_type is not qwen2_5_omni_text")
+        if c.get("architectures") != ["Qwen2_5OmniModel"]:
+            raise ValueError("qwen2 text architecture is not omni")
+        if c.get("hidden_act") != "silu":
+            raise ValueError("qwen2 text hidden_act is not silu")
+        if c.get("attention_bias") is not True:
+            raise ValueError("qwen2 text attention_bias is not true")
+        rs = c.get("rope_scaling")
+        if (not isinstance(rs, dict) or rs.get("rope_type") != "default"
+                or rs.get("type") not in (None, "default")
+                or not isinstance(rs.get("mrope_section"), list) or not rs.get("mrope_section")):
+            raise ValueError("qwen2 text rope_scaling is not mrope default")
+    elif family == "audio":
+        if c.get("model_type") != "qwen2":
+            raise ValueError("qwen2 text model_type is not qwen2")
+        if c.get("architectures") != ["Qwen2AudioForConditionalGeneration"]:
+            raise ValueError("qwen2 text architecture is not qwen2 audio")
+        if c.get("hidden_act") not in (None, "silu"):
+            raise ValueError("qwen2 text hidden_act is not silu")
+        if c.get("attention_bias") not in (None, True):
+            raise ValueError("qwen2 text attention_bias is not true")
+        if c.get("rope_scaling") is not None:
+            raise ValueError("qwen2 text rope_scaling is not null")
+    else:
+        if c.get("model_type") not in (None, ""):
+            raise ValueError("qwen2 text model_type is not empty")
+        if c.get("architectures") != ["MoonshotKimiaForCausalLM"]:
+            raise ValueError("qwen2 text architecture is not kimi")
+        if c.get("hidden_act") != "silu":
+            raise ValueError("qwen2 text hidden_act is not silu")
+        if c.get("attention_bias") is not True:
+            raise ValueError("qwen2 text attention_bias is not true")
+        if c.get("rope_scaling") is not None:
+            raise ValueError("qwen2 text rope_scaling is not null")
+        if c.get("kimia_mimo_layers") != 6:
+            raise ValueError("qwen2 text mimo layers is not 6")
+    if c.get("mlp_bias") is True:
+        raise ValueError("qwen2 text mlp_bias is not false")
+    if c.get("attention_dropout") not in (None, 0, 0.0):
+        raise ValueError("qwen2 text attention_dropout is not 0")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("qwen2 text use_sliding_window is not false")
+    if c.get("use_mrope") not in (None, False):
+        raise ValueError("qwen2 text use_mrope is not false")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("qwen2 text layer_types is not full_attention")
+    h = c["hidden_size"]
+    heads = c["num_attention_heads"]
+    hkv = c["num_key_value_heads"]
+    if (not isinstance(h, int) or isinstance(h, bool) or h <= 0
+            or not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0
+            or not isinstance(hkv, int) or isinstance(hkv, bool) or hkv <= 0
+            or h % heads != 0):
+        raise ValueError("qwen2 text hidden is not heads times head_dim")
+    hd = h // heads
+    published = c.get("head_dim")
+    if published is not None and published != hd:
+        raise ValueError("qwen2 text head_dim is not hidden over heads")
+    if family == "kimi":
+        if spec.final_norm_params != 2 * h:
+            raise ValueError("qwen2 text final norm is not two")
+    elif spec.final_norm_params not in (None, h):
+        raise ValueError("qwen2 text final norm is not one")
+    expect_misc = 2 * h + (heads + 2 * hkv) * hd
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("qwen2 text mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("qwen2 text mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd or L.core.window is not None:
+            raise ValueError("qwen2 text attention is not gqa head_dim")
+        if L.misc_params != expect_misc:
+            raise ValueError("qwen2 text bias is not qkv")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("qwen2 text attention is not q then k")
+        if by["q"].n != h or by["k"].n != hkv * hd:
+            raise ValueError("qwen2 text qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="qwen2_text") for L in spec.layers)
+    note = ("0.452：Qwen2RMSNorm 是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。没有 q/k norm。"
+            "Kimi 的最终范数是 norm 和 mimo_norm，各一次 rsqrt。"
+            "mRoPE 不新开算子。音频塔和 Omni talker 不改。")
+    return replace(spec, layers=layers, vec_kind="qwen2_text", notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -5906,11 +6029,13 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_mistral_small_vectors(
-        _tag_step_audio_vectors(
-            _tag_qwen3_vectors(
-                _tag_granite_vectors(
-                    _tag_exaone_vectors(_tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c), c), c)
+    return _tag_qwen2_text_vectors(
+        _tag_mistral_small_vectors(
+            _tag_step_audio_vectors(
+                _tag_qwen3_vectors(
+                    _tag_granite_vectors(
+                        _tag_exaone_vectors(
+                            _tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

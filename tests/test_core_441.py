@@ -107,7 +107,7 @@ def _touch(ops, gemm: str, before: tuple[str, ...] = (), after: str | None = Non
 
 
 def test_version_is_441():
-    assert __version__ == "0.451.0"
+    assert __version__ == "0.452.0"
 
 
 def test_openfold_and_alphafold2_block_layernorm_and_relu():
