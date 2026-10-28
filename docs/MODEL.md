@@ -10309,3 +10309,7 @@ ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有
 ## §369 Qwen3 语音主干与 DSpine 草稿的 RMSNorm、按头 q/k RMSNorm 与 SwiGLU 相乘（0.453）
 
 `qwen3-8b-dspine`、`moss-tts`、`fireredtts3-base` 三行，都在前 60 条目录之外。语言栈是已发布的 Qwen3。`Qwen3RMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm。`attn_norm` / `ffn_norm` 的 `a_fmt` 是 fp32。q/k RMSNorm 做在 `head_dim` 上，每个头一次 rsqrt。q 宽等于 hidden。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。DSpine 的五层草稿用同一份算子；code-bridge 和 `dspark_main_norm` 不改。MOSS 只入账语言塔，音频头不入账。FireRed 只入账主干。权重存 fp32，主干 autocast 是 bf16，所以 `act` 和 `mlp_mul` 的 `a_fmt` 是 bf16，GEMM 的 `w_fmt` 是 fp32。TTS 头仍只读每个序列一行，`final_norm` 的 `a_fmt` 改成 fp32，`sfu` 是序列数。DiT 的 AdaLN 和 RedAE 不入账。前 60 条里的 `qwen3-8b` 和 `qwen3-1.7b` 不打这个标签。
+
+## §370 WeVisOne-VL 文本塔的 RMSNorm、按头 q/k RMSNorm 与 SwiGLU 相乘（0.454）
+
+`wevisone-vl-4b` 和 `wevisone-vl-2b` 两行，都在前 60 条目录之外。文本塔是 `qwen3_vl_text`，配方与 0.446 的稠密 Qwen3-VL 相同。`Qwen3VLTextRMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32。q/k RMSNorm 做在 `head_dim` 上，每个头一次 rsqrt。4B 的 q 宽是 `32 * 128 = 4096`，大于 hidden 2560。2B 的 q 宽等于 hidden 2048。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。发布的 safetensors 是 fp32，激活仍是 bf16，所以 GEMM 的 `w_fmt` 是 fp32，`act` 和 `mlp_mul` 的 `a_fmt` 是 bf16。`rope_parameters` 里的 mRoPE（`mrope_section` `[24, 20, 20]`）不新开算子，`rope` 仍在 `qk` 后面。视觉塔的 `gelu_pytorch_tanh` 不改。前 60 条里的 Qwen3、Qwen3-VL MoE、CosyVoice / Ming 的 Qwen2 门乘不打这个标签。
