@@ -4817,6 +4817,75 @@ def _tag_qwen3_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="qwen3", notes=spec.notes + (note,))
 
 
+_STEP_AUDIO = frozenset({
+    "step-audio-2-mini",
+    "step-audio-2-mini-base",
+    "step-audio-2-mini-think",
+    "step-audio-2-r1.1",
+})
+
+
+def _tag_step_audio_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.450: bill published Step-Audio-2 text-tower RMSNorm and the SwiGLU product.
+
+    The language stack is Qwen2Model(text_config). Qwen2RMSNorm matches
+    T5LayerNorm: fp32 mean of squares, one rsqrt, times weight. The MLP is
+    down(silu(gate) * up) with Linear bias False. q/k/v Linear bias is True
+    and o_proj bias is False. There is no q/k norm. Hidden norms stay
+    pre-norm. These four ids are outside the first 60 catalog rows. The
+    audio encoder stays on the existing erf-GELU and ReLU ops. The published
+    JSON omits hidden_act; StepAudio2TextConfig defaults it to silu.
+    """
+    if spec.id not in _STEP_AUDIO:
+        return spec
+    if c.get("model_type") != "step_audio_2":
+        raise ValueError("step audio model_type is not step_audio_2")
+    if c.get("hidden_act") not in (None, "silu"):
+        raise ValueError("step audio hidden_act is not silu")
+    if c.get("attention_bias") is not True:
+        raise ValueError("step audio attention_bias is not true")
+    if c.get("mlp_bias") is True:
+        raise ValueError("step audio mlp_bias is not false")
+    if c.get("attention_dropout") not in (None, 0, 0.0):
+        raise ValueError("step audio attention_dropout is not 0")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("step audio rope_scaling is not null")
+    if c.get("sliding_window") is not None:
+        raise ValueError("step audio sliding_window is not null")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("step audio use_sliding_window is not false")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("step audio layer_types is not full_attention")
+    h = c["hidden_size"]
+    heads = c["num_attention_heads"]
+    hkv = c["num_key_value_heads"]
+    if (not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0
+            or not isinstance(hkv, int) or isinstance(hkv, bool) or hkv <= 0
+            or h % heads != 0):
+        raise ValueError("step audio hidden is not heads times head_dim")
+    hd = h // heads
+    if hd <= 0:
+        raise ValueError("step audio head_dim is not positive")
+    groups = c.get("num_attention_groups")
+    if groups is not None and groups != hkv:
+        raise ValueError("step audio num_attention_groups is not num_key_value_heads")
+    expect_misc = 2 * h + (heads + 2 * hkv) * hd
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("step audio mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("step audio mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd:
+            raise ValueError("step audio attention is not gqa head_dim")
+        if L.misc_params != expect_misc:
+            raise ValueError("step audio bias is not qkv")
+    layers = tuple(replace(L, vec_kind="step_audio") for L in spec.layers)
+    note = ("0.450：Qwen2RMSNorm 是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。没有 q/k norm。"
+            "q/k/v 有 bias，o 没有。音频塔的 erf-GELU 和 ReLU 不改。")
+    return replace(spec, layers=layers, vec_kind="step_audio", notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -5764,9 +5833,10 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_qwen3_vectors(
-        _tag_granite_vectors(
-            _tag_exaone_vectors(_tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c)
+    return _tag_step_audio_vectors(
+        _tag_qwen3_vectors(
+            _tag_granite_vectors(
+                _tag_exaone_vectors(_tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
