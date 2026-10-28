@@ -1339,6 +1339,9 @@ def _carbon_dense(L: Layer) -> bool:
     # Qwen2 text have no q/k norm. Qwen3 norms q and k on head_dim. Kimi's
     # second final norm is head-side only. Moshi rms_norm_f32 (0.457) is the
     # same pre-norm recipe and reuses carbon_llama. It has no q/k norm.
+    # ERNIE-4.5 MoE (0.458) subclasses LlamaRMSNorm and reuses carbon_llama.
+    # mlp_mul is inserted only when the FFN is dense gate_up/down. MoE layers
+    # keep expert_act. Shared-expert products stay on that path.
     return L.vec_kind in (
         "carbon_llama", "carbon_qwen", "qwen3vl_text", "granite", "qwen3", "step_audio",
         "mistral_small", "qwen2_text")
@@ -1871,8 +1874,9 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
             "carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4", "granite", "qwen3",
             "step_audio", "mistral_small", "qwen2_text"):
         # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm /
-        # GraniteRMSNorm / Qwen2RMSNorm / MistralRMSNorm / Moshi rms_norm_f32
-        # on every token row, then the head reads the last rows. Kimi-Audio
+        # GraniteRMSNorm / Qwen2RMSNorm / MistralRMSNorm / Moshi rms_norm_f32 /
+        # Ernie4_5_MoeRMSNorm on every token row, then the head reads the last
+        # rows. Kimi-Audio
         # publishes two Qwen2RMSNorms (norm and mimo_norm); final_norm_params
         # is 2 * hidden.
         rows = b_loc * ph.q

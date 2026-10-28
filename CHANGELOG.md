@@ -6,6 +6,21 @@
 
 
 
+## [0.458.0] — 2026-10-28
+
+### ERNIE-4.5 MoE 的稠密层补上已执行的 Llama RMSNorm 和门控 MLP 相乘
+
+- **修正。** 没有新开目录行，也没有新的激活种类，也没有新的 `vec_kind`。改的是已经入库、而且不在前 60 条里的六行：`ernie-4.5-300b-a47b-pt`、`ernie-4.5-300b-a47b-base-pt`、`ernie-4.5-300b-a47b-base`、`ernie-4.5-21b-a3b-pt`、`ernie-4.5-21b-a3b-base-pt`、`ernie-4.5-21b-a3b-thinking`。只给这六行打已有的 `vec_kind = carbon_llama`。2026-10-28 再读 transformers main `modeling_ernie4_5_moe.py`：`Ernie4_5_MoeRMSNorm` 是 `LlamaRMSNorm` 的空子类。稠密 MLP 继承 `Qwen3MoeMLP.forward`，是 `down(silu(gate) * up)`，bias 跟发布的 `use_bias = false`。`head_dim` 省略时等于 `hidden // num_attention_heads`，q 宽等于 hidden。没有 q/k norm。块范数仍是 pre-norm。300B 在 `moe_layer_start_index = 3` 之前有三层稠密 SwiGLU，inner 28672，每一层每个 token 的相乘向量是 28672，三层加总 `86,016`。21B 只有第 0 层是稠密，inner 12288，加总 `12,288`。MoE 层用同一份 RMSNorm，所以块范数的 `a_fmt` 改成 fp32，但 `ffn.kind` 仍是 moe，发射器不在 `expert.gate_up` 和 `expert.down` 中间插入 `mlp_mul`。共享专家的 `shared_gate_up` / `shared_down` 同样不插入。MTP 块不打 `vec_kind`。权重是 bf16，激活仍是 bf16。`model_type` 不是 `ernie4_5_moe`、架构不是 `Ernie4_5_MoeForCausalLM`、`hidden_act` 不是 `silu`、`use_bias` 不是 false、`rope_scaling` 不是 null、hidden 不是头数乘 `head_dim`、配置里的 `head_dim` 不等于 `hidden // heads`，会拒绝。
+- **默认窗口。** 提示长度 4096。300B：隐藏 8192，稠密 inner 28672，54 层里前 3 层稠密，64 / 8 头，head 128。稠密层 `act` 的 `vec` 是 `4096 * 28672 * 4`，`mlp_mul` 的 `vec` 是 `4096 * 28672`。`attn_norm` 和 `ffn_norm` 的 `a_fmt` 是 fp32。顺序是 `ffn_norm`、`mlp.gate_up`、`act`、`mlp_mul`、`mlp.down`。MoE 层有 `expert_act`，没有 `mlp_mul`。21B：隐藏 2560，稠密 inner 12288，28 层里第 0 层稠密，20 / 4 头。`mlp_mul` 的 `vec` 是 `4096 * 12288`。MoE 层有 `moe.shared_gate_up` 然后 `moe.shared_down`，中间没有 `mlp_mul`。`final_norm` 的 `a_fmt` 是 fp32，`sfu` 是提示 token 数。三层稠密 FFN GEMM 之和是 `3 * (2 * 4096 * 8192 * 57344 + 2 * 4096 * 28672 * 8192)` = 17.318083485696 TFLOP。21B 的一层是 `2 * 4096 * 2560 * 24576 + 2 * 4096 * 12288 * 2560` = 0.773094113280 TFLOP。
+- **TP2 和请求 fp8。** 没有发布的 fp8 行。TP2 切中间维，不复制这些向量。300B 本地 inner 14336，21B 本地 inner 6144。请求 fp8 时 `act` 和 `mlp_mul` 的 `a_fmt` 是 fp8，范数仍是 fp32，GEMM 的 `w_fmt` 仍是 bf16。
+- **不单列。** 不把同一笔扩到前 60 条。不新写 MoE 相乘槽、mRoPE、`Ernie4_5RMSNorm` 的另一种头宽、tanh-GELU、`1 + weight` RMSNorm、分组 RMSNorm、整段投影 q/k、vortex RMS。不改 GEMM 名字、形状和 FLOPs。不新开目录行。stage 指纹仍是 `f54f33dfa13cdd41`，默认 pipe 指纹仍是 `1e15ae85430a04f3`。去掉 DeepSeek-V4 之后仍是 `5c058c9ed0f8f61e` / `8a5fa1d0881da387`。`esmfold` 的 KPI 哈希仍是 `3bbede544308`，ESM-2 3B 仍是 `34f7544287cd`，Wan2.1-1.3B 仍是 `309919c00604`。
+- **未纳入：**
+  - **ERNIE-4.5 0.3B。** `Ernie4_5RMSNorm` 的源码等价于 T5，但 `head_dim` 128 不等于 `1024 / 16`，q 宽 2048 不等于 hidden。现成的 `carbon_llama` 门要求 hidden 等于头数乘 `head_dim`。不打标签。
+  - **ERNIE-4.5-VL。** 稠密层几何与这六行相同，但 `rope_scaling` 带 `mrope_section`。不新写 mRoPE。
+  - **前 60 条里的 Llama / Qwen2.5 / Qwen3。** 更大，扩过去会改指纹。
+  - **Qwen3-VL MoE、Qwen3-Coder-480B、Qwen3-TTS / ASR 的 mRoPE、Fun-ASR-Nano、Olmo-3、Jais、Qwen3.5、Granite 语音。** 专家相乘不在融合 `gate_up` / `down` 中间，或对不上现成配方。
+  - **已经入账、这次不重写。** Moshi 仍是 0.457。OmniASR、CosyVoice / Ming、WeVisOne、Qwen3 语音主干、Qwen2 文本塔、Mistral-Small、Step-Audio-2、Qwen3-14B、Granite 稠密、EXAONE-4、Carbon、Qwen3-VL 稠密文本都不改。
+
 ## [0.457.0] — 2026-10-28
 
 ### Moshi 时间塔补上已执行的 RMSNorm 和门控 MLP 相乘
