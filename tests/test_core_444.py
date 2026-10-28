@@ -72,7 +72,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_444():
-    assert __version__ == "0.455.0"
+    assert __version__ == "0.456.0"
 
 
 def test_three_sizes_bill_layer0_gelu_and_later_product_only():
