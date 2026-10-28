@@ -113,7 +113,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_453():
-    assert __version__ == "0.460.0"
+    assert __version__ == "0.461.0"
 
 
 def test_qwen3_speech_and_dspine_bill_fp32_rmsnorm_qk_and_the_product():

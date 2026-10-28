@@ -95,7 +95,7 @@ _MSA_LN = _PAIR_LN[2:] + ("msa_trans_ln", "opm_ln", "pwa_m_ln", "pwa_z_ln", "z_t
 
 
 def test_version_is_442():
-    assert __version__ == "0.460.0"
+    assert __version__ == "0.461.0"
 
 
 def test_pairformer_layernorm_and_silu():

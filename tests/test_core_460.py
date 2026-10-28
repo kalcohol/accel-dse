@@ -71,7 +71,7 @@ def _nv(model, ph, shard):
 
 
 def test_version_is_460():
-    assert __version__ == "0.460.0"
+    assert __version__ == "0.461.0"
 
 
 def test_template_output_multiply():
