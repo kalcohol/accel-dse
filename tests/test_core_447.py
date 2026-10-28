@@ -80,7 +80,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_447():
-    assert __version__ == "0.448.0"
+    assert __version__ == "0.449.0"
 
 
 def test_post_rmsnorm_qk_and_the_product():
@@ -233,12 +233,16 @@ def test_non_vector_schedule_and_other_models():
     bare = replace(m, layers=tuple(replace(L, vec_kind="") for L in m.layers), vec_kind="")
     for shard in (Shard(), Shard(tp=2), Shard(tp=4)):
         assert _sched(m, ph, shard) == _sched(bare, ph, shard)
-    for mid in ("qwen3-32b", "qwen3-14b", "llama-3.1-8b",
+    for mid in ("qwen3-32b", "llama-3.1-8b",
                 "qwen3-vl-235b-a22b", "qwen3-vl-30b-a3b",
                 "olmo-3-32b-think", "qwen3-coder-480b-a35b"):
         other = get_model(mid)
         assert other.vec_kind == ""
         assert all(L.vec_kind != "exaone4" for L in other.layers)
+    # 0.449 bills qwen3-14b. It stays off the EXAONE post-norm path.
+    billed = get_model("qwen3-14b")
+    assert billed.vec_kind == "qwen3"
+    assert all(L.vec_kind != "exaone4" for L in billed.layers)
     # 0.448 bills these two as granite. They stay off the EXAONE post-norm path.
     for mid in ("granite-4.1-30b", "granite-4.2-8b"):
         other = get_model(mid)
@@ -250,7 +254,7 @@ def test_non_vector_schedule_and_other_models():
     assert qwen.vec_kind == "qwen3vl_text"
     qnames = [o.name for o in build_rank_ops(qwen, 0, Phase("prefill", 1, 16, 0), Shard())]
     assert qnames.index("ffn_norm") < qnames.index("mlp.gate_up")
-    plain = get_model("qwen3-14b")
+    plain = get_model("qwen3-32b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]

@@ -10290,3 +10290,7 @@ ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有
 
 十八行稠密 Granite-4.1 / 4.2（30B / 8B / 3B，以及 4.1 的 fp8、4.2 的 fp8 / mxfp4 / nvfp4）。`GraniteRMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm：`input_layernorm` 在注意力前面，`post_attention_layernorm` 在 MLP 前面。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32。没有 q/k RMSNorm。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。`residual_multiplier` 不是 0.5（4.1-30B 是 0.175，4.1-8B / 3B 是 0.22，4.2 是 1.0），残差仍是原来的一条。`attention_multiplier`、`embedding_multiplier`、`logits_scaling` 不入账。语音行不打这个标签。
 
+## §365 Qwen3-14B 的 RMSNorm、按头 q/k RMSNorm 与 SwiGLU 相乘（0.449）
+
+`qwen3-14b` 和 `qwen3-14b-fp8` 两行，都在前 60 条目录之外。`Qwen3RMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm：`input_layernorm` 在注意力前面，`post_attention_layernorm` 在 MLP 前面。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32，`final_norm` 每个 token 行一次 rsqrt。q/k RMSNorm 做在 `head_dim` 上，每个头一次 rsqrt。q 宽等于 hidden 5120，`q_rms` 的 `vec` 与 `attn_norm` 相同，`sfu` 仍是头数。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。算子顺序与 Carbon-X、Qwen3-VL 共用的助手相同：`q_rms` / `k_rms` 在注意力 GEMM 之后、打分之前。前 60 条里的 Qwen3、MoE 文本和语音行不打这个标签。
+

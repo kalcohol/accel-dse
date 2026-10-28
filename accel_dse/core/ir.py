@@ -1333,8 +1333,9 @@ def _evo2_dense(L: Layer) -> bool:
 
 
 def _carbon_dense(L: Layer) -> bool:
-    # GraniteRMSNorm is the same pre-norm T5 recipe. No q/k norm.
-    return L.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text", "granite")
+    # GraniteRMSNorm and Qwen3RMSNorm are the same pre-norm T5 recipe.
+    # Granite has no q/k norm. Qwen3 norms q and k on head_dim.
+    return L.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text", "granite", "qwen3")
 
 
 def _exaone_dense(L: Layer) -> bool:
@@ -1348,6 +1349,8 @@ def _qk_rms_who(kind: str) -> str:
         return "qwen3-vl"
     if kind == "exaone4":
         return "exaone4"
+    if kind == "qwen3":
+        return "qwen3"
     return ""
 
 
@@ -1355,9 +1358,9 @@ def _carbon_qk_rms(L: Layer, li: int, t: int, tp: int) -> list[Op]:
     """RMSNorm on head_dim after q_proj and k_proj.
 
     Qwen3RMSNorm, Qwen3VLTextRMSNorm, and Exaone4RMSNorm all say the norm
-    is on the head dim, unlike Olmo. One rsqrt per head. Llama Carbon
-    checkpoints have no q/k norm. The reduction is the published T5 recipe
-    (fp32).
+    is on the head dim, unlike Olmo. One rsqrt per head. Llama Carbon and
+    Granite checkpoints have no q/k norm. The reduction is the published
+    T5 recipe (fp32).
     """
     who = _qk_rms_who(L.vec_kind)
     if not who:
@@ -1549,6 +1552,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     who = "exaone4"
                 elif L.vec_kind == "granite":
                     who = "granite"
+                elif L.vec_kind == "qwen3":
+                    who = "qwen3"
                 else:
                     who = "carbon"
                 raise ValueError(f"{who} mlp is not gate_up then down")
@@ -1842,7 +1847,7 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
                    vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
                 gemm(model, "label_head", model.n_layers, m, model.hidden, L, role, stream=True),
                 Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
-    if model.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4", "granite"):
+    if model.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4", "granite", "qwen3"):
         # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm /
         # GraniteRMSNorm on every token row, then the head reads the last rows.
         rows = b_loc * ph.q
