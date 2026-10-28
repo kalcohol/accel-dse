@@ -100,7 +100,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_448():
-    assert __version__ == "0.448.0"
+    assert __version__ == "0.449.0"
 
 
 def test_granite_bills_fp32_rmsnorm_and_the_product():
@@ -274,11 +274,15 @@ def test_non_vector_schedule_and_other_models():
     bare = _bare(m)
     for shard in (Shard(), Shard(tp=2), Shard(tp=4)):
         assert _sched(m, ph, shard) == _sched(bare, ph, shard)
-    for mid in ("qwen3-32b", "qwen3-14b", "llama-3.1-8b", "olmo-3-32b-think",
+    for mid in ("qwen3-32b", "llama-3.1-8b", "olmo-3-32b-think",
                 "qwen3-vl-235b-a22b", "qwen3-vl-30b-a3b"):
         other = get_model(mid)
         assert other.vec_kind == ""
         assert all(L.vec_kind != "granite" for L in other.layers)
+    # 0.449 bills qwen3-14b. It is not the Granite pre-norm-only tag.
+    billed = get_model("qwen3-14b")
+    assert billed.vec_kind == "qwen3"
+    assert all(L.vec_kind != "granite" for L in billed.layers)
     for mid in ("granite-speech-5.0-2b", "granite-speech-4.1-2b-plus",
                 "granite-speech-5.0-470m-turboctc"):
         other = get_model(mid)
@@ -287,7 +291,7 @@ def test_non_vector_schedule_and_other_models():
     assert get_model("exaone-4.0-32b").vec_kind == "exaone4"
     assert get_model("qwen3-vl-32b").vec_kind == "qwen3vl_text"
     assert get_model("carbon-x").vec_kind == "carbon_qwen"
-    plain = get_model("qwen3-14b")
+    plain = get_model("qwen3-32b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]

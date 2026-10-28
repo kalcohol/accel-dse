@@ -402,6 +402,8 @@ class Layer:
     # the two hidden norms are post-attention and post-feedforward.
     # 0.448 Granite-4.1 / 4.2 dense LMs: granite is the pre-norm T5 RMSNorm
     # and SiLU product, with no q/k norm. Residual scalars are not 0.5.
+    # 0.449 Qwen3-14B dense: qwen3 is the same pre-norm T5 RMSNorm, SiLU
+    # product, and head_dim q/k RMSNorm. Front-60 Qwen3 rows stay untagged.
     # "" keeps the shared full-forward assumption.
     vec_kind: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -574,6 +576,7 @@ class ModelSpec:
     # published final RMSNorm (fp32, one rsqrt per token row).
     # 0.446: "qwen3vl_text". 0.447: "exaone4" (post-norm, same final RMSNorm).
     # 0.448: "granite" (pre-norm GraniteRMSNorm, same final RMSNorm, no q/k norm).
+    # 0.449: "qwen3" (pre-norm Qwen3RMSNorm, same final RMSNorm, head_dim q/k).
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -4749,6 +4752,71 @@ def _tag_granite_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="granite", notes=spec.notes + (note,))
 
 
+_QWEN3_DENSE = frozenset({"qwen3-14b", "qwen3-14b-fp8"})
+
+
+def _tag_qwen3_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.449: bill published Qwen3-14B RMSNorm and the SwiGLU product.
+
+    Qwen3RMSNorm matches T5LayerNorm: fp32 mean of squares, one rsqrt,
+    times weight. The MLP is down(silu(gate) * up) with Linear bias False.
+    q_norm and k_norm run on head_dim after the head view, one rsqrt per
+    head. Hidden norms stay pre-norm. These two ids are outside the first
+    60 catalog rows. Front-60 Qwen3 rows, MoE rows, and speech rows stay
+    on the shared tail. rope stays after the score.
+    """
+    if spec.id not in _QWEN3_DENSE:
+        return spec
+    if c.get("model_type") != "qwen3":
+        raise ValueError("qwen3 model_type is not qwen3")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("qwen3 hidden_act is not silu")
+    if c.get("attention_bias") is not False:
+        raise ValueError("qwen3 attention_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0, None):
+        raise ValueError("qwen3 attention_dropout is not 0")
+    if c.get("mlp_bias") not in (None, False):
+        raise ValueError("qwen3 mlp_bias is not false")
+    hd = c.get("head_dim")
+    if "head_dim" not in c or isinstance(hd, bool) or not isinstance(hd, int):
+        raise ValueError("qwen3 head_dim is missing")
+    if hd <= 0:
+        raise ValueError("qwen3 head_dim is not positive")
+    h = c["hidden_size"]
+    hq = c["num_attention_heads"]
+    hkv = c["num_key_value_heads"]
+    if not isinstance(hq, int) or isinstance(hq, bool) or hq <= 0 or h != hq * hd:
+        raise ValueError("qwen3 hidden is not heads times head_dim")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("qwen3 rope_scaling is not null")
+    if c.get("use_sliding_window") not in (None, False):
+        raise ValueError("qwen3 use_sliding_window is not false")
+    if c.get("sliding_window") is not None:
+        raise ValueError("qwen3 sliding_window is not null")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("qwen3 layer_types is not full_attention")
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("qwen3 mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("qwen3 mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd:
+            raise ValueError("qwen3 attention is not gqa head_dim")
+        if L.misc_params != 2 * h + 2 * hd:
+            raise ValueError("qwen3 qk norm is not head_dim")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("qwen3 attention is not q then k")
+        if by["q"].n != hq * hd or by["k"].n != hkv * hd:
+            raise ValueError("qwen3 qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="qwen3") for L in spec.layers)
+    note = ("0.449：Qwen3RMSNorm 是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。"
+            "q_norm 和 k_norm 是 head_dim 上的 RMSNorm，每个头一次 rsqrt。"
+            "q 宽等于 hidden，sfu 仍是头数。前 60 条里的 Qwen3 不打这个标签。")
+    return replace(spec, layers=layers, vec_kind="qwen3", notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -5696,8 +5764,9 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_granite_vectors(
-        _tag_exaone_vectors(_tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c)
+    return _tag_qwen3_vectors(
+        _tag_granite_vectors(
+            _tag_exaone_vectors(_tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
