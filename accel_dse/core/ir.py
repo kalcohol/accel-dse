@@ -1333,7 +1333,8 @@ def _evo2_dense(L: Layer) -> bool:
 
 
 def _carbon_dense(L: Layer) -> bool:
-    return L.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text")
+    # GraniteRMSNorm is the same pre-norm T5 recipe. No q/k norm.
+    return L.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text", "granite")
 
 
 def _exaone_dense(L: Layer) -> bool:
@@ -1546,6 +1547,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     who = "qwen3-vl"
                 elif L.vec_kind == "exaone4":
                     who = "exaone4"
+                elif L.vec_kind == "granite":
+                    who = "granite"
                 else:
                     who = "carbon"
                 raise ValueError(f"{who} mlp is not gate_up then down")
@@ -1839,9 +1842,9 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
                    vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
                 gemm(model, "label_head", model.n_layers, m, model.hidden, L, role, stream=True),
                 Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
-    if model.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4"):
-        # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm
-        # on every token row, then the head reads the last rows.
+    if model.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4", "granite"):
+        # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm /
+        # GraniteRMSNorm on every token row, then the head reads the last rows.
         rows = b_loc * ph.q
         final = Op("final_norm", "vector", model.n_layers,
                    vec=0 if model.final_norm_params == 0 else rows * model.hidden * 4,

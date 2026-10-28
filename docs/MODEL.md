@@ -10286,3 +10286,7 @@ ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有
 
 `exaone-4.0-32b`、`exaone-4.0.1-32b`、`exaone-4.0-1.2b` 三行。`Exaone4RMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。块上没有 pre-norm。`post_attention_layernorm` 在注意力输出（以及 TP 的 all-reduce）之后，`post_feedforward_layernorm` 在 `mlp.down`（以及 MLP all-reduce）之后。仍用现成的 `attn_norm` / `ffn_norm`，`a_fmt` 是 fp32，不新开 `post_norm`。残差仍是原来的一条。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。q/k RMSNorm 做在 `head_dim` 上，每个头一次 rsqrt；32B 和 1.2B 的 q 宽等于 hidden，`sfu` 仍是头数而不是 token 数。混合模型的全注意力层是 global NoPE，不记 RoPE。`rope_scaling` 是 llama3，不改 GEMM，也不改这些向量。已有的 `rope` 仍排在打分后面。
 
+## §364 Granite-4.1 / 4.2 稠密 LM 的 RMSNorm 与 SwiGLU 相乘（0.448）
+
+十八行稠密 Granite-4.1 / 4.2（30B / 8B / 3B，以及 4.1 的 fp8、4.2 的 fp8 / mxfp4 / nvfp4）。`GraniteRMSNorm` 等价于 T5LayerNorm：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm：`input_layernorm` 在注意力前面，`post_attention_layernorm` 在 MLP 前面。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32。没有 q/k RMSNorm。SiLU 仍叫 `act`，门和值的一次乘法是 `mlp_mul`，插在融合的 `gate_up` 和 `down` 中间。`residual_multiplier` 不是 0.5（4.1-30B 是 0.175，4.1-8B / 3B 是 0.22，4.2 是 1.0），残差仍是原来的一条。`attention_multiplier`、`embedding_multiplier`、`logits_scaling` 不入账。语音行不打这个标签。
+
