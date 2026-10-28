@@ -2413,10 +2413,12 @@ def _bz_mul(name: str, n: int, li: int, rep: float, af: str) -> Op:
 
 
 def _of_mask(name: str, n: int, li: int, rep: float, af: str) -> Op:
-    """OpenFold MSATransition / PairTransition: linear_2(x) * mask.
+    """One published multiply by a mask that already has the activation dtype.
 
-    One multiply. Building the mask (ones, or unsqueeze of the caller mask) is not an op.
-    No transcendental and no upcast. Width is linear_2's N, not the ReLU hidden width.
+    OpenFold MSATransition / PairTransition: linear_2(x) * mask. Width is linear_2's N.
+    OpenFold TemplateEmbedder and AlphaFold 2 TemplateEmbedding: the pointwise-attention
+    output times (sum(template_mask) > 0). Width is linear_o's N (c_z), on the pair grid.
+    Building the mask is not an op. No transcendental and no upcast.
     """
     if n <= 0:
         raise ValueError(f"openfold {name} has no elements")
@@ -3547,6 +3549,10 @@ def _pair_layer_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard) -
                 ops.append(_esm_relu(relu_name, m * l.n, li, rep, model.act_fmt, who))
         elif kind == "of_embed" and l.name == "template_angle_embedder.linear_1":
             ops.append(_esm_relu("tmpl_angle_relu", m * l.n, li, rep, model.act_fmt, who))
+        elif kind == "of_embed" and l.name == "template_pointwise_att.mha.linear_o" \
+                and model.id in ("openfold", "alphafold2"):
+            # Published forward always multiplies the attention output. Pair rows, width c_z.
+            ops.append(_of_mask("tmpl_out_mask", m * l.n, li, rep, model.act_fmt))
         elif kind == "bz_pair":
             silu_name = _BZ_PAIR_SILU.get(l.name)
             if silu_name:

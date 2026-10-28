@@ -824,7 +824,10 @@ def build_alphafold2(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
              "结构模块的 single / pair LayerNorm 和 initial_projection 每次 recycle 只跑一遍，IPA 循环仍是 8 次。"
              "pLDDT 的 LayerNorm 和两次 ReLU 只作用在最终 single 上，不乘 IPA 次数，也不乘 recycle。"
              "recycling 的第一条 MSA 行和 pair、模板角的 ReLU、模板栈最终 LayerNorm 每次 recycle 计一次。"
-             "逐线性 .ew 不减。mask 乘、sigmoid 门、IPA 的 softplus、扭转角 clamp 不单列"]
+             "逐线性 .ew 不减。sigmoid 门、IPA 的 softplus、扭转角 clamp 不单列",
+             "0.460：TemplateEmbedding 在点注意力之后执行 embedding *= (sum(template_mask) > 0)。"
+             "一次乘法，pair 网格，宽度是 linear_o 的 N（c_z）。造 mask 不单列。vec_kind 仍是 of_embed。"
+             "Transition 仍不乘。三角更新里和 sigmoid 绑在一起的 mask、OPM 的除以 clamp、IPA 的 softplus、扭转角 clamp 仍不单列"]
     reasons = ["只评估神经网络推理：MSA / 模板检索（jackhmmer / HHblits 数据库搜索，CPU）与特征化未建模；AMBER 松弛未建模"]
     return _spec(model_id, hf_id, rel, "AlphaFold 2（Evoformer + 结构模块，官方 JAX 参数）", c["c_s"], pl, wl, notes,
                  reasons, "alphafold2")
@@ -857,7 +860,11 @@ def build_openfold(model_id: str, hf_id: str, rel: dict, wl) -> ModelSpec:
              "0.459：MSATransition 与 PairTransition 在 linear_2 之后各乘一次 mask。"
              "发布配置 model._mask_trans 是 False：Evoformer 的 MSA 和所有 pair 过渡先造全 1 再乘；"
              "extra MSA 的 MSA 过渡传入真实 msa_mask。不记造 mask。宽度是 linear_2 的 N，不是 ReLU 的隐藏宽。"
-             "sigmoid 门、模板嵌入 t * t_mask、OPM 的除以 clamp、IPA 的 softplus、扭转角 clamp 仍不单列"]
+             "sigmoid 门、OPM 的除以 clamp、IPA 的 softplus、扭转角 clamp 仍不单列",
+             "0.460：TemplateEmbedder 在 template_pointwise_att 之后执行 t = t * t_mask。"
+             "mask 是 sum(template_mask) > 0，广播到 pair。造 mask 不单列。"
+             "一次乘法，宽度是 linear_o 的 N（c_z），不是模板通道 c_t。vec_kind 仍是 of_embed。"
+             "三角更新里和 sigmoid 绑在一起的 mask、OPM 的除以 clamp、IPA 的 softplus、扭转角 clamp 仍不单列"]
     reasons = ["只评估神经网络推理：MSA / 模板检索（jackhmmer / HHblits 数据库搜索，CPU）与特征化未建模；AMBER 松弛未建模"]
     return _spec(model_id, hf_id, rel, "AF2 架构（Evoformer + 结构模块，OpenFold 权重）", c["c_s"], pl, wl, notes, reasons,
                  "openfold")

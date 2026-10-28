@@ -6,6 +6,22 @@
 
 
 
+## [0.460.0] — 2026-10-28
+
+### OpenFold 与 AlphaFold 2 补上模板点注意力之后已执行的输出乘 mask
+
+- **修正。** 没有新开目录行，也没有新的激活种类，也没有新的 `vec_kind`。改的是已经入库、而且不在前 60 条里的 `openfold`（`gh:aqlaboratory/openfold`，`finetuning_ptm_2`）和 `alphafold2`（`gh:google-deepmind/alphafold`，`model_1_ptm`）。2026-10-28 再读 OpenFold main `be2ec1841f16` 的 `embedders.py`：`TemplateEmbedder.forward` 在 `template_pointwise_att` 之后执行 `t = t * t_mask`，`t_mask` 是 `sum(template_mask, dim=-1) > 0` 再广播。同一文件的 offload / average 路径也是这一次乘法。再读 AlphaFold 2 v2.3.2 的 `modules.py`：`TemplateEmbedding.__call__` 在点注意力之后执行 `embedding *= (sum(template_mask) > 0).astype(embedding.dtype)`。两边都是一次乘法，`sfu` 是 0，`a_fmt` 跟激活 dtype，不升精度。造 mask（求和、比较、广播）不单列。宽度是 `linear_o` 的 N，也就是 `c_z`，网格是 pair，不是模板通道 `c_t`。名字是 `tmpl_out_mask`，插在 `embed.template_pointwise_att.mha.linear_o` 和它的 `.ew` 之间。逐线性 `.ew` 不减。`vec_kind` 仍是 `of_embed`。只在这两个 `model.id` 上插入。复用 0.459 的一次乘法，不新开算子种类。
+- **默认窗口。** 512 残基，模板 4 个，主干 4 遍。`linear_o` 的 M、K、N 是 `512 * 512`、64、128，`w_fmt` 是 fp32。`tmpl_out_mask` 的 `vec` 是 `512 * 512 * 128` = `33,554,432`，`a_fmt` 是 bf16。`.ew` 仍是 `行 * (K + N) * 4`。顺序是 `linear_o`、`tmpl_out_mask`、`.ew`。`tmpl_out_ln` 仍在 `linear_k` 之前，宽度仍是 64。嵌入层 `repeat` 是 recycle，4 遍的请求量是 `134,217,728`。两个模型这一笔相同。向量 FLOPs 是 0。GEMM 的名字、形状和 FLOPs 不变。没有名为 `gelu`、`silu`、`sigmoid`、`softplus`、`clamp`、`mask_mul` 的算子。
+- **DAP2 和请求 fp8。** 没有发布的 fp8 行。DAP2 切 pair 行，不复制这个向量。本地 pair 行是 `256 * 512`，`tmpl_out_mask` 的 `vec` 是 `256 * 512 * 128`，`replicated` 是 1。请求 fp8 时 `a_fmt` 是 fp8。`tmpl_out_ln` 仍是 fp32。GEMM 的 `w_fmt` 仍是 fp32。
+- **不单列。** 不把 AlphaFold 2 的 `Transition` 改成乘法。不记三角更新里和 sigmoid 绑在一起的 mask。不记 OPM 的除以 `num_mask.clamp`、IPA 的 softplus、扭转角 clamp。不改 Boltz、Protenix 的原子对 mask 乘（缓存路径，而且 `linear_no_bias_v` 不乘 `v`）。不改 ESMFold。不改 GEMM 名字、形状和 FLOPs。不新开目录行。前 60 个目录条目不含这两行（末尾仍是 `wan2.1-14b` 和 `wan2.1-1.3b`）。stage 指纹仍是 `f54f33dfa13cdd41`，默认 pipe 指纹仍是 `1e15ae85430a04f3`。去掉 DeepSeek-V4 之后仍是 `5c058c9ed0f8f61e` / `8a5fa1d0881da387`。`esmfold` 的 KPI 哈希仍是 `3bbede544308`，ESM-2 3B 仍是 `34f7544287cd`，Wan2.1-1.3B 仍是 `309919c00604`。
+- **未纳入：**
+  - **AlphaFold 2 的 Transition。** JAX `Transition` 把 mask 扩出来，但返回的是激活本身，没有乘到输出上。不入账。
+  - **三角更新的 mask。** `mask * sigmoid(linear_g) * proj` 和 sigmoid 门绑在一起。现成配方只记已经分开的一次乘法。不入账。
+  - **Boltz-1 / Protenix 的原子对 mask 乘、AdaLN、扩散 SwiGLU、sigmoid 门、OPM 除法。** 原子对乘在 `prepare_cache` 里，并且 Protenix 的 `linear_no_bias_v` 不乘 `v`。对不上这一份模板输出乘。
+  - **前 60 条里的 Llama / Qwen2.5 / Qwen3。** 更大，扩过去会改指纹。
+  - **Qwen3-VL MoE、Qwen3-Coder-480B、Qwen3-TTS / ASR 的 mRoPE、Fun-ASR-Nano、ERNIE-4.5 0.3B、ERNIE-4.5-VL、Olmo、Jais、Qwen3.5、Evo2 vortex RMS、Granite 语音。** 对不上现成配方，或门拒绝。
+  - **已经入账、这次不重写。** OpenFold 过渡层 mask 仍是 0.459。ERNIE-4.5 MoE 稠密前缀仍是 0.458。Moshi 仍是 0.457。OmniASR、CosyVoice / Ming、WeVisOne、Qwen3 语音主干、Qwen2 文本塔、Mistral-Small、Step-Audio-2、Qwen3-14B、Granite 稠密、EXAONE-4、Carbon、Qwen3-VL 稠密文本、Evo2 第 0 层、蛋白质 LayerNorm 家族、Pixtral 视觉塔都不改。
+
 ## [0.459.0] — 2026-10-28
 
 ### OpenFold 过渡层补上已执行的输出乘 mask
