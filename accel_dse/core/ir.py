@@ -1333,29 +1333,39 @@ def _evo2_dense(L: Layer) -> bool:
 
 
 def _carbon_dense(L: Layer) -> bool:
-    return L.vec_kind in ("carbon_llama", "carbon_qwen")
+    return L.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text")
+
+
+def _qk_rms_who(kind: str) -> str:
+    if kind == "carbon_qwen":
+        return "carbon-x"
+    if kind == "qwen3vl_text":
+        return "qwen3-vl"
+    return ""
 
 
 def _carbon_qk_rms(L: Layer, li: int, t: int, tp: int) -> list[Op]:
-    """Qwen3RMSNorm on head_dim after q_proj and k_proj.
+    """RMSNorm on head_dim after q_proj and k_proj.
 
-    The class comment says the norm is on the head dim, unlike Olmo.
-    One rsqrt per head. Llama Carbon checkpoints have no q/k norm.
+    Qwen3RMSNorm and Qwen3VLTextRMSNorm both say the norm is on the head
+    dim, unlike Olmo. One rsqrt per head. Llama Carbon checkpoints have no
+    q/k norm. The reduction is the published T5 recipe (fp32).
     """
-    if L.vec_kind != "carbon_qwen":
+    who = _qk_rms_who(L.vec_kind)
+    if not who:
         return []
     hd = L.core.qk_dim
     if hd <= 0:
-        raise ValueError("carbon-x head_dim is not positive")
+        raise ValueError(f"{who} head_dim is not positive")
     by = {l.name: l for l in L.attn_linears}
     if "q" not in by or "k" not in by:
-        raise ValueError("carbon-x attention is not q then k")
+        raise ValueError(f"{who} attention is not q then k")
     ops: list[Op] = []
     for name in ("q", "k"):
         lin = by[name]
         _k, n = _lin_local(lin, tp, L.core)
         if n % hd != 0:
-            raise ValueError("carbon-x qk norm width is not a whole number of heads")
+            raise ValueError(f"{who} qk norm width is not a whole number of heads")
         heads = n // hd
         ops.append(Op(f"{name}_rms", "vector", li, vec=float(t * n * 4),
                       sfu=float(t * heads), a_fmt="fp32", replicated=_repl(lin, tp)))
@@ -1516,7 +1526,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             # down(silu(gate) * up). SiLU stays the existing act op. The product is mlp_mul.
             # Both sit between the fused gate_up GEMM and down.
             if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
-                raise ValueError("carbon mlp is not gate_up then down")
+                who = "qwen3-vl" if L.vec_kind == "qwen3vl_text" else "carbon"
+                raise ValueError(f"{who} mlp is not gate_up then down")
             nact = t * _cdiv(f.d_ff, tp)
             af = model.act_fmt
             for l in L.ffn_linears:
@@ -1803,8 +1814,9 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
                    vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
                 gemm(model, "label_head", model.n_layers, m, model.hidden, L, role, stream=True),
                 Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
-    if model.vec_kind in ("carbon_llama", "carbon_qwen"):
-        # LlamaRMSNorm / Qwen3RMSNorm on every token row, then the head reads the last rows.
+    if model.vec_kind in ("carbon_llama", "carbon_qwen", "qwen3vl_text"):
+        # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm on every token row,
+        # then the head reads the last rows.
         rows = b_loc * ph.q
         final = Op("final_norm", "vector", model.n_layers,
                    vec=0 if model.final_norm_params == 0 else rows * model.hidden * 4,

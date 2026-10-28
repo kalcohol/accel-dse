@@ -4570,6 +4570,65 @@ def _tag_carbon_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind=kind, notes=spec.notes + (note,))
 
 
+_QWEN3VL_TEXT = frozenset({
+    "qwen3-vl-32b", "qwen3-vl-32b-fp8",
+    "qwen3-vl-8b", "qwen3-vl-8b-fp8",
+    "qwen3-vl-4b", "qwen3-vl-4b-fp8",
+    "qwen3-vl-2b", "qwen3-vl-2b-fp8",
+})
+
+
+def _tag_qwen3vl_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.446: bill published Qwen3-VL text RMSNorm and the SwiGLU product.
+
+    Qwen3VLTextRMSNorm matches T5LayerNorm: fp32 mean of squares, one rsqrt,
+    times weight. The MLP is down(silu(gate) * up) with Linear bias False.
+    q_norm and k_norm run on head_dim after the head view, one rsqrt per
+    head. Dense ids only. MoE text stays on the shared tail because the
+    expert product is not between one fused gate_up and down. Vision is a
+    separate tower and is not retagged. mRoPE does not change these ops.
+    """
+    if spec.id not in _QWEN3VL_TEXT:
+        return spec
+    if c.get("model_type") != "qwen3_vl_text":
+        raise ValueError("qwen3-vl model_type is not qwen3_vl_text")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("qwen3-vl hidden_act is not silu")
+    if c.get("attention_bias") is not False:
+        raise ValueError("qwen3-vl attention_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0, None):
+        raise ValueError("qwen3-vl attention_dropout is not 0")
+    if c.get("mlp_bias") not in (None, False):
+        raise ValueError("qwen3-vl mlp_bias is not false")
+    if "head_dim" not in c or not isinstance(c.get("head_dim"), int):
+        raise ValueError("qwen3-vl head_dim is missing")
+    if c["head_dim"] <= 0:
+        raise ValueError("qwen3-vl head_dim is not positive")
+    hd = c["head_dim"]
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("qwen3-vl layer_types is not full_attention")
+    hq = c["num_attention_heads"]
+    hkv = c["num_key_value_heads"]
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("qwen3-vl mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("qwen3-vl mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd:
+            raise ValueError("qwen3-vl attention is not gqa head_dim")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("qwen3-vl attention is not q then k")
+        if by["q"].n != hq * hd or by["k"].n != hkv * hd:
+            raise ValueError("qwen3-vl qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="qwen3vl_text") for L in spec.layers)
+    note = ("0.446：Qwen3VLTextRMSNorm 是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。"
+            "q_norm 和 k_norm 是 head_dim 上的 RMSNorm，每个头一次 rsqrt。"
+            "视觉塔不改。")
+    return replace(spec, layers=layers, vec_kind="qwen3vl_text", notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -5517,7 +5576,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_carbon_vectors(spec, c)
+    return _tag_qwen3vl_vectors(_tag_carbon_vectors(spec, c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
