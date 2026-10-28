@@ -5022,6 +5022,19 @@ _QWEN2_TEXT = frozenset({
     "qwen2-audio-7b",
     "kimi-audio-7b-instruct",
     "kimi-audio-7b",
+    "cosyvoice2-0.5b",
+    "fun-cosyvoice3-0.5b-2512",
+    "ming-3.0-tts-0.5b",
+    "ming-omni-tts-0.5b",
+})
+# 0.455 ids. Same Qwen2RMSNorm recipe as the 0.452 text towers. The backbone
+# is Qwen2.5-0.5B (24 x 896, inner 4864, 14 / 2 heads). CosyVoice stores the
+# LM in fp32. Ming stores it in bf16. Activations stay bf16.
+_QWEN2_TEXT_455 = frozenset({
+    "cosyvoice2-0.5b",
+    "fun-cosyvoice3-0.5b-2512",
+    "ming-3.0-tts-0.5b",
+    "ming-omni-tts-0.5b",
 })
 
 
@@ -5032,20 +5045,49 @@ def _qwen2_text_family(mid: str) -> str:
         return "audio"
     if mid.startswith("kimi-audio-"):
         return "kimi"
+    if mid in ("cosyvoice2-0.5b", "fun-cosyvoice3-0.5b-2512"):
+        return "cosy"
+    if mid in ("ming-3.0-tts-0.5b", "ming-omni-tts-0.5b"):
+        return "ming"
     raise ValueError("qwen2 text id is not a published tower")
 
 
+def _qwen2_05b_published(spec: ModelSpec, c: dict, weights: str) -> None:
+    """0.455: the published Qwen2.5-0.5B backbone (Qwen2ForCausalLM).
+
+    Qwen2Attention hardcodes q/k/v bias, so a missing attention_bias key is
+    the published default. Weights are fp32 for CosyVoice and bf16 for Ming.
+    Activations stay bf16 either way.
+    """
+    if c.get("model_type") != "qwen2":
+        raise ValueError("qwen2 text model_type is not qwen2")
+    if c.get("architectures") != ["Qwen2ForCausalLM"]:
+        raise ValueError("qwen2 text architecture is not qwen2")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("qwen2 text hidden_act is not silu")
+    if c.get("attention_bias") not in (None, True):
+        raise ValueError("qwen2 text attention_bias is not true")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("qwen2 text rope_scaling is not null")
+    if spec.act_fmt != "bf16":
+        raise ValueError("qwen2 text activation dtype is not bf16")
+    if spec.fmt("mlp").fmt != weights or spec.fmt("attn").fmt != weights:
+        raise ValueError("qwen2 text weight dtype is not " + weights)
+
+
 def _tag_qwen2_text_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
-    """0.452: bill published Qwen2 text-tower RMSNorm and the SwiGLU product.
+    """0.452 / 0.455: bill published Qwen2 text-tower RMSNorm and the SwiGLU product.
 
     Qwen2RMSNorm and Qwen2_5OmniRMSNorm match T5LayerNorm: fp32 mean of
     squares, one rsqrt, times weight. The MLP is down(act(gate) * up).
     SiLU stays the existing act op. There is no q/k norm. Hidden norms stay
     pre-norm. Kimi-Audio imports the same Qwen2MLP and Qwen2RMSNorm, and
     publishes a second final norm (mimo_norm) already counted in
-    final_norm_params. These six ids are outside the first 60 catalog rows.
-    mRoPE does not add an op. The audio towers and the Omni talker stay on
-    their existing graphs.
+    final_norm_params. 0.452 covers six towers outside the first 60 catalog
+    rows. 0.455 adds the Qwen2.5-0.5B backbones of CosyVoice2, Fun-CosyVoice3,
+    Ming-3.0-tts-0.5B, and Ming-omni-tts-0.5B. mRoPE does not add an op.
+    The audio towers, the Omni talker, CosyVoice flow / HiFT, and the Ming
+    DiTAR head stay on their existing graphs.
     """
     if spec.id not in _QWEN2_TEXT:
         return spec
@@ -5075,7 +5117,7 @@ def _tag_qwen2_text_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             raise ValueError("qwen2 text attention_bias is not true")
         if c.get("rope_scaling") is not None:
             raise ValueError("qwen2 text rope_scaling is not null")
-    else:
+    elif family == "kimi":
         if c.get("model_type") not in (None, ""):
             raise ValueError("qwen2 text model_type is not empty")
         if c.get("architectures") != ["MoonshotKimiaForCausalLM"]:
@@ -5088,6 +5130,10 @@ def _tag_qwen2_text_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             raise ValueError("qwen2 text rope_scaling is not null")
         if c.get("kimia_mimo_layers") != 6:
             raise ValueError("qwen2 text mimo layers is not 6")
+    elif family == "cosy":
+        _qwen2_05b_published(spec, c, "fp32")
+    else:
+        _qwen2_05b_published(spec, c, "bf16")
     if c.get("mlp_bias") is True:
         raise ValueError("qwen2 text mlp_bias is not false")
     if c.get("attention_dropout") not in (None, 0, 0.0):
@@ -5135,7 +5181,18 @@ def _tag_qwen2_text_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。没有 q/k norm。"
             "Kimi 的最终范数是 norm 和 mimo_norm，各一次 rsqrt。"
             "mRoPE 不新开算子。音频塔和 Omni talker 不改。")
-    return replace(spec, layers=layers, vec_kind="qwen2_text", notes=spec.notes + (note,))
+    notes = spec.notes + (note,)
+    if spec.id in _QWEN2_TEXT_455:
+        notes = notes + (
+            "0.455：同一份 Qwen2RMSNorm 和 mlp_mul。"
+            "语言塔是 Qwen2.5-0.5B，没有 q/k norm。"
+            "JSON 里的 sliding_window 在 use_sliding_window 为 false 时不打开滑窗。"
+            "CosyVoice 的权重是 fp32，激活仍是 bf16。"
+            "CosyVoice 的最终范数盖住全部提示 token，每个 token 行一次 rsqrt。"
+            "Ming 的权重是 bf16。DiTAR 头仍只读每个序列一行，"
+            "final_norm 的 vec 不按提示长度放大，a_fmt 是 fp32，每个序列一次 rsqrt。"
+            "flow、HiFT 和 DiTAR 不入账。",)
+    return replace(spec, layers=layers, vec_kind="qwen2_text", notes=notes)
 
 
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
