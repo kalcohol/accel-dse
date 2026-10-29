@@ -107,7 +107,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_467():
-    assert __version__ == "0.471.0"
+    assert __version__ == "0.472.0"
 
 
 def test_five_rows_are_front60_and_reuse_qwen3():
@@ -427,7 +427,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_125 import test_fingerprints_change_only_v4
     from tests.test_core_coverage import _FULL_0651, _kpi
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "19cac027be730bc4"
+    assert _fp({}) == "afa0f7989c12811a"
     test_fingerprints_change_only_v4()
     pins = {
         "qwen3-32b": "b975b7b3760e",

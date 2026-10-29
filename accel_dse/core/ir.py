@@ -1375,7 +1375,9 @@ def _carbon_dense(L: Layer) -> bool:
     # dense path. 0.468 qwen35_moe is the exception: the published expert and
     # the published shared expert are both down(silu(gate) * up), so those
     # layers insert mlp_mul. 0.471 muse_swiglu does the same multiply on the
-    # latent expert only. There is no shared expert. Other MoE kinds are unchanged.
+    # latent expert only. There is no shared expert. 0.472 mixtral_swiglu does
+    # the same multiply on Mixtral-8x22B routed experts. There is no latent
+    # pool and no shared expert. Other MoE kinds are unchanged.
     # 0.469 kimi_situ replaces the historical SiLU counts. SituAndMul is not
     # silu(gate) * up, so those layers do not emit act or expert_act.
     return L.vec_kind in (
@@ -1709,6 +1711,11 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 raise ValueError("kimi situ expert is not situ")
             if L.vec_kind == "muse_swiglu" and (not f.gated or f.latent <= 0 or f.n_shared):
                 raise ValueError("muse swiglu expert is not latent swiglu")
+            if L.vec_kind == "mixtral_swiglu" and (
+                    not f.gated or f.latent or f.n_shared or f.d_shared or f.d_ff
+                    or f.n_experts_b or f.d_expert_b or f.zero_experts or f.groups
+                    or f.expert_role):
+                raise ValueError("mixtral swiglu expert is not swiglu")
             if tokens <= 0 or n_exp <= 0:
                 return
             if zero and not f.groups:
@@ -1744,6 +1751,16 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(act)
                     ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
                                   a_fmt=model.act_fmt_for(role)))
+                if L.vec_kind == "mixtral_swiglu":
+                    # MixtralBlockSparseTop2MLP: w2(act_fn(w1(x)) * w3(x))
+                    # with act_fn = ACT2FN["silu"]. SiLU stays expert_act.
+                    # The product is one multiply on the useful token-expert
+                    # pairs, not the padded GEMM rows. a_fmt follows act_fmt.
+                    # There is no shared expert and no latent pool. The
+                    # routing-weight multiply after the expert is not this op.
+                    ops.append(act)
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
+                                  a_fmt=model.act_fmt))
                 if L.vec_kind == "kimi_situ":
                     # KimiBlockSparseMLP: SituAndMul(cat(w1, w3)) then w2.
                     # The historical SiLU expert_act is not this formula.
@@ -1754,7 +1771,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(_situ_op(li, r.pairs_local * d_loc))
                 ops.append(replace(gemm(model, f"{name}.down", li, r.m_e, d_loc, ein, role, count=r.hit),
                                    share=u))
-                if L.vec_kind not in ("qwen35_moe", "kimi_situ", "muse_swiglu"):
+                if L.vec_kind not in ("qwen35_moe", "kimi_situ", "muse_swiglu", "mixtral_swiglu"):
                     ops.append(act)
             if sh.ep > 1:
                 pay = r.pairs_local * ein * ab

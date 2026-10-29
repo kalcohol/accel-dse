@@ -102,7 +102,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_466():
-    assert __version__ == "0.471.0"
+    assert __version__ == "0.472.0"
 
 
 def test_two_rows_are_front60_and_reuse_qwen2_text():
@@ -417,7 +417,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_coverage import _FULL_0651, _kpi
     from accel_dse.core import evaluate as E
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "19cac027be730bc4"
+    assert _fp({}) == "afa0f7989c12811a"
     test_fingerprints_change_only_v4()
     with E.model_flags(FUSE_QKV=False):
         assert _kpi("qwen2.5-3b") == "8b8d7db5d3eb"

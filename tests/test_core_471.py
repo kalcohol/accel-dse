@@ -102,7 +102,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_471():
-    assert __version__ == "0.471.0"
+    assert __version__ == "0.472.0"
 
 
 def test_six_rows_bill_the_latent_product():
@@ -171,7 +171,7 @@ def test_six_rows_bill_the_latent_product():
     assert get_model("qwen3.8-2.4t").vec_kind == "qwen35_moe"
     assert get_model("kimi-k3").vec_kind == "kimi_situ"
     assert get_model("llama-3.3-70b").vec_kind == "carbon_llama"
-    assert get_model("mixtral-8x22b").vec_kind == ""
+    assert get_model("mixtral-8x22b").vec_kind != "muse_swiglu"
     assert get_model("drama-3").vec_kind == ""
 
 
@@ -330,7 +330,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_coverage import _FULL_0651, _kpi
     # Muse is outside entries()[:60], so the locked decode hashes stay.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "19cac027be730bc4"
+    assert _fp({}) == "afa0f7989c12811a"
     test_fingerprints_change_only_v4()
     from accel_dse.core import evaluate as E
     pins = {

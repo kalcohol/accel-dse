@@ -122,7 +122,7 @@ def _geom(row):
 
 
 def test_version_is_452():
-    assert __version__ == "0.471.0"
+    assert __version__ == "0.472.0"
 
 
 def test_qwen2_text_bills_fp32_rmsnorm_and_the_product():
@@ -343,7 +343,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "19cac027be730bc4"
+    assert _fp({}) == "afa0f7989c12811a"
     for mid in _ROWS:
         assert mid not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"
