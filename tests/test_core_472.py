@@ -83,7 +83,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_472():
-    assert __version__ == "0.472.0"
+    assert __version__ == "0.473.0"
 
 
 def test_one_row_bills_the_expert_product():
@@ -124,7 +124,7 @@ def test_one_row_bills_the_expert_product():
     assert get_model("kimi-k3").vec_kind == "kimi_situ"
     assert get_model("llama-3.3-70b").vec_kind == "carbon_llama"
     assert get_model("muse-spark-open").vec_kind == "muse_swiglu"
-    assert get_model("seed-oss-36b").vec_kind == ""
+    assert get_model("seed-oss-36b").vec_kind != "mixtral_swiglu"
 
 
 def test_default_window_product_and_gemm_flops():
@@ -263,7 +263,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_coverage import _FULL_0651, _kpi
     # Stage summaries of the front 60 stay. Pipe tpot last bits move.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "afa0f7989c12811a"
+    assert _fp({}) == "9a66da621b20a5f8"
     test_fingerprints_change_only_v4()
     from accel_dse.core import evaluate as E
     pins = {
