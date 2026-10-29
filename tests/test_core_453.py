@@ -113,7 +113,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_453():
-    assert __version__ == "0.465.0"
+    assert __version__ == "0.466.0"
 
 
 def test_qwen3_speech_and_dspine_bill_fp32_rmsnorm_qk_and_the_product():
@@ -334,7 +334,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "25e9cd50ab57455e"
+    assert _fp({}) == "555d25ec2cbe1bfe"
     for mid in _ROWS:
         assert mid not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"

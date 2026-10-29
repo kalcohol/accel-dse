@@ -88,7 +88,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_465():
-    assert __version__ == "0.465.0"
+    assert __version__ == "0.466.0"
 
 
 def test_four_rows_are_front60_and_reuse_qwen3():
@@ -267,10 +267,16 @@ def test_non_vector_schedule_and_other_rows_stay_untagged():
         spoof = replace(other, id="qwen3-8b")
         _raises(lambda c=cfg, s=spoof: _tag_qwen3_vectors(s, c),
                 "qwen3 hidden is not heads times head_dim")
-    for mid in ("qwen2.5-3b", "qwen2.5-1.5b", "llama-3.1-8b"):
+    for mid in ("llama-3.1-8b",):
         other = get_model(mid)
         assert other.vec_kind == ""
         assert "mlp_mul" not in [o.name for o in build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard())]
+    # 0.466 bills the two smaller Qwen2.5 rows with qwen2_text. This gate does not.
+    for mid in ("qwen2.5-3b", "qwen2.5-1.5b"):
+        other = get_model(mid)
+        assert other.vec_kind == "qwen2_text"
+        assert any("0.466" in n for n in other.notes)
+        assert not any("0.465" in n for n in other.notes)
     old = get_model("qwen3-14b")
     assert old.vec_kind == "qwen3"
     assert any("0.449" in n for n in old.notes) and not any("0.465" in n for n in old.notes)
@@ -353,7 +359,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_coverage import _FULL_0651, _kpi
     from accel_dse.core import evaluate as E
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "25e9cd50ab57455e"
+    assert _fp({}) == "555d25ec2cbe1bfe"
     # The no-DeepSeek-V4 pair is locked in 0.125. Re-run that assert.
     test_fingerprints_change_only_v4()
     with E.model_flags(FUSE_QKV=False):

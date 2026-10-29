@@ -1342,6 +1342,7 @@ def _carbon_dense(L: Layer) -> bool:
     # ERNIE-4.5 MoE (0.458) subclasses LlamaRMSNorm and reuses carbon_llama.
     # Mistral-Large (0.462) is MistralForCausalLM and reuses mistral_small.
     # Qwen2.5-72B (0.463) is Qwen2ForCausalLM and reuses qwen2_text.
+    # Qwen2.5-3B and Qwen2.5-1.5B (0.466) reuse that same recipe.
     # Llama-2 and Yi-1.5 (0.464) are LlamaForCausalLM and reuse carbon_llama.
     # Omitted bias and pretraining_tp keys are the published defaults.
     # Qwen3-8B, its fp8 and AWQ releases, and Qwen3-1.7B (0.465) reuse qwen3.

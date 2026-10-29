@@ -47,7 +47,7 @@ _BANNED = ("gelu", "silu", "relu", "sigmoid", "softplus", "clamp", "quick_gelu",
            "gelu_new", "mask_mul", "q_rms", "k_rms")
 # Front-60 rows that stay on the shared tail.
 _UNTOUCHED = (
-    "qwen2.5-3b", "qwen2.5-1.5b",
+    # 0.466 bills qwen2.5-3b and qwen2.5-1.5b with qwen2_text.
     "llama-3.1-8b",
     # 0.465 bills qwen3-8b, its fp8 and AWQ twins, and qwen3-1.7b with qwen3.
     "qwen3-32b", "qwen3-4b", "qwen3-0.6b",
@@ -121,7 +121,7 @@ def _ffn(depth: int, h: int, inner: int, t: int = 4096) -> int:
 
 
 def test_version_is_464():
-    assert __version__ == "0.465.0"
+    assert __version__ == "0.466.0"
 
 
 def test_three_rows_are_front60_and_reuse_carbon_llama():
@@ -316,7 +316,9 @@ def test_non_vector_schedule_and_other_rows_stay_untagged():
         assert all(L.vec_kind == "" for L in other.layers), mid
         pops = build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard())
         assert "mlp_mul" not in [o.name for o in pops], mid
-    assert _tag_llama2_vectors(get_model("qwen2.5-3b"), _tc({})).vec_kind == ""
+    # 0.466 bills qwen2.5-3b. The Llama-2 gate still does not claim it.
+    assert _tag_llama2_vectors(_bare(get_model("qwen2.5-3b")), _tc({})).vec_kind == ""
+    assert get_model("qwen2.5-3b").vec_kind == "qwen2_text"
     qwen = get_model("qwen2.5-72b")
     assert qwen.vec_kind == "qwen2_text"
     assert any("0.463" in n for n in qwen.notes)
@@ -462,9 +464,9 @@ def test_fingerprints_and_kpi():
     # LPDDR decode ticks stay bit-identical. The pipe hash covers the full
     # summary, so the default pipe and the no-DeepSeek-V4 pipe move.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "25e9cd50ab57455e"
+    assert _fp({}) == "555d25ec2cbe1bfe"
     assert _fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e"
-    assert _fpx({}) == "a1484d51a9ad1ed3"
+    assert _fpx({}) == "666d0c5f91fbb6a4"
     from accel_dse.core import evaluate as E
     with E.model_flags(FUSE_QKV=False):
         assert _kpi("yi-1.5-34b") == "4a9848721f34"
