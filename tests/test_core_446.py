@@ -87,7 +87,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_446():
-    assert __version__ == "0.467.0"
+    assert __version__ == "0.468.0"
 
 
 def test_dense_text_bills_fp32_rmsnorm_qk_and_the_product():
@@ -260,7 +260,7 @@ def test_non_vector_schedule_vision_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "7d44cdadbf38cc9e"
+    assert _fp({}) == "19cac027be730bc4"
     assert "qwen3-vl-32b" not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"
     assert _FULL_0651["esm2-3b"] == "34f7544287cd"

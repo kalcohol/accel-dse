@@ -1348,8 +1348,11 @@ def _carbon_dense(L: Layer) -> bool:
     # Qwen3-8B, its fp8 and AWQ releases, and Qwen3-1.7B (0.465) reuse qwen3.
     # Qwen3-32B, its fp8 and AWQ releases, Qwen3-4B, and Qwen3-0.6B (0.467)
     # reuse qwen3. q width is heads * head_dim and is not hidden.
-    # mlp_mul is inserted only when the FFN is dense gate_up/down. MoE layers
-    # keep expert_act. Shared-expert products stay on that path.
+    # mlp_mul is inserted only when the FFN is dense gate_up/down. Untagged MoE
+    # layers keep expert_act after down. Shared-expert products stay off that
+    # dense path. 0.468 qwen35_moe is the exception: the published expert and
+    # the published shared expert are both down(silu(gate) * up), so those
+    # layers insert mlp_mul. Other MoE kinds are unchanged.
     return L.vec_kind in (
         "carbon_llama", "carbon_qwen", "qwen3vl_text", "granite", "qwen3", "step_audio",
         "mistral_small", "qwen2_text")
@@ -1639,6 +1642,14 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             role = l.role or ("router" if l.name.startswith(("router", "shared_expert_gate")) else (
                 "shared_expert" if l.name.startswith("shared") else "mlp"))
             ops.append(gemm(model, f"moe.{l.name}", li, t, k, n, role, replicated=_repl(l, tp)))
+            if L.vec_kind == "qwen35_moe" and l.name == "shared_gate_up":
+                # Qwen3_5MoeSparseMoeBlock shared expert is Qwen3_5MoeMLP:
+                # down(silu(gate) * up). One multiply. Shared SiLU stays
+                # unbilled on this path. The sigmoid output gate is not this op.
+                if not f.gated or not f.n_shared or not f.d_shared:
+                    raise ValueError("qwen35 moe shared expert is not swiglu")
+                n_loc = _cdiv(f.n_shared * f.d_shared, tp)
+                ops.append(Op("mlp_mul", "vector", li, vec=float(t * n_loc), a_fmt=model.act_fmt))
         if f.d_ff:
             # Parallel dense SwiGLU (LongCat-Flash sublayer 0): every token, not a shared expert.
             ops.append(Op("act", "vector", li, vec=t * _cdiv(f.d_ff, tp) * 4, sfu=t * _cdiv(f.d_ff, tp) * 2))
@@ -1647,6 +1658,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                               comm_bytes=t * h * rb))
 
         def _pool(name: str, n_exp: int, d_exp: int, tokens: int, zero: int, role: str) -> None:
+            if L.vec_kind == "qwen35_moe" and not f.gated:
+                raise ValueError("qwen35 moe expert is not swiglu")
             if tokens <= 0 or n_exp <= 0:
                 return
             if zero and not f.groups:
@@ -1661,10 +1674,20 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 u = min(1.0, r.pairs_local / (r.hit * r.m_e))
                 ops.append(replace(gemm(model, f"{name}.gate_up", li, r.m_e, ein, mats_up * d_loc, role,
                                         count=r.hit), share=u))
+                act = Op(f"{name}_act" if name == "expert" else f"{name}.act", "vector", li,
+                         vec=r.pairs_local * d_loc * 4, sfu=r.pairs_local * d_loc * 2)
+                if L.vec_kind == "qwen35_moe":
+                    # Qwen3_5MoeExperts: current = act_fn(gate) * up, then down.
+                    # SiLU stays expert_act. The product is one multiply on the
+                    # useful token-expert pairs, not the padded GEMM rows.
+                    # Routing-weight scaling of the expert output is not this op.
+                    ops.append(act)
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
+                                  a_fmt=model.act_fmt))
                 ops.append(replace(gemm(model, f"{name}.down", li, r.m_e, d_loc, ein, role, count=r.hit),
                                    share=u))
-                ops.append(Op(f"{name}_act" if name == "expert" else f"{name}.act", "vector", li,
-                              vec=r.pairs_local * d_loc * 4, sfu=r.pairs_local * d_loc * 2))
+                if L.vec_kind != "qwen35_moe":
+                    ops.append(act)
             if sh.ep > 1:
                 pay = r.pairs_local * ein * ab
                 fn = node_dedup_factor(n_exp, f.top_k, ph.ep_nodes, f.groups, n_exp + zero)

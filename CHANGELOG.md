@@ -6,6 +6,27 @@
 
 
 
+## [0.468.0] — 2026-10-29
+
+### Qwen3.5 MoE 按发布的专家门乘入账
+
+- **选择。** mRoPE 的逐层 apply 仍是 `(q*cos)+(rotate_half(q)*sin)`，和现有 `rope` 的元素次数相同。Qwen3 的交错 mRoPE 是在一次 cos/sin 之前重排频率槽，文本位置上三轴相等，不多出三份三角函数。Llama-3 的 `rope_scaling` 只在初始化时改 `inv_freq`，运行时的 apply 不变。生成域的 AdaLN 已经在 `model.adaln` 里。这三项都对不上新的次数。最大的、而且对得上已发布公式的缺口是 MoE 专家上的 `silu(gate)*up`。前 60 条里最大的一行是 `qwen3.8-2.4t`（`Qwen/Qwen3.8-2.4T-A95B`，`Qwen3_5MoeForCausalLM`，每个 token `92 * (10 * 2048 + 2048) = 2,072,576` 次相乘）。同一扇门盖住 `qwen3.5-397b-a17b`（`60 * (10 * 1024 + 1024) = 675,840`）以及几何相同的 Intern-S2、MiniCPM-V-4.7、StartLux-Decision 和 Ornith 1.5 / 1.0 的 bf16 与 fp8，一共 15 行。不把 `situ`、带 `swiglu_limit` 的 clamp、或 `swigluoai` 写成这次的相乘。
+- **入账。** 没有新的激活种类。新的 `vec_kind` 是 `qwen35_moe`，只表示插入这次的相乘，不把范数改成 fp32。`Qwen3_5MoeExperts` 是 `down(act_fn(gate) * up)`，`hidden_act` 是 `silu`。路由专家上的 SiLU 仍叫 `expert_act`，挪到 `expert.down` 之前。相乘是 `mlp_mul`，宽度是有用的 token-expert 对乘本地 `d_expert`，不是 GEMM 的填充行。`sfu` 是 0，FLOPs 是 0，`a_fmt` 跟随 `act_fmt`。共享专家是同一份 `Qwen3_5MoeMLP`，在 `moe.shared_gate_up` 之后记一次 `mlp_mul`，宽度是 token 乘本地 `shared_expert_intermediate_size`。共享 SiLU 仍不记。`sigmoid(shared_expert_gate)` 和专家输出上的路由权重相乘不记。MTP 层不打这个标签。`final_norm` 仍走原来的历史公式。15 行的 `rel_err` 都是 0。权重按发布：2.4T 和 397B 是 bf16。Ornith fp8 行的专家 `w_fmt` 仍是 fp8，`mlp_mul` 的 `a_fmt` 是 fp8。
+- **默认窗口。** 提示长度 4096。2.4T：92 层，hidden 8192，512 专家，top-10，专家宽 2048，共享专家 1×2048。共享 `mlp_mul` 的 `vec` 是 `4096 * 2048`。路由 `mlp_mul` 的 `vec` 是 `4096 * 10 * 2048`。`expert_act` 的 `vec` 是路由相乘的 4 倍，`sfu` 是 2 倍，`a_fmt` 仍是默认 bf16。397B：60 层，hidden 4096，专家宽 1024，共享 1×1024，相乘分别是 `4096 * 1024` 和 `4096 * 10 * 1024`。顺序是 `moe.shared_gate_up`、`mlp_mul`、`moe.shared_down`、`moe.shared_expert_gate`、`expert.gate_up`、`expert_act`、`mlp_mul`、`expert.down`。线性层和全注意力层都有这两次相乘。没有 `gelu`。向量 FLOPs 是 0。GEMM 的名字、形状和 FLOPs 与清掉 `vec_kind` 之后相同。
+- **TP 和请求 fp8。** 只设 `tp=2`、不配 `ep`，MoE 仍拒绝，和打标之前一样。`Shard(tp=2, ep=2)`：共享相乘宽度减半，路由专家宽仍是 2048，token-expert 对按 EP 减半。`Shard(tp=2, etp=2)`：共享宽度减半，路由专家宽减半。请求 fp8（把 `act_fmt` 换成 fp8，不重跑打标）：两处 `mlp_mul` 和专家 GEMM 的 `a_fmt` 是 fp8，`w_fmt` 仍是 bf16。发布的 fp8 行本来就是激活 fp8、权重 fp8。`ornith-1.5-397b-fp8` 的 `expert.gate_up` `w_bits` 四舍五入到 6 位是 8.007812。
+- **延迟例子。** 100T 没有 SFU。HBM3E 上预填充是 MAC，增量就是新的相乘：2.4T 在 batch 1 是 0.002368658 s，os 和 reconf 相同，从 9.465323705 / 7.834164083 s 变成 9.467692364 / 7.836532741 s，`round(tick, 1)` 仍是 9.5 / 7.8 s，放不下。batch 2 的增量是 0.004737317 s，仍是 16.2 / 15.7 s。397B 的 batch 1 增量是 0.000772389 s，从 1.650454032 / 1.379712531 s 变成 1.651226421 / 1.380484919 s，仍是 1.7 / 1.4 s。batch 2 是 0.001544777 s，仍是 2.8 s。LPDDR 预填充是 DRAM。SiLU 挪到两份专家 GEMM 之间之后，pipe 把原来露在关键路径上的向量叠进了访存，所以 tick 变小：2.4T batch 1 的 os 和 reconf 都减少 0.008304347 s，从 28.964366995 / 28.837934874 s 变成 28.956062648 / 28.829630526 s，仍是 29.0 / 28.8 s，放不下。batch 2 的 os 减少 0.011026726 s（33.0 s），reconf 减少 0.011039084 s（32.9 s）。397B batch 1 的 os 和 reconf 都减少 0.002691657 s，仍是 4.8 s。batch 2 都减少 0.005383314 s，仍是 5.6 s。LPDDR 解码的 tick 只差 1 ulp，仍是 DRAM。HBM3E os 解码：2.4T 从 0.105943587 s 变成 0.105944166 s，`round(tick, 1)` 仍是 0.1 s，仍是 MAC，放不下。397B 从 0.018597495 s 变成 0.018597684 s，6 位从 0.018597 s 变成 0.018598 s，`round(tick, 1)` 仍是 0.0 s。HBM3E reconf 解码逐位相同。HBM3E、os、EP 等于 TP 的 1 / 2 / 4 / 8，预填充 `round(tick, 1)`：2.4T 仍是 9.5 / 4.8 / 2.5 / 1.3 s，都放不下。397B 仍是 1.7 / 0.8 / 0.4 / 0.2 s，TP4 和 TP8 放得下。H100-SXM 预填充 8192：2.4T 从 3.070502867 s 变成 3.071051946 s（仍是 3.1 s，FEED，放不下），397B 从 0.556879390 s 变成 0.557058438 s（仍是 0.6 s，FEED，放不下）。请求 fp8、LPDDR、os、预填充：2.4T 从 28.947434519 s 变成 28.939130172 s，仍是 28.9 s。397B 从 4.821646128 s 变成 4.818954471 s，仍是 4.8 s。测过的窗口里没有 0.1 s 改档。
+- **指纹。** 前 60 条的 stage 指纹仍是 `f54f33dfa13cdd41`。默认 pipe 从 `7d44cdadbf38cc9e` 变成 `19cac027be730bc4`。去掉 DeepSeek-V4 之后 stage 仍是 `5c058c9ed0f8f61e`，pipe 从 `903976206252d461` 变成 `0f2c94a6e5524bc5`。锁定窗口是解码。stage 的四份 summary 与清掉 `vec_kind` 之后逐字段相同。pipe 变，是因为 `qwen3.8-2.4t` 和 `qwen3.5-397b-a17b` 在默认、SLC 256 MiB 和 SLC LRU 上的 summary 末位动了 `tpot_ms` / `step_ms` 与 `tok_s` / `tok_s_card`。只设 TP2、不配 EP 的那一格仍是 `ValueError`。KPI 在 `FUSE_QKV=False` 下不动：`qwen3-32b` 仍是 `b975b7b3760e`，`qwen3-32b-fp8` 仍是 `cb91adbc72c9`，`qwen3-32b-awq` 仍是 `3e44c63965e3`，`qwen3-4b` 仍是 `659c4bad45d8`，`qwen3-0.6b` 仍是 `e61d067c924b`，`qwen3-8b` 仍是 `11f6f3a5d21f`，`esmfold` 仍是 `3bbede544308`，ESM-2 3B 仍是 `34f7544287cd`，Wan2.1-1.3B 仍是 `309919c00604`。默认模型仍是 `qwen3-8b`。
+- **不改。** 不新写激活种类。不改 GEMM 名字、形状和 FLOPs。不新开目录行。不放宽 0.449 / 0.453 / 0.465 / 0.467。未打标的 MoE 仍是 `expert.gate_up`、`expert.down`、`expert_act`，没有 `mlp_mul`。ERNIE-4.5 的这条顺序不变。把 `qwen3-235b-a22b` 的层配上 2.4T 的 id，新门拒绝。把 2.4T 的 id 换成 `qwen3-235b-a22b`，新门不打标。前 60 条的末尾仍是 `wan2.1-14b` 和 `wan2.1-1.3b`。不改 `docs/MODEL.md`。
+- **未纳入：**
+  - **mRoPE。** 发布的逐层 apply 与现有 `rope` 次数相同。交错 mRoPE 在一次 cos/sin 之前重排频率槽。Qwen3.5 的 `mrope_section` 和 `partial_rotary_factor` 仍走现有 `rope`。不另记。
+  - **Llama-3.x 的 `rope_scaling`。** 只改初始化的 `inv_freq`。`attention_scaling` 是 1。运行时 apply 已经在现有 `rope` 里。没有新的向量次数。
+  - **AdaLN。** 这 15 行不是按条件生成的 scale / shift。生成域已经有 `model.adaln`。
+  - **`kimi-k3` 的 `situ`、DeepSeek-V4 / GLM-5.3-Flash / gpt-oss 的 `swiglu_limit`、MiniMax 的 `swigluoai`。** 不是 `ACT2FN["silu"]` 再乘 up。不打。
+  - **Mixtral、`qwen3-235b`、Qwen3-Coder、Muse、DeepSeek-V3、GLM-4.5。** 有的也是普通 `silu(gate)*up`，但比这 15 行小，或者不是 `Qwen3_5MoeMLP`。这一轮不打。
+  - **`drama-3`。** 文本形状是 `qwen3_5_moe_text`，外层是 `fish_omni`。不在这张名单里。
+  - **共享 SiLU、`1 + weight` RMS、GDN、视觉 `gelu_pytorch_tanh`。** 不是这一次的相乘。
+
+
 ## [0.467.0] — 2026-10-29
 
 ### 前 60 条里 q 宽不等于 hidden 的 Qwen3 按发布的头宽入账

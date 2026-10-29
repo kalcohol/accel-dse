@@ -5003,6 +5003,82 @@ def _tag_qwen3_467_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="qwen3", notes=spec.notes + (note,))
 
 
+# 0.468: Qwen3.5 / Qwen3.8 MoE text stacks whose published expert is
+# down(silu(gate) * up), including the shared expert of the same MLP.
+# Dense SwiGLU rows and other MoE classes stay on their own gates.
+_QWEN35_MOE = frozenset({
+    "qwen3.8-2.4t", "qwen3.5-397b-a17b", "intern-s2-397b",
+    "minicpm-v-4.7-35b-a3b", "startlux-decision-v1-35b-a3b",
+    "ornith-1.5-122b", "ornith-1.5-122b-fp8",
+    "ornith-1.5-397b", "ornith-1.5-397b-fp8",
+    "ornith-1.5-35b-a3b", "ornith-1.5-35b-a3b-fp8",
+    "ornith-1.0-397b", "ornith-1.0-397b-fp8",
+    "ornith-1.0-35b", "ornith-1.0-35b-fp8",
+})
+
+
+def _tag_qwen35_moe_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.468: bill the published Qwen3.5 MoE expert product.
+
+    Qwen3_5MoeMLP is down_proj(act_fn(gate_proj(x)) * up_proj(x)) with
+    act_fn = ACT2FN[hidden_act]. These releases set hidden_act to silu.
+    Qwen3_5MoeExperts chunks the fused gate_up projection and does the same
+    multiply before down. The shared expert is that MLP at
+    shared_expert_intermediate_size. SiLU on routed experts stays
+    expert_act. The product is mlp_mul, once on the shared expert and once
+    on the routed pairs. Shared SiLU, the sigmoid shared_expert_gate, and
+    the routing-weight multiply on the expert output are not this bill.
+    mRoPE, partial RoPE, and 1+weight RMSNorm are not this bill. MTP layers
+    stay untagged. vec_kind is qwen35_moe so the historical final norm is
+    unchanged. No earlier allowlist is extended.
+    """
+    if spec.id not in _QWEN35_MOE:
+        return spec
+    if c.get("model_type") != "qwen3_5_moe_text":
+        raise ValueError("qwen35 moe model_type is not qwen3_5_moe_text")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("qwen35 moe hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("qwen35 moe swiglu_limit is set")
+    de = c.get("moe_intermediate_size")
+    n_exp = c.get("num_experts")
+    topk = c.get("num_experts_per_tok")
+    d_sh = c.get("shared_expert_intermediate_size")
+
+    def _pos(v) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+    if not (_pos(de) and _pos(n_exp) and _pos(topk) and _pos(d_sh)):
+        raise ValueError("qwen35 moe expert width is not positive")
+    if c.get("mlp_only_layers"):
+        raise ValueError("qwen35 moe mlp_only_layers is not empty")
+    if c.get("first_k_dense_replace"):
+        raise ValueError("qwen35 moe first_k_dense_replace is set")
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "moe" or not f.gated or f.d_expert != de or f.top_k != topk
+                or f.n_experts != n_exp or f.n_shared != 1 or f.d_shared != d_sh
+                or f.latent or f.zero_experts or f.n_experts_b or f.d_ff or f.groups):
+            raise ValueError("qwen35 moe expert is not swiglu")
+        by = {ln.name: ln for ln in L.ffn_linears}
+        need = ("router", "shared_gate_up", "shared_down", "shared_expert_gate")
+        if any(name not in by for name in need):
+            raise ValueError("qwen35 moe linears are not router and shared expert")
+        up, down = by["shared_gate_up"], by["shared_down"]
+        if (up.n != 2 * d_sh or up.k != spec.hidden or down.k != d_sh
+                or down.n != spec.hidden or up.split != "col" or down.split != "row"):
+            raise ValueError("qwen35 moe shared expert is not swiglu")
+    layers = tuple(replace(L, vec_kind="qwen35_moe") for L in spec.layers)
+    note = ("0.468: Qwen3_5MoeExperts is down(silu(gate) * up). "
+            "SiLU on routed experts stays expert_act. The product is mlp_mul. "
+            "The shared expert is the same multiply. Shared SiLU is not billed. "
+            "The sigmoid shared_expert_gate and the routing-weight multiply are not billed. "
+            "mRoPE, partial RoPE, and 1+weight RMSNorm are not this bill. "
+            "MTP layers stay untagged. "
+            "The front-60 rows are qwen3.8-2.4t and qwen3.5-397b-a17b.")
+    return replace(spec, layers=layers, vec_kind="qwen35_moe", notes=spec.notes + (note,))
+
+
 _STEP_AUDIO = frozenset({
     "step-audio-2-mini",
     "step-audio-2-mini-base",
@@ -7031,7 +7107,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_llama2_vectors(
+    return _tag_qwen35_moe_vectors(
+        _tag_llama2_vectors(
         _tag_qwen25_466_vectors(
         _tag_qwen25_72b_vectors(
         _tag_mistral_large_vectors(
@@ -7047,7 +7124,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

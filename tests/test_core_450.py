@@ -95,7 +95,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_450():
-    assert __version__ == "0.467.0"
+    assert __version__ == "0.468.0"
 
 
 def test_step_audio_bills_fp32_rmsnorm_and_the_product():
@@ -290,7 +290,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "7d44cdadbf38cc9e"
+    assert _fp({}) == "19cac027be730bc4"
     for mid in _ROWS:
         assert mid not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"
