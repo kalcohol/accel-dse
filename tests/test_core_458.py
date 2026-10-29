@@ -2,7 +2,8 @@
 
 Ernie4_5_MoeRMSNorm subclasses LlamaRMSNorm. SiLU stays the existing act
 op. The gate times up product is mlp_mul on dense gate_up/down layers only.
-MoE layers keep expert_act. There is no q/k RMSNorm. vec_kind reuses
+The 21B MoE layers keep expert_act. 0.478 bills the 300B expert product
+separately. There is no q/k RMSNorm. vec_kind reuses
 carbon_llama. The 0.3B row and the VL rows stay untagged. These six ids are
 outside the first 60 catalog rows. Vector flops stay 0.
 """
@@ -85,7 +86,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_458():
-    assert __version__ == "0.477.0"
+    assert __version__ == "0.478.0"
 
 
 def test_ernie_moe_dense_bills_fp32_rmsnorm_and_the_product():
@@ -93,7 +94,11 @@ def test_ernie_moe_dense_bills_fp32_rmsnorm_and_the_product():
         h, inner, depth, n_dense, heads, kv, hd, params, n_mtp = shape
         m = get_model(mid)
         rel = load_release(m.hf_id)
-        assert m.hidden == h and m.n_layers == depth and m.vec_kind == "carbon_llama"
+        if mid in _WIDE:
+            assert m.vec_kind == "ernie300_swiglu"
+        else:
+            assert m.vec_kind == "carbon_llama"
+        assert m.hidden == h and m.n_layers == depth
         assert m.params() == m.release_params == params and m.param_check()["rel_err"] == 0.0
         assert m.act_fmt == "bf16" and m.fmt("mlp").fmt == "bf16" and m.fmt("attn").fmt == "bf16"
         assert m.fmt("expert").fmt == "bf16"
@@ -102,7 +107,13 @@ def test_ernie_moe_dense_bills_fp32_rmsnorm_and_the_product():
         assert rel["config"]["model_type"] == "ernie4_5_moe"
         assert len(m.mtp_layers) == n_mtp
         assert all(L.vec_kind == "" for L in m.mtp_layers)
-        assert all(L.vec_kind == "carbon_llama" for L in m.layers)
+        if mid in _WIDE:
+            assert all(L.vec_kind == "carbon_llama" for L in m.layers[:n_dense])
+            assert all(L.vec_kind == "ernie300_swiglu" for L in m.layers[n_dense:])
+            assert any("0.478" in n for n in m.notes)
+        else:
+            assert all(L.vec_kind == "carbon_llama" for L in m.layers)
+            assert not any("0.478" in n for n in m.notes)
         assert any("0.458" in n for n in m.notes)
         assert sum(L.ffn.kind == "dense" for L in m.layers) == n_dense
         assert m.layers[0].ffn.d_ff == inner and m.layers[0].misc_params == 2 * h
@@ -127,16 +138,19 @@ def test_ernie_moe_dense_bills_fp32_rmsnorm_and_the_product():
         for banned in _BANNED:
             assert banned not in names
         moe = _by(build_rank_ops(m, n_dense, ph, Shard()))
-        assert "mlp_mul" not in moe and "expert_act" in moe
+        assert "expert_act" in moe
         _rms(moe["attn_norm"], 4096, h, 1, n_dense)
         _rms(moe["ffn_norm"], 4096, h, 1, n_dense)
         moe_names = [o.name for o in build_rank_ops(m, n_dense, ph, Shard())]
         if mid in _NARROW:
+            assert "mlp_mul" not in moe
             i = moe_names.index("moe.shared_gate_up")
             assert moe_names[i + 1] == "moe.shared_down"
+            assert moe_names.index("expert.gate_up") < moe_names.index("expert.down") < moe_names.index("expert_act")
         else:
             assert not any(n.startswith("moe.shared") for n in moe_names)
-        assert moe_names.index("expert.gate_up") < moe_names.index("expert.down") < moe_names.index("expert_act")
+            assert moe_names.index("expert.gate_up") < moe_names.index("expert_act")
+            assert moe_names.index("expert_act") < moe_names.index("mlp_mul") < moe_names.index("expert.down")
         head = _by(head_ops(m, ph, Shard()))
         _rms(head["final_norm"], 4096, h, 1, depth)
         if n_mtp:
@@ -281,8 +295,15 @@ def test_ffn_gemm_flops_match_the_closed_form():
                     got += o.flops
                 if o.name == "mlp_mul":
                     extra += o.vec
-                    assert L.ffn.kind == "dense"
+                    if mid in _NARROW:
+                        assert L.ffn.kind == "dense"
+                    else:
+                        assert L.ffn.kind in ("dense", "moe")
         assert got == expect
-        assert extra == t * n_dense * inner
+        expert = 0
+        if mid in _WIDE:
+            moe = m.layers[n_dense].ffn
+            expert = (len(m.layers) - n_dense) * moe.top_k * moe.d_expert
+        assert extra == t * (n_dense * inner + expert)
     assert 3 * 28672 == 86_016
     assert 1 * 12288 == 12_288

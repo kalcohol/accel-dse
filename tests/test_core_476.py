@@ -111,7 +111,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_476():
-    assert __version__ == "0.477.0"
+    assert __version__ == "0.478.0"
 
 
 def test_two_rows_bill_the_text_product():
@@ -194,7 +194,7 @@ def test_two_rows_bill_the_text_product():
     assert get_model("olmo-3-32b-think").vec_kind == "olmo3_swiglu"
     assert get_model("seed-oss-36b").vec_kind == "seed_swiglu"
     assert get_model("mixtral-8x22b").vec_kind == "mixtral_swiglu"
-    assert get_model("ernie-4.5-300b-a47b-pt").vec_kind == "carbon_llama"
+    assert get_model("ernie-4.5-300b-a47b-pt").vec_kind == "ernie300_swiglu"
     assert get_model("minimax-text-01").vec_kind == "minimax_swiglu"
     assert get_model("minimax-m1-80k").vec_kind == "minimax_swiglu"
 
@@ -343,8 +343,9 @@ def test_other_rows_and_refuses():
     ernie = get_model("ernie-4.5-300b-a47b-pt")
     li = next(i for i, L in enumerate(ernie.layers) if L.ffn.kind == "moe")
     names = _names(build_rank_ops(ernie, li, ph, Shard()))
-    assert "mlp_mul" not in names
-    assert names.index("expert.gate_up") < names.index("expert.down") < names.index("expert_act")
+    assert names.index("expert.gate_up") < names.index("expert_act") < names.index("mlp_mul")
+    assert names.index("mlp_mul") < names.index("expert.down")
+    assert ernie.layers[li].vec_kind == "ernie300_swiglu"
     wide = get_model("ernie-4.5-vl-424b-a47b-pt")
     c_ok = _tc(load_release(_ROWS["ernie-4.5-vl-424b-a47b-pt"])["config"])
     for mid in ("jais-3-32b", "ernie-4.5-300b-a47b-pt", "minimax-text-01",

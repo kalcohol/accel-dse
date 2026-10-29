@@ -431,6 +431,9 @@ class Layer:
     # product on every routed expert. shared_intermediate_size is 0, so
     # there is no shared expert. Lightning SiLU, the sigmoid output gate,
     # post-norm placement, and the residual alpha stay off this tag.
+    # 0.478 ERNIE-4.5-300B: ernie300_swiglu bills the same product on the
+    # routed experts. Dense layers stay carbon_llama. moe_num_shared_experts
+    # is 0. The 21B rows stay on the 0.458 dense-only bill.
     # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
     # up and down, and fp32 LayerNorm on the four published norms.
     # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
@@ -634,6 +637,8 @@ class ModelSpec:
     # stays on the shared formula.
     # 0.477: minimax_swiglu bills the MiniMax-Text-01 and MiniMax-M1 routed
     # expert product. The historical final norm stays on the shared formula.
+    # 0.478: ernie300_swiglu bills the ERNIE-4.5-300B routed expert product.
+    # The 0.458 final RMSNorm stays on the carbon_llama formula.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -6085,6 +6090,173 @@ def _tag_minimax_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="minimax_swiglu", notes=spec.notes + (note,))
 
 
+# 0.478 ERNIE-4.5-300B routed experts. Ernie4_5_MoeExperts is
+# act_fn(gate) * up, then down. moe_num_shared_experts is 0, so there is
+# no shared Ernie4_5_MoeMLP. The 21B rows are smaller and stay on 0.458.
+_ERNIE300_SWIGLU = frozenset({
+    "ernie-4.5-300b-a47b-pt",
+    "ernie-4.5-300b-a47b-base-pt",
+    "ernie-4.5-300b-a47b-base",
+})
+_ERNIE300_H = 8192
+_ERNIE300_INNER = 28672
+_ERNIE300_DEPTH = 54
+_ERNIE300_DENSE = 3
+_ERNIE300_HEADS = 64
+_ERNIE300_KV = 8
+_ERNIE300_HD = 128
+_ERNIE300_EXP = 64
+_ERNIE300_TOPK = 8
+_ERNIE300_DE = 3584
+
+
+def _tag_ernie300_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.478: bill the published ERNIE-4.5-300B routed expert product.
+
+    Ernie4_5_MoeExperts (transformers v5.12.0 modeling_ernie4_5_moe.py) is
+    act_fn(gate) * up, then down_proj. hidden_act is silu. The class does
+    not upcast. SiLU stays expert_act. The product is mlp_mul on the useful
+    token-expert pairs, not the padded GEMM rows and not moe_capacity.
+    a_fmt follows act_fmt. Layers 0-2 stay the 0.458 dense carbon_llama
+    bill (Ernie4_5_MoeMLP, down(act(gate) * up), fp32 RMSNorm). Layers 3-53
+    are this MoE: 64 experts, top-8, width 3584, no shared expert.
+    moe_num_shared_experts is 0 or absent. top2_fused is the same TopKGate
+    as topk. A what-if that changes moe_k, expert count, or expert width
+    stays on the 0.458 carbon_llama tag. moe_capacity does not. The
+    routing-weight multiply after down is not this op. Block RMSNorm was
+    already billed in 0.458, so this kind keeps that fp32 vec and sfu.
+    vec_kind on MoE layers is ernie300_swiglu. The model kind is
+    ernie300_swiglu so the 0.458 final norm stays selected. No earlier
+    allowlist is extended. The 21B rows have a shared expert and a smaller
+    product, so they stay carbon_llama.
+    """
+    if spec.id not in _ERNIE300_SWIGLU:
+        return spec
+    if c.get("model_type") != "ernie4_5_moe":
+        raise ValueError("ernie300 swiglu model_type is not ernie4_5_moe")
+    if c.get("architectures") != ["Ernie4_5_MoeForCausalLM"]:
+        raise ValueError("ernie300 swiglu architecture is not ernie4_5_moe")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("ernie300 swiglu hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("ernie300 swiglu swiglu_limit is set")
+    if c.get("use_bias") is not False:
+        raise ValueError("ernie300 swiglu use_bias is not false")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("ernie300 swiglu rope_scaling is not null")
+    if c.get("moe_num_shared_experts") not in (None, 0):
+        raise ValueError("ernie300 swiglu shared expert is set")
+    if c.get("moe_layer_interval") != 1 or c.get("moe_layer_start_index") != _ERNIE300_DENSE:
+        raise ValueError("ernie300 swiglu moe interval is not the release")
+    if c.get("moe_layer_end_index") not in (None, _ERNIE300_DEPTH - 1):
+        raise ValueError("ernie300 swiglu moe end is not 53")
+    # modeling_moe.py maps both topk and top2_fused onto TopKGate. moe_k,
+    # expert width, and expert count are builder inputs. Leave any what-if
+    # that is not the as-released 64 / top-8 / 3584 geometry on the 0.458
+    # carbon_llama tag. moe_capacity is only the dispatch buffer.
+    if c.get("moe_num_experts") != _ERNIE300_EXP or c.get("moe_k") != _ERNIE300_TOPK:
+        return spec
+    if c.get("moe_intermediate_size") != _ERNIE300_DE:
+        return spec
+    gate = c.get("moe_gate")
+    if gate not in (None, "topk", "top2_fused"):
+        raise ValueError("ernie300 swiglu moe_gate is not topk")
+    if c.get("hidden_size") != _ERNIE300_H or c.get("intermediate_size") != _ERNIE300_INNER:
+        raise ValueError("ernie300 swiglu width is not the 300B release")
+    if c.get("num_hidden_layers") != _ERNIE300_DEPTH:
+        raise ValueError("ernie300 swiglu depth is not 54")
+    if (c.get("num_attention_heads") != _ERNIE300_HEADS
+            or c.get("num_key_value_heads") != _ERNIE300_KV):
+        raise ValueError("ernie300 swiglu heads are not the 300B release")
+    published_hd = c.get("head_dim")
+    if published_hd is not None and published_hd != _ERNIE300_HD:
+        raise ValueError("ernie300 swiglu head_dim is not hidden // heads")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("ernie300 swiglu tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-5:
+        raise ValueError("ernie300 swiglu rms_norm_eps is not 1e-5")
+    if c.get("quantization_config") is not None or spec.quantized_release:
+        raise ValueError("ernie300 swiglu quantization_config is set")
+    if c.get("attention_dropout") not in (None, 0, 0.0):
+        raise ValueError("ernie300 swiglu attention_dropout is not 0")
+    if c.get("output_router_logits") not in (None, False):
+        raise ValueError("ernie300 swiglu output_router_logits is not false")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("ernie300 swiglu use_sliding_window is not false")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("ernie300 swiglu layer_types is not full_attention")
+    n_mtp = c.get("num_nextn_predict_layers") or 0
+    if n_mtp not in (0, 1) or len(spec.mtp_layers) != n_mtp:
+        raise ValueError("ernie300 swiglu mtp count is not the release")
+    if spec.act_fmt != "bf16":
+        raise ValueError("ernie300 swiglu activation dtype is not bf16")
+    if spec.fmt("mlp").fmt != "bf16" or spec.fmt("attn").fmt != "bf16":
+        raise ValueError("ernie300 swiglu weight dtype is not bf16")
+    if spec.fmt("expert").fmt != "bf16":
+        raise ValueError("ernie300 swiglu expert dtype is not bf16")
+    if spec.fmt("router").fmt != "fp32":
+        raise ValueError("ernie300 swiglu router is not fp32")
+    if spec.kv_fmt != "bf16":
+        raise ValueError("ernie300 swiglu kv dtype is not bf16")
+    if spec.final_norm_params not in (None, _ERNIE300_H):
+        raise ValueError("ernie300 swiglu final norm is not one")
+    if len(spec.layers) != _ERNIE300_DEPTH:
+        raise ValueError("ernie300 swiglu depth is not num_hidden_layers")
+    q_n = _ERNIE300_HEADS * _ERNIE300_HD
+    kv_n = _ERNIE300_KV * _ERNIE300_HD
+    for i, L in enumerate(spec.layers):
+        if (L.core.kind != "gqa" or L.core.n_q != _ERNIE300_HEADS
+                or L.core.n_kv != _ERNIE300_KV or L.core.qk_dim != _ERNIE300_HD
+                or L.core.v_dim != _ERNIE300_HD or L.core.window is not None):
+            raise ValueError("ernie300 swiglu attention is not gqa")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("ernie300 swiglu attention is not qkv o")
+        q, k, v, o = L.attn_linears
+        if (q.k != _ERNIE300_H or q.n != q_n or k.n != kv_n or v.n != kv_n
+                or o.k != q_n or o.n != _ERNIE300_H or q_n != _ERNIE300_H):
+            raise ValueError("ernie300 swiglu qk width is not heads times head_dim")
+        f = L.ffn
+        if i < _ERNIE300_DENSE:
+            if (f.kind != "dense" or not f.gated or f.d_ff != _ERNIE300_INNER
+                    or f.n_experts or f.n_shared or f.d_shared or f.latent
+                    or L.misc_params != 2 * _ERNIE300_H):
+                raise ValueError("ernie300 swiglu dense mlp is not swiglu")
+            if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("ernie300 swiglu dense mlp is not gate_up then down")
+            up, down = L.ffn_linears
+            if (up.k != _ERNIE300_H or up.n != 2 * _ERNIE300_INNER
+                    or down.k != _ERNIE300_INNER or down.n != _ERNIE300_H):
+                raise ValueError("ernie300 swiglu dense mlp is not gate_up then down")
+        else:
+            if (f.kind != "moe" or not f.gated or f.d_ff or f.n_experts != _ERNIE300_EXP
+                    or f.top_k != _ERNIE300_TOPK or f.d_expert != _ERNIE300_DE
+                    or f.n_shared or f.d_shared or f.latent or f.zero_experts
+                    or f.n_experts_b or f.d_expert_b or f.groups or f.expert_role
+                    or L.misc_params != 2 * _ERNIE300_H + _ERNIE300_EXP):
+                raise ValueError("ernie300 swiglu expert is not swiglu")
+            if [ln.name for ln in L.ffn_linears] != ["router"]:
+                raise ValueError("ernie300 swiglu linears are not router")
+            router = L.ffn_linears[0]
+            if (router.k != _ERNIE300_H or router.n != _ERNIE300_EXP
+                    or router.split != "rep"):
+                raise ValueError("ernie300 swiglu linears are not router")
+    for L in spec.mtp_layers:
+        if L.vec_kind not in ("", "carbon_llama"):
+            raise ValueError("ernie300 swiglu mtp vec_kind is not empty")
+        if L.ffn.kind != "dense" or not L.ffn.gated:
+            raise ValueError("ernie300 swiglu mtp is not dense swiglu")
+    layers = tuple(
+        replace(L, vec_kind="carbon_llama" if i < _ERNIE300_DENSE else "ernie300_swiglu")
+        for i, L in enumerate(spec.layers))
+    note = ("0.478: ERNIE-4.5-300B routed experts are act_fn(gate) * up, "
+            "then down. hidden_act is silu. SiLU stays expert_act. The "
+            "product is mlp_mul on the useful token-expert pairs. a_fmt "
+            "follows act_fmt. There is no shared expert. Dense layers stay "
+            "the 0.458 carbon_llama product. The routing-weight multiply, "
+            "moe_capacity, and the 0.458 RMSNorm are not this op.")
+    return replace(spec, layers=layers, vec_kind="ernie300_swiglu", notes=spec.notes + (note,))
+
+
 _STEP_AUDIO = frozenset({
     "step-audio-2-mini",
     "step-audio-2-mini-base",
@@ -8228,7 +8400,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_minimax_swiglu_vectors(
+    return _tag_ernie300_swiglu_vectors(
+        _tag_minimax_swiglu_vectors(
         _tag_ernievl_swiglu_vectors(
         _tag_jais3_swiglu_vectors(
         _tag_olmo3_swiglu_vectors(
@@ -8254,7 +8427,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
