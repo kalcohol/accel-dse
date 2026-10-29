@@ -1374,7 +1374,8 @@ def _carbon_dense(L: Layer) -> bool:
     # layers keep expert_act after down. Shared-expert products stay off that
     # dense path. 0.468 qwen35_moe is the exception: the published expert and
     # the published shared expert are both down(silu(gate) * up), so those
-    # layers insert mlp_mul. Other MoE kinds are unchanged.
+    # layers insert mlp_mul. 0.471 muse_swiglu does the same multiply on the
+    # latent expert only. There is no shared expert. Other MoE kinds are unchanged.
     # 0.469 kimi_situ replaces the historical SiLU counts. SituAndMul is not
     # silu(gate) * up, so those layers do not emit act or expert_act.
     return L.vec_kind in (
@@ -1706,6 +1707,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 raise ValueError("qwen35 moe expert is not swiglu")
             if L.vec_kind == "kimi_situ" and not f.gated:
                 raise ValueError("kimi situ expert is not situ")
+            if L.vec_kind == "muse_swiglu" and (not f.gated or f.latent <= 0 or f.n_shared):
+                raise ValueError("muse swiglu expert is not latent swiglu")
             if tokens <= 0 or n_exp <= 0:
                 return
             if zero and not f.groups:
@@ -1730,6 +1733,17 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(act)
                     ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
                                   a_fmt=model.act_fmt))
+                if L.vec_kind == "muse_swiglu":
+                    # Muse Spark latent experts: down(silu(gate) * up) at
+                    # moe_intermediate_size, after the pooler. SiLU stays
+                    # expert_act. The product is one multiply on the useful
+                    # token-expert pairs, not the latent width and not the
+                    # padded GEMM rows. a_fmt is the published expert
+                    # activation. Pre/post expert RMSNorm, the routing-weight
+                    # multiply, and the attention output gate are not this op.
+                    ops.append(act)
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
+                                  a_fmt=model.act_fmt_for(role)))
                 if L.vec_kind == "kimi_situ":
                     # KimiBlockSparseMLP: SituAndMul(cat(w1, w3)) then w2.
                     # The historical SiLU expert_act is not this formula.
@@ -1740,7 +1754,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(_situ_op(li, r.pairs_local * d_loc))
                 ops.append(replace(gemm(model, f"{name}.down", li, r.m_e, d_loc, ein, role, count=r.hit),
                                    share=u))
-                if L.vec_kind not in ("qwen35_moe", "kimi_situ"):
+                if L.vec_kind not in ("qwen35_moe", "kimi_situ", "muse_swiglu"):
                     ops.append(act)
             if sh.ep > 1:
                 pay = r.pairs_local * ein * ab

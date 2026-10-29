@@ -408,6 +408,9 @@ class Layer:
     # heads * head_dim (qwen3-8b, its fp8 and AWQ twins, and qwen3-1.7b).
     # 0.467 reuses qwen3 where q width is heads * head_dim and is not
     # hidden (qwen3-32b, its fp8 and AWQ twins, qwen3-4b, qwen3-0.6b).
+    # 0.471 Muse Spark latent MoE: muse_swiglu bills down(silu(gate) * up)
+    # on the routed expert only. There is no shared expert. Dense drafts
+    # stay untagged.
     # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
     # up and down, and fp32 LayerNorm on the four published norms.
     # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
@@ -596,6 +599,8 @@ class ModelSpec:
     # 0.467: the front-60 rows whose q width is heads * head_dim and is
     # not hidden reuse qwen3. q_rms width is that q width. k_rms width
     # is kv heads * head_dim. The residual norm stays hidden.
+    # 0.471: muse_swiglu bills the Muse Spark latent expert product.
+    # The historical final norm stays on the shared formula.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -5164,6 +5169,92 @@ def _tag_kimi_situ_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="kimi_situ", notes=spec.notes + (note,))
 
 
+# 0.471: Muse Spark latent MoE. The published expert is
+# down(silu(gate) * up) at moe_intermediate_size after the pooler.
+# There is no shared expert. Dense draft towers stay untagged.
+_MUSE_SWIGLU = frozenset({
+    "muse-spark-open",
+    "muse-spark-open-fp8",
+    "muse-spark-open-mxfp4",
+    "muse-spark-open-nvfp4",
+    "muse-spark-open-nvfp4-dspark",
+    "muse-spark-open-nvfp4-dflash2",
+})
+
+
+def _tag_muse_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.471: bill the published Muse Spark latent expert product.
+
+    The routed experts are down(silu(gate) * up) at moe_intermediate_size
+    after the latent pooler. These releases set hidden_act to silu. SiLU
+    stays expert_act. The product is mlp_mul on the useful token-expert
+    pairs. a_fmt is the published expert activation. There is no shared
+    expert. Pre-expert and post-expert RMSNorm, the routing-weight
+    multiply, and the attention output gate are not this bill. Dense MTP
+    drafts stay untagged. vec_kind is muse_swiglu so the historical final
+    norm is unchanged. No earlier allowlist is extended.
+    """
+    if spec.id not in _MUSE_SWIGLU:
+        return spec
+    if c.get("model_type") != "muse_spark_text":
+        raise ValueError("muse swiglu model_type is not muse_spark_text")
+    if c.get("architectures") != ["MuseSparkForConditionalGeneration"]:
+        raise ValueError("muse swiglu architecture is not muse")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("muse swiglu hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("muse swiglu swiglu_limit is set")
+    if c.get("num_shared_experts") != 0:
+        raise ValueError("muse swiglu shared experts are not zero")
+    h = c.get("hidden_size")
+    lat = c.get("moe_hidden_size")
+    de = c.get("moe_intermediate_size")
+    n_exp = c.get("num_local_experts")
+    topk = c.get("num_experts_per_tok")
+    depth = c.get("num_hidden_layers")
+
+    def _pos(v) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+    if not (_pos(h) and _pos(lat) and _pos(de) and _pos(n_exp) and _pos(topk) and _pos(depth)):
+        raise ValueError("muse swiglu expert width is not positive")
+    types = c.get("mlp_layer_types")
+    if not isinstance(types, list) or len(types) != depth or any(t != "sparse" for t in types):
+        raise ValueError("muse swiglu mlp layers are not all sparse")
+    if len(spec.layers) != depth:
+        raise ValueError("muse swiglu depth is not num_hidden_layers")
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "moe" or not f.gated or f.d_expert != de or f.top_k != topk
+                or f.n_experts != n_exp or f.latent != lat
+                or f.n_shared or f.d_shared or f.d_ff or f.zero_experts
+                or f.n_experts_b or f.d_expert_b or f.groups or f.expert_role):
+            raise ValueError("muse swiglu expert is not latent swiglu")
+        by = {ln.name: ln for ln in L.ffn_linears}
+        if set(by) != {"router", "latent_up", "latent_down"}:
+            raise ValueError("muse swiglu linears are not router and latent")
+        router, up, down = by["router"], by["latent_up"], by["latent_down"]
+        if router.k != h or router.n != n_exp or up.k != h or down.n != h:
+            raise ValueError("muse swiglu linears are not router and latent")
+        if up.n != lat or down.k != lat:
+            raise ValueError("muse swiglu latent width is not moe_hidden_size")
+    for L in spec.mtp_layers:
+        if L.vec_kind:
+            raise ValueError("muse swiglu mtp is already tagged")
+        if L.ffn.kind == "moe":
+            raise ValueError("muse swiglu mtp is not dense")
+    layers = tuple(replace(L, vec_kind="muse_swiglu") for L in spec.layers)
+    note = ("0.471: Muse Spark latent experts are down(silu(gate) * up) "
+            "at moe_intermediate_size, after the pooler. "
+            "SiLU stays expert_act. The product is mlp_mul. "
+            "a_fmt is the published expert activation. "
+            "There is no shared expert. "
+            "Pre-expert RMSNorm, post-expert RMSNorm, the routing-weight multiply, "
+            "and the attention output gate are not billed. "
+            "Dense MTP drafts stay untagged.")
+    return replace(spec, layers=layers, vec_kind="muse_swiglu", notes=spec.notes + (note,))
+
+
 _STEP_AUDIO = frozenset({
     "step-audio-2-mini",
     "step-audio-2-mini-base",
@@ -7307,7 +7398,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_llama3_vectors(
+    return _tag_muse_swiglu_vectors(
+        _tag_llama3_vectors(
         _tag_kimi_situ_vectors(
         _tag_qwen35_moe_vectors(
         _tag_llama2_vectors(
@@ -7326,7 +7418,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
