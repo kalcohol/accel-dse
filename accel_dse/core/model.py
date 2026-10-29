@@ -427,6 +427,10 @@ class Layer:
     # three dense layers and on the text-expert pool. The vision-expert pool
     # uses the same product only for multimodal tokens. The 28B rows stay
     # untagged. Block RMSNorm and 3-D RoPE stay on the historical ops.
+    # 0.477 MiniMax-Text-01 and MiniMax-M1: minimax_swiglu bills the same
+    # product on every routed expert. shared_intermediate_size is 0, so
+    # there is no shared expert. Lightning SiLU, the sigmoid output gate,
+    # post-norm placement, and the residual alpha stay off this tag.
     # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
     # up and down, and fp32 LayerNorm on the four published norms.
     # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
@@ -628,6 +632,8 @@ class ModelSpec:
     # 0.476: ernievl_swiglu bills the ERNIE-4.5-VL 424B SwiGLU product on
     # dense layers and on both expert pools. The historical final norm
     # stays on the shared formula.
+    # 0.477: minimax_swiglu bills the MiniMax-Text-01 and MiniMax-M1 routed
+    # expert product. The historical final norm stays on the shared formula.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -5919,6 +5925,166 @@ def _tag_ernievl_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="ernievl_swiglu", notes=spec.notes + (note,))
 
 
+# 0.477: MiniMax-Text-01 and MiniMax-M1 routed experts. The published MLP is
+# w2(silu(w1(x)) * w3(x)). shared_intermediate_size is 0, so the shared
+# MLP and its sigmoid coefficient are not built.
+_MINIMAX_SWIGLU = frozenset({"minimax-text-01", "minimax-m1-80k"})
+_MINIMAX_ARCH = {
+    "minimax-text-01": ("minimax_text_01", ["MiniMaxText01ForCausalLM"], "fp32"),
+    "minimax-m1-80k": ("minimax_m1", ["MiniMaxM1ForCausalLM"], "bf16"),
+}
+_MINIMAX_H = 6144
+_MINIMAX_DE = 9216
+_MINIMAX_DEPTH = 80
+_MINIMAX_EXP = 32
+_MINIMAX_TOPK = 2
+_MINIMAX_HEADS = 64
+_MINIMAX_KV = 8
+_MINIMAX_HD = 128
+_MINIMAX_ALPHA = 3.5565588200778455
+_MINIMAX_TYPES = [0, 0, 0, 0, 0, 0, 0, 1] * 10
+
+
+def _tag_minimax_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.477: bill the published MiniMax-Text-01 and MiniMax-M1 expert product.
+
+    MiniMaxText01BlockSparseTop2MLP and MiniMaxM1BlockSparseTop2MLP are
+    w2(ACT2FN["silu"](w1(x)) * w3(x)). hidden_act is silu. Linear bias is
+    false. The class does not upcast. SiLU stays expert_act. The product
+    is mlp_mul on the useful token-expert pairs. a_fmt follows act_fmt.
+    All 80 layers are this MoE: 32 experts, top-2, width 9216.
+    shared_intermediate_size is 0, so the shared MLP and the sigmoid
+    coefficient are not built. router_jitter_noise is 0, so the training
+    jitter multiply does not run. Block RMSNorm is the T5 recipe, but the
+    historical pre-norm ops already have the same vec and sfu, so this
+    bill does not retag them and does not move them to the published
+    post-norm residual. rotary_dim 64 matches the existing half-head rope
+    count on the 10 full-attention layers. Lightning SiLU on the fused
+    qkv, the sigmoid output gate, and the residual alpha are not this op.
+    vec_kind is minimax_swiglu. No earlier allowlist is extended.
+    """
+    if spec.id not in _MINIMAX_SWIGLU:
+        return spec
+    mt, arch, embed = _MINIMAX_ARCH[spec.id]
+    if c.get("model_type") != mt:
+        raise ValueError("minimax swiglu model_type is not the published pair")
+    if c.get("architectures") != arch:
+        raise ValueError("minimax swiglu architecture is not the published pair")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("minimax swiglu hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("minimax swiglu swiglu_limit is set")
+    if c.get("shared_intermediate_size") != 0:
+        raise ValueError("minimax swiglu shared expert is set")
+    if c.get("shared_moe_mode") != "sigmoid":
+        raise ValueError("minimax swiglu shared_moe_mode is not sigmoid")
+    for key in ("num_shared_experts", "n_shared_experts", "moe_intermediate_size",
+                "n_routed_experts", "num_experts", "first_k_dense_replace"):
+        if c.get(key):
+            raise ValueError("minimax swiglu shared or alternate expert key is set")
+    if c.get("mlp_layer_types"):
+        raise ValueError("minimax swiglu mlp_layer_types is set")
+    if c.get("postnorm") is not True:
+        raise ValueError("minimax swiglu postnorm is not true")
+    for key in ("layernorm_full_attention_alpha", "layernorm_linear_attention_alpha",
+                "layernorm_mlp_alpha"):
+        if c.get(key) != _MINIMAX_ALPHA:
+            raise ValueError("minimax swiglu layernorm alpha is not the release")
+    for key in ("layernorm_full_attention_beta", "layernorm_linear_attention_beta",
+                "layernorm_mlp_beta"):
+        if c.get(key) != 1.0:
+            raise ValueError("minimax swiglu layernorm beta is not 1")
+    if c.get("attn_type_list") != _MINIMAX_TYPES:
+        raise ValueError("minimax swiglu attn_type_list is not the published pattern")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("minimax swiglu attention_dropout is not 0")
+    if c.get("router_jitter_noise") not in (0, 0.0):
+        raise ValueError("minimax swiglu router_jitter_noise is not 0")
+    if c.get("output_router_logits") is not False:
+        raise ValueError("minimax swiglu output_router_logits is not false")
+    if c.get("sliding_window") is not None:
+        raise ValueError("minimax swiglu sliding_window is set")
+    if c.get("hidden_size") != _MINIMAX_H or c.get("intermediate_size") != _MINIMAX_DE:
+        raise ValueError("minimax swiglu width is not the text release")
+    if c.get("num_hidden_layers") != _MINIMAX_DEPTH:
+        raise ValueError("minimax swiglu depth is not 80")
+    if c.get("num_local_experts") != _MINIMAX_EXP or c.get("num_experts_per_tok") != _MINIMAX_TOPK:
+        raise ValueError("minimax swiglu experts are not 32 top-2")
+    if (c.get("num_attention_heads") != _MINIMAX_HEADS
+            or c.get("num_key_value_heads") != _MINIMAX_KV
+            or c.get("head_dim") != _MINIMAX_HD or c.get("rotary_dim") != _MINIMAX_HD // 2):
+        raise ValueError("minimax swiglu heads are not the text release")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("minimax swiglu tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-5:
+        raise ValueError("minimax swiglu rms_norm_eps is not 1e-5")
+    if c.get("quantization_config") is not None:
+        raise ValueError("minimax swiglu quantization_config is set")
+    if c.get("mtp_num_hidden_layers") or c.get("num_nextn_predict_layers"):
+        raise ValueError("minimax swiglu mtp is set")
+    if (spec.act_fmt != "bf16" or spec.fmt("expert").fmt != "bf16"
+            or spec.fmt("attn").fmt != "bf16" or spec.fmt("lm_head").fmt != "bf16"
+            or spec.quantized_release):
+        raise ValueError("minimax swiglu dtype is not bfloat16")
+    if spec.fmt("embed").fmt != embed:
+        raise ValueError("minimax swiglu embed dtype is not the release")
+    if spec.fmt("router").fmt != "fp32":
+        raise ValueError("minimax swiglu router is not fp32")
+    if spec.kv_fmt != "bf16" or spec.state_fmt != "fp32":
+        raise ValueError("minimax swiglu kv or state dtype is not the release")
+    if spec.final_norm_params not in (None, _MINIMAX_H):
+        raise ValueError("minimax swiglu final norm is not one")
+    if len(spec.layers) != _MINIMAX_DEPTH or spec.mtp_layers:
+        raise ValueError("minimax swiglu depth is not num_hidden_layers")
+    q_n = _MINIMAX_HEADS * _MINIMAX_HD
+    kv_n = _MINIMAX_KV * _MINIMAX_HD
+    for i, L in enumerate(spec.layers):
+        f = L.ffn
+        if (f.kind != "moe" or not f.gated or f.d_ff or f.n_experts != _MINIMAX_EXP
+                or f.top_k != _MINIMAX_TOPK or f.d_expert != _MINIMAX_DE
+                or f.n_shared or f.d_shared or f.latent or f.zero_experts
+                or f.n_experts_b or f.d_expert_b or f.groups or f.expert_role):
+            raise ValueError("minimax swiglu expert is not swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["router"]:
+            raise ValueError("minimax swiglu linears are not router")
+        router = L.ffn_linears[0]
+        if router.k != _MINIMAX_H or router.n != _MINIMAX_EXP or router.split != "rep":
+            raise ValueError("minimax swiglu linears are not router")
+        if _MINIMAX_TYPES[i] == 0:
+            if (L.core.kind != "linear" or L.core.lin != "lightning" or L.core.lin_chunk != 256
+                    or L.core.n_state_heads != _MINIMAX_HEADS or L.core.state_dk != _MINIMAX_HD
+                    or L.core.state_dv != _MINIMAX_HD or L.misc_params != q_n + 2 * _MINIMAX_H):
+                raise ValueError("minimax swiglu attention is not lightning")
+            if [ln.name for ln in L.attn_linears] != ["lin_qkv", "lin_gate", "lin_out"]:
+                raise ValueError("minimax swiglu attention is not lightning")
+            qkv, gate, out = L.attn_linears
+            if (qkv.k != _MINIMAX_H or qkv.n != 3 * q_n or gate.k != _MINIMAX_H
+                    or gate.n != q_n or out.k != q_n or out.n != _MINIMAX_H):
+                raise ValueError("minimax swiglu attention is not lightning")
+        else:
+            if (L.core.kind != "gqa" or L.core.n_q != _MINIMAX_HEADS
+                    or L.core.n_kv != _MINIMAX_KV or L.core.qk_dim != _MINIMAX_HD
+                    or L.core.v_dim != _MINIMAX_HD or L.core.window is not None
+                    or L.core.no_rope or L.core.rope_dim != 0 or L.core.out_gate_fn
+                    or L.misc_params != 2 * _MINIMAX_HD + 2 * _MINIMAX_H):
+                raise ValueError("minimax swiglu attention is not gqa")
+            if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+                raise ValueError("minimax swiglu attention is not qkv o")
+            q, k, v, o = L.attn_linears
+            if (q.k != _MINIMAX_H or q.n != q_n or k.n != kv_n or v.n != kv_n
+                    or o.k != q_n or o.n != _MINIMAX_H):
+                raise ValueError("minimax swiglu attention is not qkv o")
+    layers = tuple(replace(L, vec_kind="minimax_swiglu") for L in spec.layers)
+    note = ("0.477: MiniMax-Text-01 and MiniMax-M1 routed experts are "
+            "w2(silu(w1(x)) * w3(x)). SiLU stays expert_act. The product "
+            "is mlp_mul on the useful token-expert pairs. a_fmt follows "
+            "act_fmt. There is no shared expert. Lightning SiLU on qkv, "
+            "the sigmoid output gate, post-norm placement, the residual "
+            "alpha, and the routing-weight multiply are not billed. "
+            "The historical final norm stays on the shared formula.")
+    return replace(spec, layers=layers, vec_kind="minimax_swiglu", notes=spec.notes + (note,))
+
+
 _STEP_AUDIO = frozenset({
     "step-audio-2-mini",
     "step-audio-2-mini-base",
@@ -8062,7 +8228,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_ernievl_swiglu_vectors(
+    return _tag_minimax_swiglu_vectors(
+        _tag_ernievl_swiglu_vectors(
         _tag_jais3_swiglu_vectors(
         _tag_olmo3_swiglu_vectors(
         _tag_seed_swiglu_vectors(
@@ -8087,7 +8254,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

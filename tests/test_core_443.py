@@ -108,7 +108,7 @@ _MSA_LAST_LN = tuple(n for n in _MSA_LN if n not in ("msa_trans_ln", "pwa_m_ln",
 
 
 def test_version_is_443():
-    assert __version__ == "0.476.0"
+    assert __version__ == "0.477.0"
 
 
 def test_pairformer_layernorm_and_silu():
