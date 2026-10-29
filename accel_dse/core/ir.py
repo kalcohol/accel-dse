@@ -1340,6 +1340,7 @@ def _carbon_dense(L: Layer) -> bool:
     # second final norm is head-side only. Moshi rms_norm_f32 (0.457) is the
     # same pre-norm recipe and reuses carbon_llama. It has no q/k norm.
     # ERNIE-4.5 MoE (0.458) subclasses LlamaRMSNorm and reuses carbon_llama.
+    # Mistral-Large (0.462) is MistralForCausalLM and reuses mistral_small.
     # mlp_mul is inserted only when the FFN is dense gate_up/down. MoE layers
     # keep expert_act. Shared-expert products stay on that path.
     return L.vec_kind in (

@@ -100,7 +100,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_448():
-    assert __version__ == "0.461.0"
+    assert __version__ == "0.462.0"
 
 
 def test_granite_bills_fp32_rmsnorm_and_the_product():
@@ -309,7 +309,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "1e15ae85430a04f3"
+    assert _fp({}) == "a9cc980add47b869"
     assert "granite-4.1-30b" not in _FULL_0651
     assert "granite-4.2-8b" not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"

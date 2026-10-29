@@ -406,6 +406,8 @@ class Layer:
     # product, and head_dim q/k RMSNorm. Front-60 Qwen3 rows stay untagged.
     # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
     # up and down, and fp32 LayerNorm on the four published norms.
+    # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
+    # product, q width equals hidden). Other front-60 rows stay untagged.
     # "" keeps the shared full-forward assumption.
     vec_kind: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -582,6 +584,7 @@ class ModelSpec:
     # 0.456: OmniASR LLM text reuses carbon_llama (LlamaRMSNorm, no q/k norm).
     # 0.461: "whisper" bills the decoder LayerNorm (fp32, one rsqrt per token
     # row). final_norm_params is weight + bias, so the rsqrt count is one.
+    # 0.462: Mistral-Large reuses mistral_small for the same final RMSNorm.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -5027,6 +5030,83 @@ def _tag_mistral_small_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="mistral_small", notes=spec.notes + (note,))
 
 
+_MISTRAL_LARGE = frozenset({"mistral-large"})
+
+
+def _tag_mistral_large_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.462: bill published Mistral-Large RMSNorm and the SwiGLU product.
+
+    MistralForCausalLM uses MistralRMSNorm and MistralMLP, the same classes
+    as the Mistral-Small text tower. MistralRMSNorm matches T5LayerNorm:
+    fp32 mean of squares, one rsqrt, times weight. The MLP is
+    down(act_fn(gate) * up). Linear bias is hardcoded False. The published
+    hidden_act is silu. There is no q/k norm. Hidden norms stay pre-norm.
+    sliding_window is null, so the mask is causal. q width is
+    num_attention_heads * head_dim and equals hidden. vec_kind reuses
+    mistral_small. This id is inside the first 60 catalog rows. The
+    carbon_llama tag still requires model_type llama and does not accept
+    this checkpoint. Smaller front-60 rows stay on the shared tail.
+    """
+    if spec.id not in _MISTRAL_LARGE:
+        return spec
+    if c.get("model_type") != "mistral":
+        raise ValueError("mistral large model_type is not mistral")
+    if c.get("architectures") != ["MistralForCausalLM"]:
+        raise ValueError("mistral large architecture is not mistral")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("mistral large hidden_act is not silu")
+    if c.get("attention_bias") not in (None, False):
+        raise ValueError("mistral large attention_bias is not false")
+    if c.get("mlp_bias") not in (None, False):
+        raise ValueError("mistral large mlp_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("mistral large attention_dropout is not 0")
+    if c.get("sliding_window") is not None:
+        raise ValueError("mistral large sliding_window is not null")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("mistral large use_sliding_window is not false")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("mistral large rope_scaling is not null")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("mistral large layer_types is not full_attention")
+    hd = c.get("head_dim")
+    if "head_dim" not in c or isinstance(hd, bool) or not isinstance(hd, int) or hd <= 0:
+        raise ValueError("mistral large head_dim is missing")
+    h = c["hidden_size"]
+    heads = c["num_attention_heads"]
+    hkv = c["num_key_value_heads"]
+    if (not isinstance(h, int) or isinstance(h, bool) or h <= 0
+            or not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0
+            or not isinstance(hkv, int) or isinstance(hkv, bool) or hkv <= 0
+            or h != heads * hd):
+        raise ValueError("mistral large hidden is not heads times head_dim")
+    if spec.act_fmt != "bf16":
+        raise ValueError("mistral large activation dtype is not bf16")
+    if spec.fmt("mlp").fmt != "bf16" or spec.fmt("attn").fmt != "bf16":
+        raise ValueError("mistral large weight dtype is not bf16")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("mistral large final norm is not one")
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("mistral large mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("mistral large mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd or L.core.window is not None:
+            raise ValueError("mistral large attention is not gqa head_dim")
+        if L.misc_params != 2 * h:
+            raise ValueError("mistral large has no qk norm")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("mistral large attention is not q then k")
+        if by["q"].n != heads * hd or by["k"].n != hkv * hd or by["q"].n != h:
+            raise ValueError("mistral large qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="mistral_small") for L in spec.layers)
+    note = ("0.462：MistralRMSNorm 是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。没有 q/k norm。"
+            "q 宽等于 hidden。前 60 条里只打这一行。")
+    return replace(spec, layers=layers, vec_kind="mistral_small", notes=spec.notes + (note,))
+
+
 _QWEN2_TEXT = frozenset({
     "qwen2.5-omni-7b",
     "qwen2.5-omni-3b",
@@ -6575,7 +6655,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_whisper_decoder_vectors(
+    return _tag_mistral_large_vectors(
+        _tag_whisper_decoder_vectors(
         _tag_ernie_moe_vectors(
         _tag_moshi_vectors(
             _tag_omniasr_vectors(
@@ -6586,7 +6667,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
