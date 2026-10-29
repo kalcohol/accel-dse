@@ -6,6 +6,25 @@
 
 
 
+## [0.464.0] — 2026-10-29
+
+### Llama-2 与 Yi-1.5 补上已执行的 RMSNorm 和门控 MLP 相乘
+
+- **选择。** 前 60 条里还没入账、而且对得上现成 T5 RMSNorm、SiLU 和门乘的最大一行是 `llama-2-70b`（`NousResearch/Llama-2-70b-hf`，相乘元素 `80 * 28672 = 2,293,760`）。同一扇门干净地盖住 `llama-2-7b`（352,256）和 `yi-1.5-34b`（`60 * 20480 = 1,228,800`），所以三行一起打。不另打更小的 `qwen2.5-3b` / `qwen2.5-1.5b`，也不打 `qwen3-8b`。
+- **入账。** 没有新的激活种类，也没有新的 `vec_kind`。三行都打已有的 `carbon_llama`。不放宽 `_CARBON_LLAMA` / `_tag_carbon_vectors`：Carbon 仍要求 `attention_bias`、`mlp_bias`、`pretraining_tp` 这三个键出现在配置里，而且是 False / False / 1。删掉其中任何一个，Carbon 仍拒绝。新门只认这三行。省略的键按发布时的默认值读，不是新架构。transformers 4.31（Llama-2 的 `transformers_version` 是 `4.31.0.dev0`）里 `LlamaAttention` 和 `LlamaMLP` 把 bias 写死为 False，`attention_bias` / `mlp_bias` 还不是配置字段；`LlamaConfig.pretraining_tp` 默认是 1，走未切分的 `down(silu(gate) * up)`，大于 1 才切片。`llama-2-70b` 三个键都省略；`llama-2-7b` 写了 `pretraining_tp: 1` 和 `rope_scaling: null`，bias 仍省略。显式 False / False / 1 同样接受。transformers 4.37.2（Yi-1.5）的 MLP bias 仍写死为 False；Yi 发布了 `attention_bias: false`、`pretraining_tp: 1`、`rope_scaling: null`，只省略 `mlp_bias`。`rope_scaling` 不是 null 就拒绝，所以 Llama-3.x 仍不打。`LlamaRMSNorm` 是 T5 配方：fp32 归约，一次 rsqrt，再乘 weight。SiLU 仍叫 `act`。门乘是 `mlp_mul`。没有 q/k norm。q 宽等于 hidden。权重按发布：Llama-2 是 fp16，Yi 是 bf16，激活都是 bf16。`rope_theta` 和 `rms_norm_eps` 不改算子种类。Llama-2 的 `params()` 比 `release_params` 少 `80 * 64 = 5120` 和 `32 * 64 = 2048`，是 RoPE `inv_freq` 持久 buffer，打标之前就有，这一笔不改 `params()`。Yi 的 `rel_err` 是 0。`norm` 角色参数分别是 1,318,912、266,240、867,328。层上的 `misc_params` 是 `2 * hidden`。
+- **默认窗口。** 提示长度 4096。70B：隐藏 8192，inner 28672，80 层，64 / 8 头，head 128。7B：4096 / 11008 / 32 层 / 32 / 32。Yi：7168 / 20480 / 60 层 / 56 / 8，7168 = 56 * 128。`act` / `mlp_mul` / `attn_norm` / `ffn_norm` 的形状按 token 乘 inner 或 hidden，范数 `a_fmt` 是 fp32。`mlp.gate_up` 的 N 是 `2 * inner`，`mlp.down` 的 K 是 inner。`w_fmt` 按发布，`w_bits` 是 16。顺序是 `attn_norm`、`attn.qkv`、`attn.o`、`qk`、`pv`、`softmax`、`rope`、`ffn_norm`、`mlp.gate_up`、`act`、`mlp_mul`、`mlp.down`、`residual`。没有 `q_rms` / `k_rms` / `gelu`。`final_norm` 每个 token 一次 rsqrt。70B / 7B / Yi 的 80 / 32 / 60 层 FFN GEMM 之和分别是 461.794883665920、35.459249995776、216.466351718400 TFLOP。向量 FLOPs 是 0。GEMM 的名字、形状和 FLOPs 不变。
+- **TP2 和请求 fp8。** 没有发布的 fp8 行。TP2 切中间维，不复制范数。本地 inner 是 14336 / 5504 / 10240。请求 fp8（把 `act_fmt` 换成 fp8，不重跑打标）：`act` 和 `mlp_mul` 的 `a_fmt` 是 fp8。范数仍是 fp32。GEMM 的 `a_fmt` 是 fp8，`w_fmt` 仍是发布的 fp16 或 bf16，`w_bits` 仍是 16。
+- **延迟例子。** 100T 没有 SFU，所以只有 `mlp_mul` 改时间。预填充 4096 的增量：70B 是 0.002621440 s，7B 是 0.000402578 s，Yi 是 0.001404343 s，LPDDR 和 HBM、os 和 reconf 相同。70B LPDDR os 从 6.011810624 s 变成 6.014432064 s（6.0 s，MAC，放不下），reconf 从 5.861824117 s 变成 5.864445557 s（5.9 s）。HBM3E os 从 6.009203961 s 变成 6.011825401 s（6.0 s，放得下），reconf 从 5.859071436 s 变成 5.861692876 s（5.9 s）。7B 四个窗口都仍是 0.6 s、MAC、放得下。Yi 的 LPDDR os / reconf 仍是 3.0 s / 2.9 s（放不下），HBM3E 仍是 3.0 s / 2.9 s（放得下）。三行的 LPDDR 解码 tick 逐位相同（DRAM）。HBM3E 解码的 6 位小数有的动，`round(tick, 1)` 不动；70B reconf 解码从 0.040315698 s 降到 0.040315086 s，仍是 0.0 s、DRAM。HBM3E、os、TP 1 / 2 / 4 / 8 的预填充 `round(tick, 1)`：70B 仍是 6.0 / 3.0 / 1.6 / 0.8 s，7B 仍是 0.6 / 0.3 / 0.2 / 0.1 s，Yi 仍是 3.0 / 1.5 / 0.8 / 0.4 s，打标前后都放得下。H100-SXM 预填充 8192：70B 从 1.265428068 s 变成 1.266054779 s（1.3 s，放不下），7B 从 0.129853910 s 变成 0.129950155 s（0.1 s，放得下），Yi 从 0.634856544 s 变成 0.635192282 s（0.6 s，放得下）。预填充 batch 2 的 `round(tick, 1)`：70B 仍是 11.9 s，7B 仍是 1.2 s，Yi 仍是 5.9 s。测过的窗口里没有 0.1 s 改档。`docs/MODEL.md` §380 记下这笔 pre-norm。
+- **指纹。** 前 60 条的 stage 指纹仍是 `f54f33dfa13cdd41`。默认 pipe 从 `a9cc980add47b869` 变成 `25e9cd50ab57455e`。去掉 DeepSeek-V4 之后 stage 仍是 `5c058c9ed0f8f61e`，pipe 从 `3edea3089f76e9ee` 变成 `a1484d51a9ad1ed3`。锁定窗口是解码。LPDDR 解码 tick 逐位相同，pipe 哈希仍变，因为哈希盖住默认、SLC、SLC/LRU 和 TP2 的整份 summary。KPI 不动：`yi-1.5-34b` 仍是 `4a9848721f34`，`qwen2.5-72b` 仍是 `51b90d8f5e68`，`mistral-large` 仍是 `4ce7bca4c910`，`esmfold` 仍是 `3bbede544308`，ESM-2 3B 仍是 `34f7544287cd`，Wan2.1-1.3B 仍是 `309919c00604`。`llama-2-70b` 和 `llama-2-7b` 不在这张表里。
+- **不改。** 不新写激活种类。不改 GEMM 名字、形状和 FLOPs。不新开目录行。不重做 0.445–0.463，包括 Mistral-Large 和 Qwen2.5-72B。前 60 条的末尾仍是 `wan2.1-14b` 和 `wan2.1-1.3b`。
+- **未纳入：**
+  - **`qwen2.5-3b`、`qwen2.5-1.5b`。** 现成的 `qwen2_text` 对得上，但比这三行里最大的小，而且不是同一扇门。这一轮不打。
+  - **`qwen3-8b`、`qwen3-8b-fp8`、`qwen3-8b-awq`、`qwen3-1.7b`。** hidden 等于头数乘 `head_dim`，有 q/k RMS，走 Qwen3 名单。比 `llama-2-70b` 小。这一轮不放宽名单。
+  - **`qwen3-32b`、`qwen3-4b`、`qwen3-0.6b`。** hidden 不等于头数乘 `head_dim`。不放宽。
+  - **Llama-3.x 带 `rope_scaling`、Olmo 整段投影 q/k、Jais 分组 RMS、Gemma-4 的 tanh-GELU 和 `1 + weight`、Qwen3.5、TTS / ASR 的 mRoPE、Fun-ASR-Nano、Granite 的非 0.5 残差、ERNIE 0.3B / VL、MoE 专家相乘。** 对不上现成门。
+
+
+
 ## [0.463.0] — 2026-10-29
 
 ### Qwen2.5-72B 补上已执行的 RMSNorm 和门控 MLP 相乘

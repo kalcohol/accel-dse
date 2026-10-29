@@ -40,9 +40,9 @@ _FFN = 476_225_973_780_480
 # Front-60 rows that stay on the shared tail. Smaller than this row, or the
 # published config fails an existing gate.
 _UNTOUCHED = (
+    # 0.464 bills llama-2-70b, llama-2-7b, and yi-1.5-34b with carbon_llama.
     "qwen2.5-3b", "qwen2.5-1.5b",
-    "llama-2-70b", "llama-2-7b", "llama-3.1-8b",
-    "yi-1.5-34b",
+    "llama-3.1-8b",
     "qwen3-8b", "qwen3-8b-fp8", "qwen3-8b-awq", "qwen3-1.7b", "qwen3-32b",
     "mistral-7b", "mixtral-8x22b", "magistral-small",
 )
@@ -110,7 +110,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_463():
-    assert __version__ == "0.463.0"
+    assert __version__ == "0.464.0"
 
 
 def test_qwen25_72b_is_the_front60_row_and_reuses_qwen2_text():
@@ -385,11 +385,12 @@ def _fpx(top):
 def test_fingerprints_and_kpi():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651, _kpi
-    # Decode summaries in the locked windows do not move, so the hashes stay.
+    # 0.463 left these hashes in place. 0.464 moves the default pipe and the
+    # no-DeepSeek-V4 pipe. Stage hashes stay.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "a9cc980add47b869"
+    assert _fp({}) == "25e9cd50ab57455e"
     assert _fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e"
-    assert _fpx({}) == "3edea3089f76e9ee"
+    assert _fpx({}) == "a1484d51a9ad1ed3"
     from accel_dse.core import evaluate as E
     with E.model_flags(FUSE_QKV=False):
         assert _kpi("qwen2.5-72b") == "51b90d8f5e68"
