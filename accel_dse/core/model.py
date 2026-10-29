@@ -434,6 +434,10 @@ class Layer:
     # 0.478 ERNIE-4.5-300B: ernie300_swiglu bills the same product on the
     # routed experts. Dense layers stay carbon_llama. moe_num_shared_experts
     # is 0. The 21B rows stay on the 0.458 dense-only bill.
+    # 0.479 GLM-5 / GLM-5.2 / GLM-5.3 and Atria-Dawn: glm5_swiglu bills
+    # down(silu(gate) * up) on the three dense MLPs, on the routed experts,
+    # and on the one shared expert. GLM-5.3 and Atria-Dawn-FP8 keep the
+    # released dynamic fp8 activation. GLM-5.3-Flash stays untagged.
     # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
     # up and down, and fp32 LayerNorm on the four published norms.
     # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
@@ -639,6 +643,9 @@ class ModelSpec:
     # expert product. The historical final norm stays on the shared formula.
     # 0.478: ernie300_swiglu bills the ERNIE-4.5-300B routed expert product.
     # The 0.458 final RMSNorm stays on the carbon_llama formula.
+    # 0.479: glm5_swiglu bills the GLM-5 / GLM-5.2 / GLM-5.3 / Atria-Dawn
+    # dense, routed, and shared SwiGLU product. The historical final norm
+    # stays on the shared formula.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -6257,6 +6264,212 @@ def _tag_ernie300_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="ernie300_swiglu", notes=spec.notes + (note,))
 
 
+# 0.479: GLM-5, GLM-5.2, GLM-5.3, Atria-Dawn, and Atria-Dawn-FP8.
+# GlmMoeDsaMLP and GlmMoeDsaExperts are both act_fn(gate) * up, then down.
+# The shared expert is one GlmMoeDsaMLP of width moe_intermediate_size *
+# n_shared_experts. GLM-5.3-Flash is Glm5Next and is not this class.
+_GLM5_SWIGLU_BF16 = frozenset({
+    "glm-5",
+    "glm-5.2",
+    "atria-dawn",
+})
+_GLM5_SWIGLU_FP8 = frozenset({
+    "glm-5.3",
+    "atria-dawn-fp8",
+})
+_GLM5_SWIGLU = _GLM5_SWIGLU_BF16 | _GLM5_SWIGLU_FP8
+_GLM5_H = 6144
+_GLM5_INNER = 12288
+_GLM5_DE = 2048
+_GLM5_DEPTH = 78
+_GLM5_DENSE = 3
+_GLM5_EXP = 256
+_GLM5_TOPK = 8
+_GLM5_HEADS = 64
+_GLM5_QK = 256
+_GLM5_ROPE = 64
+_GLM5_V = 256
+_GLM5_KV = 512
+_GLM5_IDX = 32
+_GLM5_IDX_DIM = 128
+_GLM5_INDEX_TOPK = 2048
+_GLM5_MISC_DENSE = 15104
+_GLM5_MISC_MOE = 15104
+_GLM5_MISC_MOE_IDX = 15360
+
+
+def _tag_glm5_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.479: bill the published GLM-5 / Atria SwiGLU product.
+
+    GlmMoeDsaMLP.forward (transformers v5.10.2 modeling_glm_moe_dsa.py) is
+    down_proj(act_fn(gate_proj(x)) * up_proj(x)). GlmMoeDsaExperts is
+    act_fn(gate) * up, then down_proj. hidden_act is silu. Neither class
+    upcasts. Dense SiLU stays act. Routed SiLU stays expert_act. The
+    product is mlp_mul. On dense layers the width is intermediate_size.
+    On routed experts it is the useful token-expert pairs times the local
+    expert width, not the padded GEMM rows. On the shared expert it is
+    every token times moe_intermediate_size * n_shared_experts. a_fmt
+    follows act_fmt. Shared SiLU stays unbilled, the same way 0.468 left
+    the Qwen3.5 shared SiLU off this path. There is no new activation kind.
+
+    Layers 0-2 are dense GlmMoeDsaMLP at intermediate_size 12288. Layers
+    3-77 are MoE: 256 experts, top-8, width 2048, one shared expert of
+    width 2048. The main-stack product is
+    3 * 12288 + 75 * (8 + 1) * 2048 = 1,419,264 per token. The MTP block
+    is the same MoE class and stays untagged, so this count does not
+    include it. vec_kind is glm5_swiglu. No earlier allowlist is extended.
+
+    glm-5, glm-5.2, and atria-dawn store bf16 weights and bf16 activations.
+    glm-5.3 and atria-dawn-fp8 are dynamic fp8 on the MLP, expert, shared
+    expert, and attention weights, with fp8 activations. The router linear
+    stays bf16. A width what-if leaves the row untagged. GLM-5.3-Flash is
+    a different class and stays untagged. Block RMSNorm is the T5 recipe,
+    but the historical attn_norm / ffn_norm / final_norm already have the
+    same element width and one rsqrt per token, so this bill does not
+    move them. The routing-weight multiply after down is not this op.
+    """
+    if spec.id not in _GLM5_SWIGLU:
+        return spec
+    if c.get("model_type") != "glm_moe_dsa":
+        raise ValueError("glm5 swiglu model_type is not glm_moe_dsa")
+    if c.get("architectures") != ["GlmMoeDsaForCausalLM"]:
+        raise ValueError("glm5 swiglu architecture is not glm_moe_dsa")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("glm5 swiglu hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("glm5 swiglu swiglu_limit is set")
+    if c.get("attention_bias") is not False:
+        raise ValueError("glm5 swiglu attention_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("glm5 swiglu attention_dropout is not 0")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("glm5 swiglu rope_scaling is set")
+    # Product geometry is the as-released 78 / 3 / 12288 / 256 / 8 / 2048
+    # / 1 shared shape. A what-if that leaves it stays untagged.
+    if (c.get("hidden_size") != _GLM5_H or c.get("intermediate_size") != _GLM5_INNER
+            or c.get("moe_intermediate_size") != _GLM5_DE
+            or c.get("num_hidden_layers") != _GLM5_DEPTH
+            or c.get("first_k_dense_replace") != _GLM5_DENSE
+            or c.get("moe_layer_freq") != 1
+            or c.get("n_routed_experts") != _GLM5_EXP
+            or c.get("num_experts_per_tok") != _GLM5_TOPK
+            or c.get("n_shared_experts") != 1):
+        return spec
+    if c.get("n_group") != 1 or c.get("topk_group") != 1:
+        raise ValueError("glm5 swiglu groups are not one")
+    if c.get("scoring_func") != "sigmoid" or c.get("topk_method") != "noaux_tc":
+        raise ValueError("glm5 swiglu router is not sigmoid noaux_tc")
+    if c.get("norm_topk_prob") is not True:
+        raise ValueError("glm5 swiglu norm_topk_prob is not true")
+    if c.get("routed_scaling_factor") != 2.5:
+        raise ValueError("glm5 swiglu routed_scaling_factor is not 2.5")
+    if c.get("num_attention_heads") != _GLM5_HEADS:
+        raise ValueError("glm5 swiglu heads are not 64")
+    if c.get("head_dim") not in (64, 192):
+        raise ValueError("glm5 swiglu head_dim is not the release")
+    if (c.get("qk_nope_head_dim") != 192 or c.get("qk_rope_head_dim") != _GLM5_ROPE
+            or c.get("v_head_dim") != _GLM5_V or c.get("kv_lora_rank") != _GLM5_KV
+            or c.get("q_lora_rank") != 2048):
+        raise ValueError("glm5 swiglu mla width is not the release")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("glm5 swiglu tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-5:
+        raise ValueError("glm5 swiglu rms_norm_eps is not 1e-5")
+    for key in ("dtype", "torch_dtype"):
+        if key in c and c.get(key) not in (None, "bfloat16"):
+            raise ValueError("glm5 swiglu dtype is not bfloat16")
+    if c.get("dtype") != "bfloat16" and c.get("torch_dtype") != "bfloat16":
+        raise ValueError("glm5 swiglu dtype is not bfloat16")
+    if (c.get("num_nextn_predict_layers") or 0) != 1 or len(spec.mtp_layers) != 1:
+        raise ValueError("glm5 swiglu mtp count is not 1")
+    qcfg = c.get("quantization_config")
+    if spec.id in _GLM5_SWIGLU_BF16:
+        if qcfg is not None or spec.quantized_release:
+            raise ValueError("glm5 swiglu quantization_config is set")
+        if spec.act_fmt != "bf16":
+            raise ValueError("glm5 swiglu activation dtype is not bf16")
+        for role in ("mlp", "expert", "shared_expert", "attn"):
+            if spec.fmt(role).fmt != "bf16":
+                raise ValueError("glm5 swiglu weight dtype is not bf16")
+    else:
+        if not isinstance(qcfg, dict) or qcfg.get("quant_method") != "fp8":
+            raise ValueError("glm5 swiglu quant method is not fp8")
+        if qcfg.get("activation_scheme") != "dynamic":
+            raise ValueError("glm5 swiglu activation_scheme is not dynamic")
+        if spec.act_fmt != "fp8" or not spec.quantized_release:
+            raise ValueError("glm5 swiglu activation is not fp8")
+        for role in ("mlp", "expert", "shared_expert", "attn"):
+            if spec.fmt(role).fmt != "fp8":
+                raise ValueError("glm5 swiglu weight dtype is not fp8")
+        if spec.fmt("embed").fmt != "bf16" or spec.fmt("lm_head").fmt != "bf16":
+            raise ValueError("glm5 swiglu embed is not bf16")
+    if spec.fmt("router").fmt != "bf16":
+        raise ValueError("glm5 swiglu router is not bf16")
+    if spec.kv_fmt != "bf16":
+        raise ValueError("glm5 swiglu kv dtype is not bf16")
+    if len(spec.layers) != _GLM5_DEPTH:
+        raise ValueError("glm5 swiglu depth is not num_hidden_layers")
+    for i, L in enumerate(spec.layers):
+        if (L.core.kind != "mla" or L.core.n_q != _GLM5_HEADS
+                or L.core.qk_dim != _GLM5_QK or L.core.rope_dim != _GLM5_ROPE
+                or L.core.v_dim != _GLM5_V or L.core.kv_lora != _GLM5_KV
+                or L.core.topk != _GLM5_INDEX_TOPK or L.core.window is not None):
+            raise ValueError("glm5 swiglu attention is not mla")
+        names = [ln.name for ln in L.attn_linears]
+        if L.core.idx_heads == _GLM5_IDX:
+            if (L.core.idx_dim != _GLM5_IDX_DIM or L.core.idx_fp8
+                    or names != ["q_a", "q_b", "kv_a", "kv_b", "o", "idx_q", "idx_k", "idx_w"]):
+                raise ValueError("glm5 swiglu indexer is not the release")
+        elif L.core.idx_heads == 0:
+            if i < _GLM5_DENSE or L.core.idx_dim or names != ["q_a", "q_b", "kv_a", "kv_b", "o"]:
+                raise ValueError("glm5 swiglu indexer is not the release")
+        else:
+            raise ValueError("glm5 swiglu indexer is not the release")
+        f = L.ffn
+        if i < _GLM5_DENSE:
+            if (f.kind != "dense" or not f.gated or f.d_ff != _GLM5_INNER
+                    or f.n_experts or f.n_shared or f.d_shared or f.latent
+                    or L.misc_params != _GLM5_MISC_DENSE
+                    or L.core.idx_heads != _GLM5_IDX):
+                raise ValueError("glm5 swiglu dense mlp is not swiglu")
+            if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("glm5 swiglu dense mlp is not gate_up then down")
+            up, down = L.ffn_linears
+            if (up.k != _GLM5_H or up.n != 2 * _GLM5_INNER
+                    or down.k != _GLM5_INNER or down.n != _GLM5_H):
+                raise ValueError("glm5 swiglu dense mlp is not gate_up then down")
+        else:
+            expect_misc = _GLM5_MISC_MOE_IDX if L.core.idx_heads else _GLM5_MISC_MOE
+            if (f.kind != "moe" or not f.gated or f.d_ff or f.n_experts != _GLM5_EXP
+                    or f.top_k != _GLM5_TOPK or f.d_expert != _GLM5_DE
+                    or f.n_shared != 1 or f.d_shared != _GLM5_DE or f.latent
+                    or f.zero_experts or f.n_experts_b or f.d_expert_b or f.groups
+                    or f.expert_role or L.misc_params != expect_misc):
+                raise ValueError("glm5 swiglu expert is not swiglu")
+            if [ln.name for ln in L.ffn_linears] != ["router", "shared_gate_up", "shared_down"]:
+                raise ValueError("glm5 swiglu linears are not router and shared")
+            router, shared_up, shared_down = L.ffn_linears
+            if (router.k != _GLM5_H or router.n != _GLM5_EXP or router.split != "rep"
+                    or shared_up.k != _GLM5_H or shared_up.n != 2 * _GLM5_DE
+                    or shared_down.k != _GLM5_DE or shared_down.n != _GLM5_H):
+                raise ValueError("glm5 swiglu linears are not router and shared")
+    mtp = spec.mtp_layers[0]
+    if mtp.vec_kind not in ("",):
+        raise ValueError("glm5 swiglu mtp vec_kind is not empty")
+    if (mtp.ffn.kind != "moe" or not mtp.ffn.gated or mtp.ffn.n_experts != _GLM5_EXP
+            or mtp.ffn.top_k != _GLM5_TOPK or mtp.ffn.d_expert != _GLM5_DE
+            or mtp.ffn.n_shared != 1 or mtp.ffn.d_shared != _GLM5_DE):
+        raise ValueError("glm5 swiglu mtp is not the release moe")
+    layers = tuple(replace(L, vec_kind="glm5_swiglu") for L in spec.layers)
+    note = ("0.479: GLM-5, GLM-5.2, GLM-5.3, and Atria-Dawn are "
+            "down(silu(gate) * up) on the dense MLP, the routed experts, "
+            "and the one shared expert. SiLU stays act or expert_act. "
+            "The product is mlp_mul. a_fmt follows act_fmt. Shared SiLU "
+            "stays unbilled. The MTP block, the routing-weight multiply, "
+            "and the historical RMSNorm stay off this op.")
+    return replace(spec, layers=layers, vec_kind="glm5_swiglu", notes=spec.notes + (note,))
+
+
 _STEP_AUDIO = frozenset({
     "step-audio-2-mini",
     "step-audio-2-mini-base",
@@ -8400,7 +8613,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_ernie300_swiglu_vectors(
+    return _tag_glm5_swiglu_vectors(
+        _tag_ernie300_swiglu_vectors(
         _tag_minimax_swiglu_vectors(
         _tag_ernievl_swiglu_vectors(
         _tag_jais3_swiglu_vectors(
@@ -8427,7 +8641,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

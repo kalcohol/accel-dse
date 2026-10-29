@@ -96,7 +96,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_475():
-    assert __version__ == "0.478.0"
+    assert __version__ == "0.479.0"
 
 
 def test_two_rows_bill_the_dense_product():
@@ -167,7 +167,7 @@ def test_two_rows_bill_the_dense_product():
     assert get_model("seed-oss-36b").vec_kind == "seed_swiglu"
     assert get_model("mixtral-8x22b").vec_kind == "mixtral_swiglu"
     assert get_model("minimax-text-01").vec_kind == "minimax_swiglu"
-    assert get_model("glm-5.3").vec_kind == ""
+    assert get_model("glm-5.3").vec_kind == "glm5_swiglu"
 
 
 def test_default_window_product_and_gemm_flops():
