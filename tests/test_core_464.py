@@ -51,7 +51,8 @@ _UNTOUCHED = (
     "llama-3.1-8b",
     # 0.465 bills qwen3-8b, its fp8 and AWQ twins, and qwen3-1.7b with qwen3.
     # 0.467 bills qwen3-32b, its fp8 and AWQ twins, qwen3-4b, and qwen3-0.6b.
-    "mistral-7b", "mixtral-8x22b", "magistral-small",
+    # 0.472 bills mixtral-8x22b with mixtral_swiglu.
+    "mistral-7b", "magistral-small",
 )
 
 
@@ -121,7 +122,7 @@ def _ffn(depth: int, h: int, inner: int, t: int = 4096) -> int:
 
 
 def test_version_is_464():
-    assert __version__ == "0.471.0"
+    assert __version__ == "0.472.0"
 
 
 def test_three_rows_are_front60_and_reuse_carbon_llama():
@@ -464,9 +465,9 @@ def test_fingerprints_and_kpi():
     # LPDDR decode ticks stay bit-identical. The pipe hash covers the full
     # summary, so the default pipe and the no-DeepSeek-V4 pipe move.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "19cac027be730bc4"
+    assert _fp({}) == "afa0f7989c12811a"
     assert _fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e"
-    assert _fpx({}) == "0f2c94a6e5524bc5"
+    assert _fpx({}) == "eb4847bbe1543d12"
     from accel_dse.core import evaluate as E
     with E.model_flags(FUSE_QKV=False):
         assert _kpi("yi-1.5-34b") == "4a9848721f34"

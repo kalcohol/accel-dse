@@ -45,7 +45,8 @@ _UNTOUCHED = (
     "llama-3.1-8b",
     # 0.465 bills qwen3-8b, its fp8 and AWQ twins, and qwen3-1.7b with qwen3.
     # 0.467 bills qwen3-32b, its fp8 and AWQ twins, qwen3-4b, and qwen3-0.6b.
-    "mistral-7b", "mixtral-8x22b", "magistral-small",
+    # 0.472 bills mixtral-8x22b with mixtral_swiglu.
+    "mistral-7b", "magistral-small",
 )
 
 
@@ -111,7 +112,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_463():
-    assert __version__ == "0.471.0"
+    assert __version__ == "0.472.0"
 
 
 def test_qwen25_72b_is_the_front60_row_and_reuses_qwen2_text():
@@ -395,9 +396,9 @@ def test_fingerprints_and_kpi():
     # 0.463 left these hashes in place. 0.464 moves the default pipe and the
     # no-DeepSeek-V4 pipe. Stage hashes stay.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "19cac027be730bc4"
+    assert _fp({}) == "afa0f7989c12811a"
     assert _fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e"
-    assert _fpx({}) == "0f2c94a6e5524bc5"
+    assert _fpx({}) == "eb4847bbe1543d12"
     from accel_dse.core import evaluate as E
     with E.model_flags(FUSE_QKV=False):
         assert _kpi("qwen2.5-72b") == "51b90d8f5e68"

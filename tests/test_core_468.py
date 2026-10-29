@@ -103,7 +103,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_468():
-    assert __version__ == "0.471.0"
+    assert __version__ == "0.472.0"
 
 
 def test_fifteen_rows_bill_the_published_product():
@@ -249,7 +249,7 @@ def test_other_moe_rows_stay_untagged():
         li = next(i for i, L in enumerate(m.layers) if L.ffn.kind == "moe") if any(
             L.ffn.kind == "moe" for L in m.layers) else 0
         assert "mlp_mul" not in _names(build_rank_ops(m, li, ph, Shard())) or m.vec_kind in (
-            "qwen3", "carbon_llama", "qwen2_text")
+            "qwen3", "carbon_llama", "qwen2_text", "mixtral_swiglu")
     ernie = get_model("ernie-4.5-300b-a47b-pt")
     li = next(i for i, L in enumerate(ernie.layers) if L.ffn.kind == "moe")
     names = _names(build_rank_ops(ernie, li, ph, Shard()))
@@ -311,7 +311,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_125 import test_fingerprints_change_only_v4
     from tests.test_core_coverage import _FULL_0651, _kpi
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "19cac027be730bc4"
+    assert _fp({}) == "afa0f7989c12811a"
     test_fingerprints_change_only_v4()
     pins = {
         "qwen3-32b": "b975b7b3760e",
