@@ -1387,6 +1387,10 @@ def _carbon_dense(L: Layer) -> bool:
     # 0.475 jais3_swiglu does the same multiply on the Jais-3-32B dense MLP.
     # SiLU stays act. Group RMSNorm (4 groups, fp32) stays on the historical
     # pre-norm ops. query_key_norm is false. rope_head_dim equals head_dim.
+    # 0.476 ernievl_swiglu does the same multiply on ERNIE-4.5-VL 424B.
+    # Dense layers use Ernie4_5_MLP. Text experts and vision experts use
+    # Ernie4_5_MoeMLP. Vision experts run only on multimodal tokens.
+    # Block RMSNorm and the 3-D RoPE frequency split stay on the historical ops.
     # 0.469 kimi_situ replaces the historical SiLU counts. SituAndMul is not
     # silu(gate) * up, so those layers do not emit act or expert_act.
     return L.vec_kind in (
@@ -1718,6 +1722,22 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 if l.name == "gate_up":
                     ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
                     ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
+        elif L.vec_kind == "ernievl_swiglu":
+            # Ernie4_5_MLP: down_proj(F.silu(gate_proj(x)) * up_proj(x)).
+            # hidden_act is silu. The class does not upcast. SiLU stays act.
+            # The product is mlp_mul on the intermediate width, not the fused
+            # gate_up rows. These are the dense layers before the MoE interval.
+            # RMSNorm and the 3-D RoPE frequency split stay on the historical ops.
+            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("ernievl swiglu mlp is not gate_up then down")
+            nact = t * _cdiv(f.d_ff, tp)
+            af = model.act_fmt
+            for l in L.ffn_linears:
+                k, n = _lin_local(l, tp)
+                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
+                if l.name == "gate_up":
+                    ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
         else:
             for l in L.ffn_linears:
                 k, n = _lin_local(l, tp)
@@ -1778,6 +1798,11 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     or f.n_experts_b or f.d_expert_b or f.zero_experts or f.groups
                     or f.expert_role):
                 raise ValueError("mixtral swiglu expert is not swiglu")
+            if L.vec_kind == "ernievl_swiglu" and (
+                    not f.gated or f.latent or f.n_shared or f.d_shared or f.d_ff
+                    or not f.n_experts_b or not f.d_expert_b or f.zero_experts
+                    or f.groups or f.expert_role):
+                raise ValueError("ernievl swiglu expert is not swiglu")
             if tokens <= 0 or n_exp <= 0:
                 return
             if zero and not f.groups:
@@ -1823,6 +1848,17 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(act)
                     ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
                                   a_fmt=model.act_fmt))
+                if L.vec_kind == "ernievl_swiglu":
+                    # Ernie4_5_MoeMLP: down(F.silu(gate) * up). SiLU stays
+                    # expert_act (text pool) or expert_b.act (vision pool).
+                    # The product is one multiply on the useful token-expert
+                    # pairs, not the padded GEMM rows and not the capacity
+                    # buffer. a_fmt follows act_fmt. The vision pool is only
+                    # invoked for multimodal tokens. There is no shared expert.
+                    # The routing-weight multiply is not this op.
+                    ops.append(act)
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
+                                  a_fmt=model.act_fmt))
                 if L.vec_kind == "kimi_situ":
                     # KimiBlockSparseMLP: SituAndMul(cat(w1, w3)) then w2.
                     # The historical SiLU expert_act is not this formula.
@@ -1833,7 +1869,9 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(_situ_op(li, r.pairs_local * d_loc))
                 ops.append(replace(gemm(model, f"{name}.down", li, r.m_e, d_loc, ein, role, count=r.hit),
                                    share=u))
-                if L.vec_kind not in ("qwen35_moe", "kimi_situ", "muse_swiglu", "mixtral_swiglu"):
+                if L.vec_kind not in (
+                        "qwen35_moe", "kimi_situ", "muse_swiglu", "mixtral_swiglu",
+                        "ernievl_swiglu"):
                     ops.append(act)
             if sh.ep > 1:
                 pay = r.pairs_local * ein * ab

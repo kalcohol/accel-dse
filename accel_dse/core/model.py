@@ -423,6 +423,10 @@ class Layer:
     # of the bf16 row and the FP8 row. The class does not upcast. Group
     # RMSNorm, the missing q/k norm, and full-head RoPE stay off this tag.
     # Smaller Jais rows stay untagged.
+    # 0.476 ERNIE-4.5-VL 424B: ernievl_swiglu bills F.silu(gate) * up on the
+    # three dense layers and on the text-expert pool. The vision-expert pool
+    # uses the same product only for multimodal tokens. The 28B rows stay
+    # untagged. Block RMSNorm and 3-D RoPE stay on the historical ops.
     # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
     # up and down, and fp32 LayerNorm on the four published norms.
     # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
@@ -621,6 +625,9 @@ class ModelSpec:
     # The historical final norm stays on the shared formula.
     # 0.475: jais3_swiglu bills the Jais-3-32B dense SwiGLU product.
     # The historical final norm stays on the shared formula.
+    # 0.476: ernievl_swiglu bills the ERNIE-4.5-VL 424B SwiGLU product on
+    # dense layers and on both expert pools. The historical final norm
+    # stays on the shared formula.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -5742,6 +5749,176 @@ def _tag_jais3_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="jais3_swiglu", notes=spec.notes + (note,))
 
 
+# 0.476: ERNIE-4.5-VL 424B. Dense layers are Ernie4_5_MLP. MoE layers route
+# text tokens through Ernie4_5_MoeMLP of width moe_intermediate_size[0]
+# and multimodal tokens through the second pool. Both forwards are
+# down(F.silu(gate) * up). There is no shared expert on this release.
+_ERNIEVL_SWIGLU = frozenset({
+    "ernie-4.5-vl-424b-a47b-pt",
+    "ernie-4.5-vl-424b-a47b",
+})
+_ERNIEVL_H = 8192
+_ERNIEVL_INNER = 28672
+_ERNIEVL_DEPTH = 54
+_ERNIEVL_DENSE = 3
+_ERNIEVL_HEADS = 64
+_ERNIEVL_KV = 8
+_ERNIEVL_HD = 128
+_ERNIEVL_EXP = 64
+_ERNIEVL_TOPK = 8
+_ERNIEVL_DE = 3584
+_ERNIEVL_DEB = 1536
+_ERNIEVL_ROPE = {"mrope_section": [22, 22, 20], "type": "default"}
+
+
+def _tag_ernievl_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.476: bill the published ERNIE-4.5-VL 424B SwiGLU product.
+
+    Ernie4_5_MLP and Ernie4_5_MoeMLP are both down(F.silu(gate) * up).
+    The shipped hidden_act is silu. Linear bias follows use_bias, which
+    is false. Neither class upcasts. Dense SiLU stays act. Expert SiLU
+    stays expert_act or expert_b.act. The product is mlp_mul on the
+    intermediate width, or on the useful token-expert pairs. a_fmt
+    follows act_fmt. Layers 0-2 are dense (intermediate_size 28672).
+    Layers 3-53 are dual-pool MoE, top-8, text width 3584, vision width
+    1536. A text-only step runs mlp_text, so the vision pool is not
+    stacked on every text token. moe_num_shared_experts is absent.
+    moe_dropout_prob, hidden_dropout_prob, and attention dropout default
+    to 0 and are absent from the stored config, so they are not inference
+    ops. RMSNorm reduces in fp32, but the historical pre-norm ops already
+    have the same vec and sfu, so this bill does not retag them.
+    apply_rotary_3d rearranges frequency slots and then applies the same
+    (q * cos) + (rotate_half(q) * sin) the existing rope op already
+    counts. vec_kind is ernievl_swiglu. No earlier allowlist is extended.
+    The 28B rows have a shared expert and a smaller product, so they stay
+    untagged.
+    """
+    if spec.id not in _ERNIEVL_SWIGLU:
+        return spec
+    if c.get("model_type") != "ernie4_5_moe_vl":
+        raise ValueError("ernievl swiglu model_type is not ernie4_5_moe_vl")
+    if c.get("architectures") != ["Ernie4_5_VLMoeForConditionalGeneration"]:
+        raise ValueError("ernievl swiglu architecture is not ernie4_5_vl")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("ernievl swiglu hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("ernievl swiglu swiglu_limit is set")
+    if c.get("use_bias") is not False:
+        raise ValueError("ernievl swiglu use_bias is not false")
+    if c.get("use_rmsnorm") is not True:
+        raise ValueError("ernievl swiglu use_rmsnorm is not true")
+    if c.get("moe_gate") != "topk":
+        raise ValueError("ernievl swiglu moe_gate is not topk")
+    if c.get("moe_use_aux_free") is not True:
+        raise ValueError("ernievl swiglu moe_use_aux_free is not true")
+    if "moe_num_shared_experts" in c:
+        raise ValueError("ernievl swiglu shared expert is set")
+    for key in ("attention_probs_dropout_prob", "hidden_dropout_prob",
+                "moe_dropout_prob", "moe_all_to_all_dropout"):
+        if key in c:
+            raise ValueError("ernievl swiglu dropout is set")
+    if c.get("num_nextn_predict_layers"):
+        raise ValueError("ernievl swiglu mtp is set")
+    if c.get("moe_layer_interval") != 1:
+        raise ValueError("ernievl swiglu interval is not 1")
+    if c.get("moe_layer_start_index") != [_ERNIEVL_DENSE, _ERNIEVL_DENSE]:
+        raise ValueError("ernievl swiglu moe start is not 3")
+    if c.get("moe_layer_end_index") != [_ERNIEVL_DEPTH - 1, _ERNIEVL_DEPTH - 1]:
+        raise ValueError("ernievl swiglu moe end is not 53")
+    if c.get("moe_num_experts") != [_ERNIEVL_EXP, _ERNIEVL_EXP]:
+        raise ValueError("ernievl swiglu expert count is not 64")
+    if c.get("moe_intermediate_size") != [_ERNIEVL_DE, _ERNIEVL_DEB]:
+        raise ValueError("ernievl swiglu expert width is not the 424b release")
+    if c.get("moe_k") != _ERNIEVL_TOPK:
+        raise ValueError("ernievl swiglu moe_k is not 8")
+    if c.get("moe_capacity") != [64, 64, 64]:
+        raise ValueError("ernievl swiglu moe_capacity is not the 424b release")
+    if c.get("moe_multimodal_dispatch_use_allgather") != "v2-alltoall-unpad-text":
+        raise ValueError("ernievl swiglu dispatch is not v2-alltoall-unpad-text")
+    if c.get("hidden_size") != _ERNIEVL_H or c.get("intermediate_size") != _ERNIEVL_INNER:
+        raise ValueError("ernievl swiglu width is not the 424b release")
+    if c.get("num_hidden_layers") != _ERNIEVL_DEPTH:
+        raise ValueError("ernievl swiglu depth is not 54")
+    if (c.get("num_attention_heads") != _ERNIEVL_HEADS
+            or c.get("num_key_value_heads") != _ERNIEVL_KV):
+        raise ValueError("ernievl swiglu heads are not the 424b release")
+    if "head_dim" in c:
+        raise ValueError("ernievl swiglu head_dim is set")
+    if c.get("rope_scaling") != _ERNIEVL_ROPE:
+        raise ValueError("ernievl swiglu rope_scaling is not the published mrope")
+    if c.get("rope_3d") is not True or c.get("freq_allocation") != 20:
+        raise ValueError("ernievl swiglu rope_3d is not the published split")
+    if c.get("torch_dtype") != "bfloat16":
+        raise ValueError("ernievl swiglu dtype is not bfloat16")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("ernievl swiglu tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-5:
+        raise ValueError("ernievl swiglu rms_norm_eps is not 1e-5")
+    if c.get("quantization_config") is not None:
+        raise ValueError("ernievl swiglu quantization_config is set")
+    if (spec.act_fmt != "bf16" or spec.fmt("mlp").fmt != "bf16"
+            or spec.fmt("attn").fmt != "bf16" or spec.fmt("expert").fmt != "bf16"
+            or spec.quantized_release):
+        raise ValueError("ernievl swiglu dtype is not bfloat16")
+    if spec.fmt("router").fmt != "fp32":
+        raise ValueError("ernievl swiglu router is not fp32")
+    if spec.kv_fmt != "bf16":
+        raise ValueError("ernievl swiglu kv is not bf16")
+    if spec.final_norm_params not in (None, _ERNIEVL_H):
+        raise ValueError("ernievl swiglu final norm is not one")
+    if len(spec.layers) != _ERNIEVL_DEPTH or spec.mtp_layers:
+        raise ValueError("ernievl swiglu depth is not num_hidden_layers")
+    q_n = _ERNIEVL_HEADS * _ERNIEVL_HD
+    kv_n = _ERNIEVL_KV * _ERNIEVL_HD
+    for i, L in enumerate(spec.layers):
+        if (L.core.kind != "gqa" or L.core.n_q != _ERNIEVL_HEADS
+                or L.core.n_kv != _ERNIEVL_KV or L.core.qk_dim != _ERNIEVL_HD
+                or L.core.v_dim != _ERNIEVL_HD or L.core.window is not None
+                or L.core.no_rope or L.core.rope_dim != 0 or L.core.out_gate_fn):
+            raise ValueError("ernievl swiglu attention is not gqa")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("ernievl swiglu attention is not qkv o")
+        q, k, v, o = L.attn_linears
+        if (q.k != _ERNIEVL_H or q.n != q_n or k.n != kv_n or v.n != kv_n
+                or o.k != q_n or o.n != _ERNIEVL_H or q_n != _ERNIEVL_H):
+            raise ValueError("ernievl swiglu attention is not qkv o")
+        f = L.ffn
+        if i < _ERNIEVL_DENSE:
+            if (f.kind != "dense" or not f.gated or f.d_ff != _ERNIEVL_INNER
+                    or f.n_experts or f.d_expert or f.n_experts_b or f.d_expert_b
+                    or f.n_shared or f.d_shared or f.latent or L.misc_params != 2 * _ERNIEVL_H):
+                raise ValueError("ernievl swiglu mlp is not dense swiglu")
+            if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("ernievl swiglu mlp is not gate_up then down")
+            up, down = L.ffn_linears
+            if (up.k != _ERNIEVL_H or up.n != 2 * _ERNIEVL_INNER
+                    or down.k != _ERNIEVL_INNER or down.n != _ERNIEVL_H):
+                raise ValueError("ernievl swiglu mlp is not gate_up then down")
+        else:
+            if (f.kind != "moe" or not f.gated or f.d_ff or f.n_experts != _ERNIEVL_EXP
+                    or f.top_k != _ERNIEVL_TOPK or f.d_expert != _ERNIEVL_DE
+                    or f.n_experts_b != _ERNIEVL_EXP or f.d_expert_b != _ERNIEVL_DEB
+                    or f.n_shared or f.d_shared or f.latent or f.zero_experts
+                    or f.groups or f.expert_role
+                    or L.misc_params != 2 * _ERNIEVL_H + 2 * _ERNIEVL_EXP):
+                raise ValueError("ernievl swiglu expert is not swiglu")
+            if [ln.name for ln in L.ffn_linears] != ["router", "router_b"]:
+                raise ValueError("ernievl swiglu linears are not two routers")
+            router, router_b = L.ffn_linears
+            if (router.k != _ERNIEVL_H or router.n != _ERNIEVL_EXP
+                    or router_b.k != _ERNIEVL_H or router_b.n != _ERNIEVL_EXP):
+                raise ValueError("ernievl swiglu linears are not two routers")
+    layers = tuple(replace(L, vec_kind="ernievl_swiglu") for L in spec.layers)
+    note = ("0.476: ERNIE-4.5-VL 424B is down(F.silu(gate) * up) on the dense "
+            "MLP and on both expert pools. SiLU stays act or expert_act. "
+            "The product is mlp_mul. a_fmt follows act_fmt. The class does "
+            "not upcast. The vision pool is not stacked on a text token. "
+            "There is no shared expert. RMSNorm and 3-D RoPE stay on the "
+            "historical ops. The rows are ernie-4.5-vl-424b-a47b-pt and "
+            "ernie-4.5-vl-424b-a47b.")
+    return replace(spec, layers=layers, vec_kind="ernievl_swiglu", notes=spec.notes + (note,))
+
+
 _STEP_AUDIO = frozenset({
     "step-audio-2-mini",
     "step-audio-2-mini-base",
@@ -7885,7 +8062,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_jais3_swiglu_vectors(
+    return _tag_ernievl_swiglu_vectors(
+        _tag_jais3_swiglu_vectors(
         _tag_olmo3_swiglu_vectors(
         _tag_seed_swiglu_vectors(
         _tag_mixtral_swiglu_vectors(
@@ -7909,7 +8087,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
