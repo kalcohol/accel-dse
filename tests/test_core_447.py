@@ -80,7 +80,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_447():
-    assert __version__ == "0.466.0"
+    assert __version__ == "0.467.0"
 
 
 def test_post_rmsnorm_qk_and_the_product():
@@ -233,7 +233,7 @@ def test_non_vector_schedule_and_other_models():
     bare = replace(m, layers=tuple(replace(L, vec_kind="") for L in m.layers), vec_kind="")
     for shard in (Shard(), Shard(tp=2), Shard(tp=4)):
         assert _sched(m, ph, shard) == _sched(bare, ph, shard)
-    for mid in ("qwen3-32b", "llama-3.1-8b",
+    for mid in ("llama-3.1-8b",
                 "qwen3-vl-235b-a22b", "qwen3-vl-30b-a3b",
                 "olmo-3-32b-think", "qwen3-coder-480b-a35b"):
         other = get_model(mid)
@@ -254,7 +254,8 @@ def test_non_vector_schedule_and_other_models():
     assert qwen.vec_kind == "qwen3vl_text"
     qnames = [o.name for o in build_rank_ops(qwen, 0, Phase("prefill", 1, 16, 0), Shard())]
     assert qnames.index("ffn_norm") < qnames.index("mlp.gate_up")
-    plain = get_model("qwen3-32b")
+    # 0.467 bills qwen3-32b. The shared-tail exemplar is llama-3.1-8b.
+    plain = get_model("llama-3.1-8b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]
@@ -272,7 +273,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "555d25ec2cbe1bfe"
+    assert _fp({}) == "7d44cdadbf38cc9e"
     assert "exaone-4.0-32b" not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"
     assert _FULL_0651["esm2-3b"] == "34f7544287cd"

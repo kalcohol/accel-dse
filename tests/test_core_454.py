@@ -97,7 +97,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_454():
-    assert __version__ == "0.466.0"
+    assert __version__ == "0.467.0"
 
 
 def test_wevisone_text_bills_fp32_rmsnorm_qk_and_the_product():
@@ -255,7 +255,7 @@ def test_non_vector_schedule_and_other_models():
         assert all(L.vec_kind != "qwen3vl_text" for L in other.layers)
         assert not any("0.454" in n for n in other.notes)
     assert get_model("qwen3-8b").vec_kind == "qwen3"
-    assert get_model("qwen3-32b").vec_kind == ""
+    assert get_model("qwen3-32b").vec_kind == "qwen3"
     dense = get_model("qwen3-vl-4b")
     assert dense.vec_kind == "qwen3vl_text"
     assert any("0.446" in n for n in dense.notes)
@@ -279,7 +279,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "555d25ec2cbe1bfe"
+    assert _fp({}) == "7d44cdadbf38cc9e"
     for mid in _ROWS:
         assert mid not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"

@@ -122,7 +122,7 @@ def _geom(row):
 
 
 def test_version_is_452():
-    assert __version__ == "0.466.0"
+    assert __version__ == "0.467.0"
 
 
 def test_qwen2_text_bills_fp32_rmsnorm_and_the_product():
@@ -328,8 +328,8 @@ def test_non_vector_schedule_and_other_models():
     assert billed.vec_kind == "qwen2_text"
     assert any(n.startswith("0.466") for n in billed.notes)
     assert not any(n.startswith("0.452") or n.startswith("0.455") for n in billed.notes)
-    # 0.466 bills qwen2.5-3b. The shared-tail exemplar stays qwen3-32b.
-    plain = get_model("qwen3-32b")
+    # 0.467 bills qwen3-32b. The shared-tail exemplar is llama-3.1-8b.
+    plain = get_model("llama-3.1-8b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]
@@ -343,7 +343,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "555d25ec2cbe1bfe"
+    assert _fp({}) == "7d44cdadbf38cc9e"
     for mid in _ROWS:
         assert mid not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"

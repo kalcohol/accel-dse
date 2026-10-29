@@ -108,7 +108,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_456():
-    assert __version__ == "0.466.0"
+    assert __version__ == "0.467.0"
 
 
 def test_omniasr_text_bills_fp32_rmsnorm_and_the_product():
@@ -266,7 +266,7 @@ def test_non_vector_schedule_and_other_models():
         assert all(L.vec_kind != "carbon_llama" for L in other.layers)
         assert not any("0.456" in n for n in other.notes)
     assert get_model("qwen3-8b").vec_kind == "qwen3"
-    assert get_model("qwen3-32b").vec_kind == ""
+    assert get_model("qwen3-32b").vec_kind == "qwen3"
     assert get_model("llama-3.1-8b").vec_kind == ""
     assert get_model("omniasr-ctc-300m-v2").vec_kind == ""
     carbon = get_model("carbon-8b")
@@ -292,7 +292,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "555d25ec2cbe1bfe"
+    assert _fp({}) == "7d44cdadbf38cc9e"
     for mid in _ROWS:
         assert mid not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"

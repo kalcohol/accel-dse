@@ -46,7 +46,9 @@ def test_llm_insight_rows():
     assert len(rows) == 4 and out["chip_dispatch"] == "ideal"
     small, moe = rows[("qwen3-0.6b", 1)], rows[("qwen3-30b-a3b", 1)]
     assert moe["ops_per_step"] > small["ops_per_step"]               # more layers / expert ops per step
-    assert rows[("qwen3-0.6b", 8)]["ops_per_token"] == small["ops_per_step"] / 8
+    # 0.467 bills q/k RMSNorm and mlp_mul on qwen3-0.6b. Both batches still
+    # dispatch 367 ops. The 1 us slope subtraction lands 1 ulp apart.
+    assert abs(rows[("qwen3-0.6b", 8)]["ops_per_token"] - small["ops_per_step"] / 8) < 1e-9
     for x in out["rows"]:
         assert x["tpot_ms_at"]["host"] > x["tpot_ms_at"]["trace"] > x["tpot_ms"]
         assert abs(x["tpot_ms_at"]["host"] / x["tpot_ms"] - (1 + 20 * x["ops_per_step"] * 1e-6 / (x["tpot_ms"] / 1e3))) < 1e-9

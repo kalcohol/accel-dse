@@ -85,7 +85,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_458():
-    assert __version__ == "0.466.0"
+    assert __version__ == "0.467.0"
 
 
 def test_ernie_moe_dense_bills_fp32_rmsnorm_and_the_product():
@@ -175,7 +175,7 @@ def test_non_vector_schedule_and_other_models():
         assert not any("0.458" in n for n in other.notes)
     assert get_model("ernie-4.5-0.3b-pt").vec_kind == ""
     assert get_model("ernie-4.5-vl-28b-a3b-pt").vec_kind == ""
-    assert get_model("qwen3-32b").vec_kind == ""
+    assert get_model("qwen3-32b").vec_kind == "qwen3"
     assert get_model("qwen3-8b").vec_kind == "qwen3"
     assert get_model("moshiko-7b").vec_kind == "carbon_llama"
     assert not any("0.458" in n for n in get_model("moshiko-7b").notes)
@@ -191,7 +191,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "555d25ec2cbe1bfe"
+    assert _fp({}) == "7d44cdadbf38cc9e"
     import hashlib
     from accel_dse.core.evaluate import evaluate
     from accel_dse.core.scenario import Scenario
@@ -210,7 +210,7 @@ def test_non_vector_schedule_and_other_models():
                     h.update(type(ex).__name__.encode())
         return h.hexdigest()[:16]
 
-    assert fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e" and fpx({}) == "666d0c5f91fbb6a4"
+    assert fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e" and fpx({}) == "903976206252d461"
     for mid in _SHAPE:
         assert mid not in ids[:60]
         assert mid not in _FULL_0651

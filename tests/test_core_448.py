@@ -100,7 +100,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_448():
-    assert __version__ == "0.466.0"
+    assert __version__ == "0.467.0"
 
 
 def test_granite_bills_fp32_rmsnorm_and_the_product():
@@ -274,7 +274,7 @@ def test_non_vector_schedule_and_other_models():
     bare = _bare(m)
     for shard in (Shard(), Shard(tp=2), Shard(tp=4)):
         assert _sched(m, ph, shard) == _sched(bare, ph, shard)
-    for mid in ("qwen3-32b", "llama-3.1-8b", "olmo-3-32b-think",
+    for mid in ("llama-3.1-8b", "olmo-3-32b-think",
                 "qwen3-vl-235b-a22b", "qwen3-vl-30b-a3b"):
         other = get_model(mid)
         assert other.vec_kind == ""
@@ -291,7 +291,8 @@ def test_non_vector_schedule_and_other_models():
     assert get_model("exaone-4.0-32b").vec_kind == "exaone4"
     assert get_model("qwen3-vl-32b").vec_kind == "qwen3vl_text"
     assert get_model("carbon-x").vec_kind == "carbon_qwen"
-    plain = get_model("qwen3-32b")
+    # 0.467 bills qwen3-32b. The shared-tail exemplar is llama-3.1-8b.
+    plain = get_model("llama-3.1-8b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]
@@ -309,7 +310,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "555d25ec2cbe1bfe"
+    assert _fp({}) == "7d44cdadbf38cc9e"
     assert "granite-4.1-30b" not in _FULL_0651
     assert "granite-4.2-8b" not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"
