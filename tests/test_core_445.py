@@ -79,7 +79,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_445():
-    assert __version__ == "0.466.0"
+    assert __version__ == "0.467.0"
 
 
 def test_llama_carbons_bill_fp32_rmsnorm_and_the_product():
@@ -213,7 +213,7 @@ def test_non_vector_schedule_and_other_models():
     bare = replace(m, layers=tuple(replace(L, vec_kind="") for L in m.layers), vec_kind="")
     for shard in (Shard(), Shard(tp=2)):
         assert _sched(m, ph, shard) == _sched(bare, ph, shard)
-    for mid in ("llama-3.1-8b", "qwen3-32b"):
+    for mid in ("llama-3.1-8b",):
         other = get_model(mid)
         assert other.vec_kind == ""
         assert all(L.vec_kind == "" for L in other.layers)
@@ -241,7 +241,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "555d25ec2cbe1bfe"
+    assert _fp({}) == "7d44cdadbf38cc9e"
     assert "carbon-8b" not in _FULL_0651 and "carbon-x" not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"
     assert _FULL_0651["esm2-3b"] == "34f7544287cd"

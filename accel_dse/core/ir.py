@@ -1346,6 +1346,8 @@ def _carbon_dense(L: Layer) -> bool:
     # Llama-2 and Yi-1.5 (0.464) are LlamaForCausalLM and reuse carbon_llama.
     # Omitted bias and pretraining_tp keys are the published defaults.
     # Qwen3-8B, its fp8 and AWQ releases, and Qwen3-1.7B (0.465) reuse qwen3.
+    # Qwen3-32B, its fp8 and AWQ releases, Qwen3-4B, and Qwen3-0.6B (0.467)
+    # reuse qwen3. q width is heads * head_dim and is not hidden.
     # mlp_mul is inserted only when the FFN is dense gate_up/down. MoE layers
     # keep expert_act. Shared-expert products stay on that path.
     return L.vec_kind in (
@@ -1378,9 +1380,11 @@ def _carbon_qk_rms(L: Layer, li: int, t: int, tp: int) -> list[Op]:
     """RMSNorm on head_dim after q_proj and k_proj.
 
     Qwen3RMSNorm, Qwen3VLTextRMSNorm, and Exaone4RMSNorm all say the norm
-    is on the head dim, unlike Olmo. One rsqrt per head. Llama Carbon and
-    Granite checkpoints have no q/k norm. The reduction is the published
-    T5 recipe (fp32).
+    is on the head dim, unlike Olmo. One rsqrt per head. The vector width
+    is the projected q or k width (local heads * head_dim), not hidden.
+    On the 0.467 Qwen3 rows the projected q width is not hidden. Llama
+    Carbon and Granite checkpoints have no q/k norm. The reduction is the
+    published T5 recipe (fp32).
     """
     who = _qk_rms_who(L.vec_kind)
     if not who:

@@ -406,6 +406,8 @@ class Layer:
     # product, and head_dim q/k RMSNorm.
     # 0.465 extends that tag to the front-60 rows whose hidden equals
     # heads * head_dim (qwen3-8b, its fp8 and AWQ twins, and qwen3-1.7b).
+    # 0.467 reuses qwen3 where q width is heads * head_dim and is not
+    # hidden (qwen3-32b, its fp8 and AWQ twins, qwen3-4b, qwen3-0.6b).
     # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
     # up and down, and fp32 LayerNorm on the four published norms.
     # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
@@ -591,6 +593,9 @@ class ModelSpec:
     # 0.464: Llama-2 and Yi-1.5 reuse carbon_llama. Omitted attention_bias,
     # mlp_bias, and pretraining_tp are the published defaults False / False / 1.
     # 0.465: front-60 Qwen3 rows with hidden = heads * head_dim reuse qwen3.
+    # 0.467: the front-60 rows whose q width is heads * head_dim and is
+    # not hidden reuse qwen3. q_rms width is that q width. k_rms width
+    # is kv heads * head_dim. The residual norm stays hidden.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -4813,7 +4818,8 @@ _QWEN3_449 = frozenset({
 _QWEN3_453 = frozenset({"qwen3-8b-dspine", "moss-tts", "fireredtts3-base"})
 # 0.465: front-60 rows whose hidden equals heads * head_dim. The fp8 and AWQ
 # releases share that geometry. qwen3-32b, qwen3-4b, and qwen3-0.6b do not
-# (hidden is not heads * head_dim) and stay off this set.
+# (hidden is not heads * head_dim) and stay off this set. 0.467 bills those
+# rows, and the 32B fp8 and AWQ twins, on a separate gate.
 _QWEN3_465 = frozenset({
     "qwen3-8b", "qwen3-8b-fp8", "qwen3-8b-awq", "qwen3-1.7b",
 })
@@ -4908,6 +4914,93 @@ def _tag_qwen3_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             "fireredtts3-base 只入账主干，DiT 和 RedAE 不入账。"
             "前 60 条里的 qwen3-8b 和 qwen3-1.7b 不打这个标签。",)
     return replace(spec, layers=layers, mtp_layers=mtp, vec_kind="qwen3", notes=notes)
+
+
+# 0.467: front-60 Qwen3 rows whose q width is heads * head_dim and is not
+# hidden. Same Qwen3RMSNorm recipe as 0.449 / 0.465. The equal-width
+# allowlists stay unchanged.
+_QWEN3_467 = frozenset({
+    "qwen3-32b", "qwen3-32b-fp8", "qwen3-32b-awq", "qwen3-4b", "qwen3-0.6b",
+})
+
+
+def _tag_qwen3_467_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.467: bill Qwen3 rows whose projected q width is not hidden.
+
+    Qwen3RMSNorm matches T5LayerNorm: fp32 mean of squares, one rsqrt,
+    times weight. Hidden norms stay on hidden_size and stay pre-norm.
+    q_norm and k_norm run after the head view, on head_dim, one rsqrt per
+    head. The published q projection is num_attention_heads * head_dim.
+    The published k and v projections are num_key_value_heads * head_dim.
+    Those widths are not hidden_size on these checkpoints. The output
+    projection reads the q width and writes hidden. The MLP is
+    down(silu(gate) * up). SiLU stays the existing act op. The product is
+    mlp_mul. vec_kind reuses qwen3. These five ids are inside the first 60
+    catalog rows. The 0.449, 0.453, and 0.465 allowlists still require
+    hidden == heads * head_dim and are not extended.
+    """
+    if spec.id not in _QWEN3_467:
+        return spec
+    if c.get("model_type") != "qwen3":
+        raise ValueError("qwen3 head width model_type is not qwen3")
+    if c.get("architectures") != ["Qwen3ForCausalLM"]:
+        raise ValueError("qwen3 head width architecture is not qwen3")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("qwen3 head width hidden_act is not silu")
+    if c.get("attention_bias") is not False:
+        raise ValueError("qwen3 head width attention_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0, None):
+        raise ValueError("qwen3 head width attention_dropout is not 0")
+    if c.get("mlp_bias") not in (None, False):
+        raise ValueError("qwen3 head width mlp_bias is not false")
+    hd = c.get("head_dim")
+    if "head_dim" not in c or isinstance(hd, bool) or not isinstance(hd, int) or hd <= 0:
+        raise ValueError("qwen3 head width head_dim is missing")
+    h = c["hidden_size"]
+    hq = c["num_attention_heads"]
+    hkv = c["num_key_value_heads"]
+    if (not isinstance(h, int) or isinstance(h, bool) or h <= 0
+            or not isinstance(hq, int) or isinstance(hq, bool) or hq <= 0
+            or not isinstance(hkv, int) or isinstance(hkv, bool) or hkv <= 0):
+        raise ValueError("qwen3 head width attention heads are not positive")
+    if h == hq * hd:
+        raise ValueError("qwen3 head width hidden equals heads times head_dim")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("qwen3 head width rope_scaling is not null")
+    if c.get("use_sliding_window") not in (None, False):
+        raise ValueError("qwen3 head width use_sliding_window is not false")
+    if c.get("sliding_window") is not None:
+        raise ValueError("qwen3 head width sliding_window is not null")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("qwen3 head width layer_types is not full_attention")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("qwen3 head width final norm is not one")
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("qwen3 head width mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("qwen3 head width mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd or L.core.window is not None:
+            raise ValueError("qwen3 head width attention is not gqa head_dim")
+        if L.misc_params != 2 * h + 2 * hd:
+            raise ValueError("qwen3 head width qk norm is not head_dim")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by or "v" not in by or "o" not in by:
+            raise ValueError("qwen3 head width attention is not q then k")
+        if (by["q"].n != hq * hd or by["k"].n != hkv * hd or by["v"].n != hkv * hd
+                or by["o"].k != hq * hd or by["o"].n != h or by["q"].k != h
+                or by["q"].n == h):
+            raise ValueError("qwen3 head width qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="qwen3") for L in spec.layers)
+    note = ("0.467: Qwen3RMSNorm is the T5 recipe, reduced in fp32. "
+            "SiLU stays the existing act op. The gate times up product is mlp_mul. "
+            "q_norm and k_norm are that RMSNorm on head_dim, one rsqrt per head. "
+            "q width is num_attention_heads * head_dim and is not hidden. "
+            "k and v width is num_key_value_heads * head_dim. "
+            "The residual width stays hidden_size. "
+            "The front-60 rows are qwen3-32b, its fp8 and AWQ releases, qwen3-4b, and qwen3-0.6b. "
+            "The 0.449, 0.453, and 0.465 allowlists are not extended.")
+    return replace(spec, layers=layers, vec_kind="qwen3", notes=spec.notes + (note,))
 
 
 _STEP_AUDIO = frozenset({
@@ -6949,11 +7042,12 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 _tag_qwen2_text_vectors(
                     _tag_mistral_small_vectors(
                         _tag_step_audio_vectors(
+                            _tag_qwen3_467_vectors(
                             _tag_qwen3_vectors(
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

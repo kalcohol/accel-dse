@@ -102,7 +102,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_466():
-    assert __version__ == "0.466.0"
+    assert __version__ == "0.467.0"
 
 
 def test_two_rows_are_front60_and_reuse_qwen2_text():
@@ -299,13 +299,14 @@ def test_non_vector_schedule_and_other_rows_stay_untagged():
         retagged = _tag_qwen25_466_vectors(bare, c)
         assert retagged.vec_kind == "qwen2_text"
         assert all(L.vec_kind == "qwen2_text" for L in retagged.layers)
+    # 0.467 bills the head-width mismatch rows. This gate still does not claim them.
     for mid, hidden, heads in (("qwen3-32b", 5120, 64), ("qwen3-4b", 2560, 32), ("qwen3-0.6b", 1024, 16)):
         other = get_model(mid)
-        assert other.vec_kind == ""
+        assert other.vec_kind == "qwen3"
         assert other.hidden == hidden and other.layers[0].core.n_q == heads
-        pops = build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard())
-        assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]
-        assert _tag_qwen25_466_vectors(other, _tc(load_release(other.hf_id)["config"])).vec_kind == ""
+        assert other.hidden != heads * other.layers[0].core.qk_dim
+        assert _tag_qwen25_466_vectors(
+            _bare(other), _tc(load_release(other.hf_id)["config"])).vec_kind == ""
     llama = get_model("llama-3.1-8b")
     assert llama.vec_kind == ""
     assert load_release(llama.hf_id)["config"].get("rope_scaling") is not None
@@ -416,7 +417,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_coverage import _FULL_0651, _kpi
     from accel_dse.core import evaluate as E
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "555d25ec2cbe1bfe"
+    assert _fp({}) == "7d44cdadbf38cc9e"
     test_fingerprints_change_only_v4()
     with E.model_flags(FUSE_QKV=False):
         assert _kpi("qwen2.5-3b") == "8b8d7db5d3eb"

@@ -4,8 +4,8 @@ Qwen3-8B, its fp8 and AWQ releases, and Qwen3-1.7B reuse the 0.449 recipe.
 Qwen3RMSNorm is the T5 recipe in fp32. SiLU stays the existing act op.
 The gate times up product is mlp_mul. q_norm and k_norm are that RMSNorm
 on head_dim (one rsqrt per head). q width equals hidden. No new act kind
-and no new vec_kind. qwen3-32b, qwen3-4b, and qwen3-0.6b fail the product
-and stay on the shared tail. Vector flops stay 0.
+and no new vec_kind. qwen3-32b, qwen3-4b, and qwen3-0.6b fail this product
+gate. 0.467 bills them on a separate gate. Vector flops stay 0.
 """
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_465():
-    assert __version__ == "0.466.0"
+    assert __version__ == "0.467.0"
 
 
 def test_four_rows_are_front60_and_reuse_qwen3():
@@ -253,18 +253,15 @@ def test_non_vector_schedule_and_other_rows_stay_untagged():
         retagged = _tag_qwen3_vectors(bare, c)
         assert retagged.vec_kind == "qwen3"
         assert all(L.vec_kind == "qwen3" for L in retagged.layers)
+    # 0.467 bills the head-width mismatch rows. This gate still refuses them.
     for mid, hidden, heads in (("qwen3-32b", 5120, 64), ("qwen3-4b", 2560, 32), ("qwen3-0.6b", 1024, 16)):
         other = get_model(mid)
-        assert other.vec_kind == ""
+        assert other.vec_kind == "qwen3"
         assert other.hidden == hidden and other.layers[0].core.n_q == heads
         assert other.hidden != heads * other.layers[0].core.qk_dim
-        pops = build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard())
-        assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]
-        pby = _by(pops)
-        assert pby["attn_norm"].a_fmt == "bf16" and pby["ffn_norm"].a_fmt == "bf16"
         cfg = _tc(load_release(other.hf_id)["config"])
-        assert _tag_qwen3_vectors(other, cfg).vec_kind == ""
-        spoof = replace(other, id="qwen3-8b")
+        assert _tag_qwen3_vectors(_bare(other), cfg).vec_kind == ""
+        spoof = replace(_bare(other), id="qwen3-8b")
         _raises(lambda c=cfg, s=spoof: _tag_qwen3_vectors(s, c),
                 "qwen3 hidden is not heads times head_dim")
     for mid in ("llama-3.1-8b",):
@@ -359,7 +356,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_coverage import _FULL_0651, _kpi
     from accel_dse.core import evaluate as E
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "555d25ec2cbe1bfe"
+    assert _fp({}) == "7d44cdadbf38cc9e"
     # The no-DeepSeek-V4 pair is locked in 0.125. Re-run that assert.
     test_fingerprints_change_only_v4()
     with E.model_flags(FUSE_QKV=False):
