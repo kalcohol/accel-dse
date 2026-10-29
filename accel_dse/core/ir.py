@@ -1391,6 +1391,9 @@ def _carbon_dense(L: Layer) -> bool:
     # Dense layers use Ernie4_5_MLP. Text experts and vision experts use
     # Ernie4_5_MoeMLP. Vision experts run only on multimodal tokens.
     # Block RMSNorm and the 3-D RoPE frequency split stay on the historical ops.
+    # 0.477 minimax_swiglu does the same multiply on MiniMax-Text-01 and
+    # MiniMax-M1 routed experts. There is no shared expert. Lightning SiLU
+    # on qkv, the sigmoid output gate, and the residual alpha stay off this op.
     # 0.469 kimi_situ replaces the historical SiLU counts. SituAndMul is not
     # silu(gate) * up, so those layers do not emit act or expert_act.
     return L.vec_kind in (
@@ -1803,6 +1806,11 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     or not f.n_experts_b or not f.d_expert_b or f.zero_experts
                     or f.groups or f.expert_role):
                 raise ValueError("ernievl swiglu expert is not swiglu")
+            if L.vec_kind == "minimax_swiglu" and (
+                    not f.gated or f.latent or f.n_shared or f.d_shared or f.d_ff
+                    or f.n_experts_b or f.d_expert_b or f.zero_experts or f.groups
+                    or f.expert_role):
+                raise ValueError("minimax swiglu expert is not swiglu")
             if tokens <= 0 or n_exp <= 0:
                 return
             if zero and not f.groups:
@@ -1859,6 +1867,16 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(act)
                     ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
                                   a_fmt=model.act_fmt))
+                if L.vec_kind == "minimax_swiglu":
+                    # MiniMaxText01BlockSparseTop2MLP and MiniMaxM1BlockSparseTop2MLP:
+                    # w2(ACT2FN["silu"](w1(x)) * w3(x)). SiLU stays expert_act.
+                    # The product is one multiply on the useful token-expert
+                    # pairs, not the padded GEMM rows. a_fmt follows act_fmt.
+                    # There is no shared expert. The routing-weight multiply,
+                    # lightning SiLU on qkv, and the residual alpha are not this op.
+                    ops.append(act)
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
+                                  a_fmt=model.act_fmt))
                 if L.vec_kind == "kimi_situ":
                     # KimiBlockSparseMLP: SituAndMul(cat(w1, w3)) then w2.
                     # The historical SiLU expert_act is not this formula.
@@ -1871,7 +1889,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                                    share=u))
                 if L.vec_kind not in (
                         "qwen35_moe", "kimi_situ", "muse_swiglu", "mixtral_swiglu",
-                        "ernievl_swiglu"):
+                        "ernievl_swiglu", "minimax_swiglu"):
                     ops.append(act)
             if sh.ep > 1:
                 pay = r.pairs_local * ein * ab

@@ -110,7 +110,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_462():
-    assert __version__ == "0.476.0"
+    assert __version__ == "0.477.0"
 
 
 def test_mistral_large_is_the_front60_row_and_reuses_mistral_small():
