@@ -96,7 +96,7 @@ def _bad(mid: str, edit):
 
 
 def test_version_is_461():
-    assert __version__ == "0.474.0"
+    assert __version__ == "0.475.0"
 
 
 def test_whisper_decoder_bills_erf_gelu_between_the_linears():

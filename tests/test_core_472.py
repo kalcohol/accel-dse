@@ -83,7 +83,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_472():
-    assert __version__ == "0.474.0"
+    assert __version__ == "0.475.0"
 
 
 def test_one_row_bills_the_expert_product():
