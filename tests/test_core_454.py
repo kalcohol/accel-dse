@@ -97,7 +97,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_454():
-    assert __version__ == "0.464.0"
+    assert __version__ == "0.465.0"
 
 
 def test_wevisone_text_bills_fp32_rmsnorm_qk_and_the_product():
@@ -254,7 +254,7 @@ def test_non_vector_schedule_and_other_models():
         assert other.vec_kind != "qwen3vl_text"
         assert all(L.vec_kind != "qwen3vl_text" for L in other.layers)
         assert not any("0.454" in n for n in other.notes)
-    assert get_model("qwen3-8b").vec_kind == ""
+    assert get_model("qwen3-8b").vec_kind == "qwen3"
     assert get_model("qwen3-32b").vec_kind == ""
     dense = get_model("qwen3-vl-4b")
     assert dense.vec_kind == "qwen3vl_text"

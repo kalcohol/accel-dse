@@ -79,7 +79,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_445():
-    assert __version__ == "0.464.0"
+    assert __version__ == "0.465.0"
 
 
 def test_llama_carbons_bill_fp32_rmsnorm_and_the_product():
@@ -213,7 +213,7 @@ def test_non_vector_schedule_and_other_models():
     bare = replace(m, layers=tuple(replace(L, vec_kind="") for L in m.layers), vec_kind="")
     for shard in (Shard(), Shard(tp=2)):
         assert _sched(m, ph, shard) == _sched(bare, ph, shard)
-    for mid in ("llama-3.1-8b", "qwen3-8b"):
+    for mid in ("llama-3.1-8b", "qwen3-32b"):
         other = get_model(mid)
         assert other.vec_kind == ""
         assert all(L.vec_kind == "" for L in other.layers)

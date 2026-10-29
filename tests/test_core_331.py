@@ -161,7 +161,8 @@ def test_report_front_thermal_margin_air_oam():
     it = {i["key"]: i["value"] for i in th["items"]}
     # 0.333 re-pin (HBM 5.80 pJ/bit + per-channel standby, MODEL §278; front [1, 0, 15] → [4, 16], test_core_330): the
     # headline row is now over air (flux 0.9461, margin 0.0024 → −0.0861); front near-ties {0, 15} (0.858) → {16}
-    assert abs(it["flux_margin_W_mm2"] - (lim - it["flux_W_mm2"])) < 1e-12 and -0.087 < it["flux_margin_W_mm2"] < -0.085
+    # 0.465 re-pin: qwen3-8b vector time. flux 0.9461 → 0.9425, margin −0.0861 → −0.0825. Front stays {4, 16}.
+    assert abs(it["flux_margin_W_mm2"] - (lim - it["flux_W_mm2"])) < 1e-12 and -0.083 < it["flux_margin_W_mm2"] < -0.082
     ft = th["front_thermal"]
     pts = {p["row"]: p for p in ft["points"]}
     assert set(pts) == set(o["front"]) == {4, 16}

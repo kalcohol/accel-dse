@@ -83,12 +83,14 @@ def test_report_single_chunk_cases_unchanged_and_multi_chunk_costlier():
     eq = q["energy"]["coloc_chunked"]
     # 0.333: preset HBM 3.44 → 5.80 pJ/bit (idle_W set here, so no HBM standby) → 0.22584 → 0.28948 = old + DRAM bytes ×
     # 8 × (5.80173 − 3.44) pJ
+    # 0.465: qwen3-8b bills the SwiGLU product and q/k RMS. TTFT mean 42.5230 → 42.6749.
+    # J/token 0.28948 → 0.29022. The two preset increments stay; the remainder bases move by that vector energy.
     from accel_dse.core.energy import ENERGY_PRESETS
     dpj = ENERGY_PRESETS["tpuv4i_7nm"]["fields"]["pJ_bit_dram_hbm"][0] - 3.44
-    assert abs(c["ttft_ms"]["mean"] - 42.5230) < 1e-3 and abs(eq["J_per_token"] - 0.28948) < 2e-5
-    assert abs(eq["J_per_token"] - eq["counts_per_token"]["dram"] * 8 * dpj * 1e-12 - 0.22584) < 2e-5
+    assert abs(c["ttft_ms"]["mean"] - 42.6749) < 1e-3 and abs(eq["J_per_token"] - 0.29022) < 2e-5
+    assert abs(eq["J_per_token"] - eq["counts_per_token"]["dram"] * 8 * dpj * 1e-12 - 0.2263974) < 2e-5
     assert abs(eq["J_per_token"] - eq["counts_per_token"]["dram"] * 8 * dpj * 1e-12
-               - eq["counts_per_token"]["mac"] * 0.9 / 2.6 * 1e-12 - 0.20190) < 2e-5
+               - eq["counts_per_token"]["mac"] * 0.9 / 2.6 * 1e-12 - 0.2024520) < 2e-5
     # D (48 GB → budget 2048): 2–3 chunks; a chunk with its prefix costs more than its token share of the prompt
     d = disagg_report(_pd(cap=48.0))["queue"]["modes"]["coloc_chunked"]
     assert d["stable"] and d["ttft_ms"]["mean"] > c["ttft_ms"]["mean"]

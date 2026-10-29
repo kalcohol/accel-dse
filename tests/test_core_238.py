@@ -73,7 +73,8 @@ def test_vllm_3000_unchanged_residual():
     # 0.246: prompt 3000 at cap 48 is budget-chunked (C(B) = 1984 < 2 prompts) → the slot account replaces the 0.243
     # block (phase chain at B − 1, k̄): p99 72.39 → 71.61 ms, mean 34.02 → 34.03 (the account's backlog branch at small
     # p_sat; DES p99 ≈ 72.39 / (1 − 0.044) = 75.7 per 0.238, residual −0.044 → −0.054, same sign, not this mechanism)
-    assert abs(c["ttft_ms"]["p99"] - 71.61) < 0.5 and abs(c["ttft_ms"]["mean"] - 34.03) < 0.1
+    # 0.465 re-pin: qwen3-8b vector time. p99 71.61 → 71.86, mean 34.03 → 34.145
+    assert abs(c["ttft_ms"]["p99"] - 71.86) < 0.5 and abs(c["ttft_ms"]["mean"] - 34.145) < 0.1
 
 
 # 0.302 suite time: the SLO-goodput rate searches are skipped — this module reads no SLO output (tests/fast_queue.py);

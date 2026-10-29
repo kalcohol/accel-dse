@@ -43,7 +43,8 @@ _UNTOUCHED = (
     # 0.464 bills llama-2-70b, llama-2-7b, and yi-1.5-34b with carbon_llama.
     "qwen2.5-3b", "qwen2.5-1.5b",
     "llama-3.1-8b",
-    "qwen3-8b", "qwen3-8b-fp8", "qwen3-8b-awq", "qwen3-1.7b", "qwen3-32b",
+    # 0.465 bills qwen3-8b, its fp8 and AWQ twins, and qwen3-1.7b with qwen3.
+    "qwen3-32b", "qwen3-4b", "qwen3-0.6b",
     "mistral-7b", "mixtral-8x22b", "magistral-small",
 )
 
@@ -110,7 +111,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_463():
-    assert __version__ == "0.464.0"
+    assert __version__ == "0.465.0"
 
 
 def test_qwen25_72b_is_the_front60_row_and_reuses_qwen2_text():

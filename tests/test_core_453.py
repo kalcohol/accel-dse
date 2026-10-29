@@ -113,7 +113,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_453():
-    assert __version__ == "0.464.0"
+    assert __version__ == "0.465.0"
 
 
 def test_qwen3_speech_and_dspine_bill_fp32_rmsnorm_qk_and_the_product():
@@ -298,7 +298,7 @@ def test_non_vector_schedule_and_other_models():
     bare = _bare(m)
     for shard in (Shard(), Shard(tp=2), Shard(tp=4)):
         assert _sched(m, ph, shard) == _sched(bare, ph, shard)
-    for mid in ("qwen3-32b", "qwen3-8b", "qwen3-1.7b", "llama-3.1-8b",
+    for mid in ("qwen3-32b", "qwen3-4b", "qwen3-0.6b", "llama-3.1-8b",
                 "olmo-3-32b-think", "jais-3-32b", "wevisone-vl-4b",
                 "qwen3-vl-235b-a22b", "qwen3-coder-480b-a35b",
                 "qwen3-tts-1.7b-base", "qwen3-tts-0.6b-base", "fun-asr-nano-2512",
@@ -307,8 +307,9 @@ def test_non_vector_schedule_and_other_models():
         assert other.vec_kind != "qwen3"
         assert all(L.vec_kind != "qwen3" for L in other.layers)
         assert all(L.vec_kind != "qwen3" for L in other.mtp_layers)
-    assert get_model("qwen3-8b").vec_kind == ""
-    assert get_model("qwen3-1.7b").vec_kind == ""
+    assert get_model("qwen3-8b").vec_kind == "qwen3"
+    assert get_model("qwen3-1.7b").vec_kind == "qwen3"
+    assert not any("0.453" in n for n in get_model("qwen3-8b").notes)
     assert get_model("qwen3-14b").vec_kind == "qwen3"
     assert not any("0.453" in n for n in get_model("qwen3-14b").notes)
     assert get_model("granite-4.1-30b").vec_kind == "granite"
@@ -317,7 +318,7 @@ def test_non_vector_schedule_and_other_models():
     assert get_model("carbon-x").vec_kind == "carbon_qwen"
     assert get_model("mistral-small-3.2-24b-instruct-2506").vec_kind == "mistral_small"
     assert get_model("kimi-audio-7b").vec_kind == "qwen2_text"
-    plain = get_model("qwen3-8b")
+    plain = get_model("qwen3-32b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]

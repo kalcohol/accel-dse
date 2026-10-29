@@ -19,8 +19,9 @@ OLD_CAPPED_THR = {9: 93791.672, 10: 96713.337, 11: 95072.811, 12: 96217.883, 13:
                   16: 90821.435}            # ≤ 0.332 (0.315 values)
 # 0.333 (HBM 5.80 pJ/bit + per-channel standby, MODEL §278): more card W in memory → every card-scope capped row runs
 # slower and row 14 (f 0.966) is capped too
-CAPPED_THR = {9: 86048.461, 10: 88698.021, 11: 86562.533, 12: 88268.986, 13: 86334.213, 14: 83175.511, 15: 86312.029,
-              16: 83227.728}
+# 0.465 re-pin: qwen3-8b prefill bills mlp_mul and q/k RMS, so every capped row is a little slower.
+CAPPED_THR = {9: 86002.150, 10: 88648.799, 11: 86515.675, 12: 88218.814, 13: 86278.640, 14: 83112.928, 15: 86263.262,
+              16: 83172.083}
 _C = {}
 
 
