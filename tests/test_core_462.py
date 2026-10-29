@@ -37,7 +37,8 @@ _FFN = 761_961_558_048_768
 # Front-60 rows that stay on the shared tail. Smaller than this row, or the
 # published config fails an existing gate.
 _UNTOUCHED = (
-    "qwen2.5-72b", "qwen2.5-3b", "qwen2.5-1.5b",
+    # 0.463 bills qwen2.5-72b with vec_kind qwen2_text. The rows below stay bare.
+    "qwen2.5-3b", "qwen2.5-1.5b",
     "llama-2-70b", "llama-2-7b", "llama-3.1-8b",
     "yi-1.5-34b",
     "qwen3-8b", "qwen3-8b-fp8", "qwen3-8b-awq", "qwen3-1.7b", "qwen3-32b",
@@ -107,7 +108,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_462():
-    assert __version__ == "0.462.0"
+    assert __version__ == "0.463.0"
 
 
 def test_mistral_large_is_the_front60_row_and_reuses_mistral_small():
