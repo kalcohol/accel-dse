@@ -122,7 +122,7 @@ def _geom(row):
 
 
 def test_version_is_452():
-    assert __version__ == "0.462.0"
+    assert __version__ == "0.463.0"
 
 
 def test_qwen2_text_bills_fp32_rmsnorm_and_the_product():
@@ -307,12 +307,15 @@ def test_non_vector_schedule_and_other_models():
         for shard in (Shard(), Shard(tp=2), Shard(tp=4)):
             assert _sched(m, ph, shard) == _sched(bare, ph, shard)
     # 0.455 bills the Ming-0.5B Qwen2 backbone as qwen2_text. Qwen3-TTS stays off it.
-    for mid in ("qwen3-32b", "qwen2.5-72b", "llama-3.1-8b", "mistral-large", "mistral-7b",
+    # 0.463 bills front-60 qwen2.5-72b with this same vec_kind, through a
+    # separate gate. The 0.452 allowlist is unchanged. The other rows stay off it.
+    for mid in ("qwen3-32b", "qwen2.5-3b", "llama-3.1-8b", "mistral-large", "mistral-7b",
                 "mixtral-8x22b", "magistral-small", "olmo-3-32b-think", "qwen3-vl-235b-a22b",
                 "qwen3-coder-480b-a35b", "qwen3-tts-1.7b-base"):
         other = get_model(mid)
         assert other.vec_kind != "qwen2_text"
         assert all(L.vec_kind != "qwen2_text" for L in other.layers)
+    assert get_model("qwen2.5-72b").vec_kind == "qwen2_text"
     assert get_model("step-audio-2-r1.1").vec_kind == "step_audio"
     assert get_model("qwen3-14b").vec_kind == "qwen3"
     assert get_model("granite-4.1-30b").vec_kind == "granite"
@@ -320,7 +323,7 @@ def test_non_vector_schedule_and_other_models():
     assert get_model("qwen3-vl-32b").vec_kind == "qwen3vl_text"
     assert get_model("carbon-x").vec_kind == "carbon_qwen"
     assert get_model("mistral-small-3.2-24b-instruct-2506").vec_kind == "mistral_small"
-    plain = get_model("qwen2.5-72b")
+    plain = get_model("qwen2.5-3b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]
@@ -440,7 +443,9 @@ def test_published_flags_and_linear_shape_are_refused():
     single = replace(km, final_norm_params=km.hidden)
     _raises(lambda: _tag_qwen2_text_vectors(single, kc), "qwen2 text final norm is not two")
     other = get_model("qwen2.5-72b")
-    assert _tag_qwen2_text_vectors(other, _tc(load_release(other.hf_id)["config"])).vec_kind == ""
+    cleared = replace(
+        other, layers=tuple(replace(L, vec_kind="") for L in other.layers), vec_kind="")
+    assert _tag_qwen2_text_vectors(cleared, _tc(load_release(other.hf_id)["config"])).vec_kind == ""
 
 
 def test_ffn_gemm_flops_match_the_closed_form():

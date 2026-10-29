@@ -95,7 +95,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_450():
-    assert __version__ == "0.462.0"
+    assert __version__ == "0.463.0"
 
 
 def test_step_audio_bills_fp32_rmsnorm_and_the_product():
@@ -275,7 +275,7 @@ def test_non_vector_schedule_and_other_models():
     assert get_model("exaone-4.0-32b").vec_kind == "exaone4"
     assert get_model("qwen3-vl-32b").vec_kind == "qwen3vl_text"
     assert get_model("carbon-x").vec_kind == "carbon_qwen"
-    plain = get_model("qwen2.5-72b")
+    plain = get_model("qwen2.5-3b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]

@@ -101,7 +101,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_455():
-    assert __version__ == "0.462.0"
+    assert __version__ == "0.463.0"
 
 
 def test_qwen2_05b_backbones_bill_fp32_rmsnorm_and_the_product():
@@ -276,7 +276,7 @@ def test_non_vector_schedule_and_other_models():
         cleared = _bare(m)
         for shard in (Shard(), Shard(tp=2), Shard(tp=4)):
             assert _sched(m, ph, shard) == _sched(cleared, ph, shard)
-    for mid in ("qwen3-32b", "qwen3-8b", "qwen3-1.7b", "qwen2.5-72b", "llama-3.1-8b",
+    for mid in ("qwen3-32b", "qwen3-8b", "qwen3-1.7b", "qwen2.5-3b", "llama-3.1-8b",
                 "olmo-3-32b-think", "jais-3-32b",
                 "qwen3-vl-235b-a22b", "qwen3-coder-480b-a35b",
                 "qwen3-tts-1.7b-base", "qwen3-tts-0.6b-base", "qwen3-asr-1.7b", "qwen3-asr-0.6b",
@@ -287,7 +287,9 @@ def test_non_vector_schedule_and_other_models():
         assert not any("0.455" in n for n in other.notes)
     assert get_model("qwen3-8b").vec_kind == ""
     assert get_model("qwen3-32b").vec_kind == ""
-    assert get_model("qwen2.5-72b").vec_kind == ""
+    assert get_model("qwen2.5-72b").vec_kind == "qwen2_text"
+    assert any("0.463" in n for n in get_model("qwen2.5-72b").notes)
+    assert not any("0.455" in n for n in get_model("qwen2.5-72b").notes)
     kimi = get_model("kimi-audio-7b")
     assert kimi.vec_kind == "qwen2_text"
     assert any("0.452" in n for n in kimi.notes)
@@ -388,7 +390,9 @@ def test_published_flags_and_linear_shape_are_refused():
     _raises(lambda: _tag_qwen2_text_vectors(cleared, bad_heads),
             "qwen2 text hidden is not heads times head_dim")
     other = get_model("qwen2.5-72b")
-    assert _tag_qwen2_text_vectors(other, _tc(load_release(other.hf_id)["config"])).vec_kind == ""
+    cleared = replace(
+        other, layers=tuple(replace(L, vec_kind="") for L in other.layers), vec_kind="")
+    assert _tag_qwen2_text_vectors(cleared, _tc(load_release(other.hf_id)["config"])).vec_kind == ""
 
 
 def test_ffn_gemm_flops_match_the_closed_form():

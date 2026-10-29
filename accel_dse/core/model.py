@@ -585,6 +585,7 @@ class ModelSpec:
     # 0.461: "whisper" bills the decoder LayerNorm (fp32, one rsqrt per token
     # row). final_norm_params is weight + bias, so the rsqrt count is one.
     # 0.462: Mistral-Large reuses mistral_small for the same final RMSNorm.
+    # 0.463: Qwen2.5-72B reuses qwen2_text for the same final RMSNorm.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -5287,6 +5288,88 @@ def _tag_qwen2_text_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="qwen2_text", notes=notes)
 
 
+_QWEN25_72B = frozenset({"qwen2.5-72b"})
+
+
+def _tag_qwen25_72b_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.463: bill published Qwen2.5-72B RMSNorm and the SwiGLU product.
+
+    Qwen2ForCausalLM uses Qwen2RMSNorm and Qwen2MLP, the same classes as the
+    Qwen2 text towers billed in 0.452 and 0.455. Qwen2RMSNorm matches
+    T5LayerNorm: fp32 mean of squares, one rsqrt, times weight. The MLP is
+    down(act(gate) * up). Qwen2Attention hardcodes q/k/v bias and no q/k
+    norm. SiLU stays the existing act op. The product is mlp_mul between
+    fused gate_up and down. Hidden norms stay pre-norm. use_sliding_window
+    is false, so the JSON sliding_window key does not open a layer window.
+    q width is num_attention_heads * head_dim and equals hidden. vec_kind
+    reuses qwen2_text. This id is inside the first 60 catalog rows. The
+    0.452 / 0.455 allowlist is not extended. Smaller Qwen2.5 rows stay on
+    the shared tail.
+    """
+    if spec.id not in _QWEN25_72B:
+        return spec
+    if c.get("model_type") != "qwen2":
+        raise ValueError("qwen2.5 72b model_type is not qwen2")
+    if c.get("architectures") != ["Qwen2ForCausalLM"]:
+        raise ValueError("qwen2.5 72b architecture is not qwen2")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("qwen2.5 72b hidden_act is not silu")
+    if c.get("attention_bias") not in (None, True):
+        raise ValueError("qwen2.5 72b attention_bias is not true")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("qwen2.5 72b rope_scaling is not null")
+    if spec.act_fmt != "bf16":
+        raise ValueError("qwen2.5 72b activation dtype is not bf16")
+    if spec.fmt("mlp").fmt != "bf16" or spec.fmt("attn").fmt != "bf16":
+        raise ValueError("qwen2.5 72b weight dtype is not bf16")
+    if c.get("mlp_bias") is True:
+        raise ValueError("qwen2.5 72b mlp_bias is not false")
+    if c.get("attention_dropout") not in (None, 0, 0.0):
+        raise ValueError("qwen2.5 72b attention_dropout is not 0")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("qwen2.5 72b use_sliding_window is not false")
+    if c.get("use_mrope") not in (None, False):
+        raise ValueError("qwen2.5 72b use_mrope is not false")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("qwen2.5 72b layer_types is not full_attention")
+    h = c["hidden_size"]
+    heads = c["num_attention_heads"]
+    hkv = c["num_key_value_heads"]
+    if (not isinstance(h, int) or isinstance(h, bool) or h <= 0
+            or not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0
+            or not isinstance(hkv, int) or isinstance(hkv, bool) or hkv <= 0
+            or h % heads != 0):
+        raise ValueError("qwen2.5 72b hidden is not heads times head_dim")
+    hd = h // heads
+    published = c.get("head_dim")
+    if published is not None and published != hd:
+        raise ValueError("qwen2.5 72b head_dim is not hidden over heads")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("qwen2.5 72b final norm is not one")
+    expect_misc = 2 * h + (heads + 2 * hkv) * hd
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("qwen2.5 72b mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("qwen2.5 72b mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd or L.core.window is not None:
+            raise ValueError("qwen2.5 72b attention is not gqa head_dim")
+        if L.misc_params != expect_misc:
+            raise ValueError("qwen2.5 72b bias is not qkv")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("qwen2.5 72b attention is not q then k")
+        if by["q"].n != h or by["k"].n != hkv * hd or by["q"].n != heads * hd:
+            raise ValueError("qwen2.5 72b qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="qwen2_text") for L in spec.layers)
+    note = ("0.463：Qwen2RMSNorm 是 T5 配方，fp32 归约。"
+            "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。没有 q/k norm。"
+            "q 宽等于 hidden。"
+            "JSON 里的 sliding_window 在 use_sliding_window 为 false 时不打开滑窗。"
+            "前 60 条里只打这一行。不放宽既有 Qwen2 文本塔名单。")
+    return replace(spec, layers=layers, vec_kind="qwen2_text", notes=spec.notes + (note,))
+
+
 _OMNIASR_LLAMA = frozenset({
     "omniasr-llm-300m-v2",
     "omniasr-llm-1b-v2",
@@ -6655,7 +6738,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_mistral_large_vectors(
+    return _tag_qwen25_72b_vectors(
+        _tag_mistral_large_vectors(
         _tag_whisper_decoder_vectors(
         _tag_ernie_moe_vectors(
         _tag_moshi_vectors(
@@ -6667,7 +6751,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
