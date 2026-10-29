@@ -6,6 +6,31 @@
 
 
 
+## [0.471.0] — 2026-10-29
+
+### Muse Spark 按发布的 latent 专家 SwiGLU 相乘入账
+
+- **选择。** mRoPE 的逐层 apply 与现有 `rope` 的元素次数相同。Llama-3 的 `rope_scaling` 只改初始化的 `inv_freq`，0.470 已经确认没有新的逐 token 算子。生成域的 AdaLN 已经在 `model.adaln` 里。`swiglu_limit` 和 `swigluoai` 不是 `silu(gate)*up`。0.467 入账的是 Qwen3 头宽，0.468 入账的是 Qwen3.5 那 15 行专家相乘，0.469 入账的是 Kimi-K3 的 SituAndMul，0.470 入账的是 `llama-3.3-70b` 的 RMSNorm 和稠密门乘。前 60 条里下一条还没入账的普通 `silu(gate)*up` 是 `mixtral-8x22b`（`56 * 2 * 16384 = 1,835,008`），然后是 `seed-oss-36b`（1,769,472）、`minimax-text-01`（1,474,560）和 `glm-5.3`（1,419,264）。目录外面、0.174 已经按发布建好、0.468 明确当成普通 `silu(gate)*up` 跳过的 Muse Spark 更大：62 层、top-8、专家宽 4096，每个 token `62 * 8 * 4096 = 2,031,616`。它比 mixtral 大，比已经入账的 `qwen3.8-2.4t`（2,072,576）小。不重做 0.467–0.470。不把专家前后的 RMSNorm、路由权重相乘或注意力输出门写成这一次的算子。专家后的 RMSNorm 宽度与这次相乘相同，仍不在这一笔里。
+- **入账。** 没有新的激活种类。新的 `vec_kind` 是 `muse_swiglu`，只表示插入这次的相乘，不把范数改成 fp32。发布的专家是 latent pooler 之后的 `down(silu(gate) * up)`，`hidden_act` 是 `silu`。不把 mlx 的 PreciseSwiGLU 升到 fp32 写成这一行的 dtype。SiLU 仍叫 `expert_act`，`a_fmt` 仍是历史默认 bf16，挪到 `expert.down` 之前。相乘是 `mlp_mul`，宽度是有用的 token-expert 对乘本地 `moe_intermediate_size`，不是 latent 宽度，也不是 GEMM 的填充行。`sfu` 是 0，FLOPs 是 0。`a_fmt` 是 `act_fmt_for("expert")`：没有单独专家激活的行跟随 `act_fmt`，已经发布 `act_expert` 的行留在那份激活上。没有共享专家，所以没有共享 `mlp_mul`。专家前 RMSNorm、专家后 RMSNorm、路由权重相乘和注意力输出门不记。稠密 MTP 草稿不打这个标签。`final_norm` 仍走原来的历史公式。六行的 `params()` 都是 819,989,536,256，发布是 819,990,552,064，`rel_err` 仍约 -1.239e-6，不是 0。`model.act_fmt` 六行都是 bf16。权重按发布：open 的专家是 bf16。fp8 行的专家 `w_fmt` 是 fp8，`w_bits` 四舍五入到 6 位是 8.007812，`mlp_mul` 的 `a_fmt` 是 fp8。mxfp4 的专家 `w_bits` 是 4.629032，相乘 `a_fmt` 是 mxfp4。nvfp4 的专家 `w_bits` 是 4.870971，相乘 `a_fmt` 是 nvfp4。
+- **默认窗口。** 提示长度 4096。62 层，hidden 8192，256 专家，top-8，latent 4096，专家宽 4096，共享专家 0。`expert_act` 的 `vec` 是 `4096 * 8 * 4096 * 4`，`sfu` 是 `4096 * 8 * 4096 * 2`。`mlp_mul` 的 `vec` 是 `4096 * 8 * 4096`。顺序是 `expert.gate_up`、`expert_act`、`mlp_mul`、`expert.down`。滑窗层和全注意力层都有这一次相乘。没有 `gelu`，也没有 `moe.shared_gate_up`。向量 FLOPs 是 0。GEMM 的名字、形状和 FLOPs 与清掉 `vec_kind` 之后相同。`expert.gate_up` 的 K 仍是 latent 4096，N 仍是 `2 * 4096`。`expert.down` 的 K 仍是 4096。DSpark 草稿是 5 层稠密 SwiGLU，intermediate 16384。DFlash2 草稿是 5 层稠密，intermediate 24576。两份草稿的 `vec_kind` 仍是空，没有 `mlp_mul`。
+- **TP 和请求 fp8。** 只设 `tp=2`、不配 `ep`，MoE 仍拒绝，和打标之前一样。`Shard(tp=2, ep=2)`：专家宽仍是 4096，token-expert 对按 EP 减半。`Shard(tp=2, etp=2)`：专家宽减半。请求 fp8（把 `act_fmt` 换成 fp8，不重跑打标）：open 这一行没有 `act_expert`，`mlp_mul` 和专家 GEMM 的 `a_fmt` 变成 fp8，`w_fmt` 仍是 bf16。`expert_act` 的 `a_fmt` 仍是 bf16。fp8、mxfp4、nvfp4 行的 `mlp_mul` 留在发布的专家激活上，不跟这次请求走。
+- **延迟例子。** 例子是 `muse-spark-open`。100T 没有 SFU。整段相乘露在关键路径上时，预填充 4096 的 batch 1 增量是 `4096 * 2,031,616 / (4 * 56 * 16 * 1e9) = 0.002321847` s（9 位小数），batch 2 是 0.004643694 s。HBM3E 预填充是 MAC，os 和 reconf 都露出这段：batch 1 从 4.424013796 / 3.703200078 s 变成 4.426335643 / 3.705521925 s，`round(tick, 1)` 仍是 4.4 / 3.7 s，放不下。batch 2 从 7.891570486 / 7.405850026 s 变成 7.896214180 / 7.410493720 s，仍是 7.9 / 7.4 s，放不下。LPDDR 预填充是 DRAM。SiLU 挪到两份专家 GEMM 之间之后，pipe 把原来露在关键路径上的向量叠进了访存，所以 tick 变小：batch 1 的 os 减少 0.008225892 s，从 10.096349972 s 变成 10.088124080 s，仍是 10.1 s，放不下。reconf 减少 0.008275268 s，从 9.995219083 s 变成 9.986943815 s，仍是 10.0 s，放不下。batch 2 的 os 减少 0.005815083 s（11.8 s），reconf 减少 0.005841782 s（11.6 s）。LPDDR 解码的 tick 逐位相同：os 0.469373112 / 0.734016233 s，reconf 0.469372598 / 0.734015720 s，仍是 DRAM，仍是 0.5 / 0.7 s，放不下。HBM3E os 解码是 MAC，batch 1 从 0.050538409 s 变成 0.050538976 s（增量 0.000000567 s，等于一个 token 的相乘），6 位从 0.050538 s 变成 0.050539 s，`round(tick, 1)` 仍是 0.1 s，放不下。batch 2 从 0.078988468 s 变成 0.078989602 s，6 位从 0.078988 s 变成 0.078990 s，仍是 0.1 s。HBM3E reconf 解码逐位相同，仍是 DRAM，仍是 0.0 s，放不下。HBM3E、os、EP 等于 TP 的 1 / 2 / 4 / 8，预填充从 4.424013796 / 2.434071034 / 1.428649154 / 0.921571085 s 变成 4.426335643 / 2.435235685 / 1.429235362 / 0.921867315 s。增量是 0.002321847 / 0.001164652 / 0.000586208 / 0.000296231 s。`round(tick, 1)` 仍是 4.4 / 2.4 / 1.4 / 0.9 s，仍是 MAC。TP8 放得下，其余放不下。H100-SXM 参考硬件、reconf、预填充 8192：从 1.127519507 s 变成 1.128057734 s（增量 0.000538227 s），仍是 1.1 s，仍是 FEED，放不下。请求 fp8、LPDDR、os、预填充：从 10.094251902 s 变成 10.086026010 s，减少 0.008225892 s，仍是 10.1 s，仍是 DRAM，放不下。100T 的向量吞吐按元素计，fp8 不改变这次相乘本身的时间。量化行的相乘宽度相同。HBM3E os 预填充 batch 1 的增量同样是 0.002321847 s。fp8 的 LPDDR os 仍是 DRAM，从 5.347765666 s 变成 5.339539483 s，仍是 5.3 s。mxfp4 和 nvfp4 的 LPDDR os 是 MAC，从 4.441731422 s 变成 4.444053269 s，仍是 4.4 s。都放不下。测过的窗口里没有 0.1 s 改档。
+- **指纹。** 前 60 条的 stage 指纹仍是 `f54f33dfa13cdd41`。默认 pipe 仍是 `19cac027be730bc4`。去掉 DeepSeek-V4 之后 stage 仍是 `5c058c9ed0f8f61e`，pipe 仍是 `0f2c94a6e5524bc5`。这六行不在前 60 条里。锁定窗口是解码。KPI 在 `FUSE_QKV=False` 下不动：`qwen3-32b` 仍是 `b975b7b3760e`，`qwen3-8b` 仍是 `11f6f3a5d21f`，`llama-3.3-70b` 仍是 `8e50c6cabdc8`，`esmfold` 仍是 `3bbede544308`，ESM-2 3B 仍是 `34f7544287cd`，Wan2.1-1.3B 仍是 `309919c00604`。默认模型仍是 `qwen3-8b`。
+- **不改。** 不新写激活种类。不改 GEMM 名字、形状和 FLOPs。不新开目录行。不放宽 0.468 的 Qwen3.5 名单，也不放宽 0.469 / 0.470。`qwen3.8-2.4t` 仍是 `qwen35_moe`。`kimi-k3` 仍是 `kimi_situ`。`llama-3.3-70b` 仍是 `carbon_llama`。未打标的 MoE 仍是 `expert.gate_up`、`expert.down`、`expert_act`，没有 `mlp_mul`。`mixtral-8x22b`、`seed-oss-36b`、`minimax-text-01` 和 `glm-5.3` 仍是 `vec_kind == ""`。把 Mixtral 的层配上 `muse-spark-open` 的 id，新门拒绝。把这一行的 id 换成 `mixtral-8x22b`，新门不打标。前 60 条的末尾仍是 `wan2.1-14b` 和 `wan2.1-1.3b`。不改 `docs/MODEL.md`。
+- **未纳入：**
+  - **mRoPE。** 发布的逐层 apply 与现有 `rope` 次数相同。不另记。
+  - **Llama-3.x 的 `rope_scaling` 运行时。** 0.470 已经确认只改初始化的 `inv_freq`。`attention_scaling` 是 1。
+  - **AdaLN。** Muse Spark 不是按条件生成的 scale / shift。生成域已经有 `model.adaln`。
+  - **`swiglu_limit`、`swigluoai`。** 不是 `silu(gate)*up`。`deepseek-v4-pro` 的宽度是 1,311,744，`glm-5.3-flash` 是 811,008，`gpt-oss-120b` 是 414,720。`minimax-m3` 的 `hidden_act` 是 `swigluoai`。都更窄。不打。
+  - **前 60 条里其余普通 `silu(gate)*up`。** `mixtral-8x22b`、`seed-oss-36b`、`minimax-text-01`、`glm-5.3` 比 2,031,616 小。这一轮不打。
+  - **`qwen3.8-2.4t` 和 Qwen3.5 那 15 行。** 0.468 已经入账。不重做。
+  - **`drama-3`。** 文本相乘宽度比这一行小，而且不在这张名单里。
+  - **ERNIE-4.5 的专家相乘。** 0.458 明确留下未记。宽度约 1,462,272，比这一行小。顺序仍是 `expert.down` 然后 `expert_act`。
+  - **专家前 RMSNorm、专家后 RMSNorm、路由权重相乘、注意力输出门、q/k RMSNorm、残差门。** 不是这一次的相乘。专家后 RMSNorm 的宽度与 2,031,616 相同，仍不记。路由权重相乘在 0.468 和 0.469 已经明确不记。
+
+
+
+
 ## [0.470.0] — 2026-10-29
 
 ### Llama-3.3-70B 按发布的 RMSNorm 和 SwiGLU 相乘入账

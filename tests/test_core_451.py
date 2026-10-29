@@ -93,7 +93,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_451():
-    assert __version__ == "0.470.0"
+    assert __version__ == "0.471.0"
 
 
 def test_mistral_small_bills_fp32_rmsnorm_and_the_product():
