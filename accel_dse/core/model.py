@@ -586,6 +586,8 @@ class ModelSpec:
     # row). final_norm_params is weight + bias, so the rsqrt count is one.
     # 0.462: Mistral-Large reuses mistral_small for the same final RMSNorm.
     # 0.463: Qwen2.5-72B reuses qwen2_text for the same final RMSNorm.
+    # 0.464: Llama-2 and Yi-1.5 reuse carbon_llama. Omitted attention_bias,
+    # mlp_bias, and pretraining_tp are the published defaults False / False / 1.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -5370,6 +5372,102 @@ def _tag_qwen25_72b_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="qwen2_text", notes=spec.notes + (note,))
 
 
+_LLAMA2_FP16 = frozenset({"llama-2-70b", "llama-2-7b"})
+_LLAMA2_BF16 = frozenset({"yi-1.5-34b"})
+_LLAMA2 = _LLAMA2_FP16 | _LLAMA2_BF16
+
+
+def _tag_llama2_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.464: bill published Llama-2 and Yi-1.5 RMSNorm and the SwiGLU product.
+
+    LlamaForCausalLM uses LlamaRMSNorm and LlamaMLP. LlamaRMSNorm matches
+    T5LayerNorm: fp32 mean of squares, one rsqrt, times weight. The MLP is
+    down(silu(gate) * up) when pretraining_tp is 1. Transformers 4.31
+    hardcodes q/k/v/o and MLP bias to False; attention_bias and mlp_bias
+    are not config fields yet. pretraining_tp defaults to 1, and that value
+    selects the unsplit product rather than the sliced pretraining path.
+    An omitted key is that published default, not a new architecture.
+    Transformers 4.37 still hardcodes MLP bias False. Yi-1.5 publishes
+    attention_bias false and pretraining_tp 1, and omits mlp_bias. There is
+    no q/k norm. q width equals hidden. vec_kind reuses carbon_llama. The
+    Carbon allowlist is not extended and still requires the three keys to
+    be present. rope_scaling other than null stays on the shared tail.
+    """
+    if spec.id not in _LLAMA2:
+        return spec
+    if c.get("model_type") != "llama":
+        raise ValueError("llama2 model_type is not llama")
+    if c.get("architectures") != ["LlamaForCausalLM"]:
+        raise ValueError("llama2 architecture is not llama")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("llama2 hidden_act is not silu")
+    # Omitted attention_bias is the 4.31 hardcoded False, and the later
+    # LlamaConfig default False. A published True is a different projection.
+    if c.get("attention_bias") not in (None, False):
+        raise ValueError("llama2 attention_bias is not false")
+    # Omitted mlp_bias is the hardcoded Linear bias False through 4.37.
+    # The later LlamaConfig default is also False.
+    if c.get("mlp_bias") not in (None, False):
+        raise ValueError("llama2 mlp_bias is not false")
+    # Omitted pretraining_tp is LlamaConfig's default 1: the unsplit
+    # down(act(gate) * up) path. A value above 1 slices the linears.
+    if c.get("pretraining_tp") not in (None, 1):
+        raise ValueError("llama2 pretraining_tp is not 1")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("llama2 rope_scaling is not null")
+    if c.get("attention_dropout") not in (None, 0, 0.0):
+        raise ValueError("llama2 attention_dropout is not 0")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("llama2 use_sliding_window is not false")
+    if c.get("sliding_window") is not None:
+        raise ValueError("llama2 sliding_window is not null")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("llama2 layer_types is not full_attention")
+    h = c.get("hidden_size")
+    heads = c.get("num_attention_heads")
+    hkv = c.get("num_key_value_heads")
+    if (not isinstance(h, int) or isinstance(h, bool) or h <= 0
+            or not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0
+            or not isinstance(hkv, int) or isinstance(hkv, bool) or hkv <= 0
+            or h % heads != 0):
+        raise ValueError("llama2 hidden is not heads times head_dim")
+    hd = h // heads
+    published = c.get("head_dim")
+    if published is not None and published != hd:
+        raise ValueError("llama2 head_dim is not hidden over heads")
+    if spec.act_fmt != "bf16":
+        raise ValueError("llama2 activation dtype is not bf16")
+    want = "fp16" if spec.id in _LLAMA2_FP16 else "bf16"
+    if spec.fmt("mlp").fmt != want or spec.fmt("attn").fmt != want:
+        raise ValueError("llama2 weight dtype is not " + want)
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("llama2 final norm is not one")
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("llama2 mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("llama2 mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd or L.core.window is not None:
+            raise ValueError("llama2 attention is not gqa head_dim")
+        if L.misc_params != 2 * h:
+            raise ValueError("llama2 has no qk norm")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("llama2 attention is not q then k")
+        if by["q"].n != heads * hd or by["k"].n != hkv * hd or by["q"].n != h:
+            raise ValueError("llama2 qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="carbon_llama") for L in spec.layers)
+    note = ("0.464: LlamaRMSNorm is the T5 recipe, reduced in fp32. "
+            "SiLU stays the existing act op. The gate times up product is mlp_mul. "
+            "There is no q/k norm. q width equals hidden. "
+            "Omitted attention_bias, mlp_bias, and pretraining_tp are the published "
+            "defaults False, False, and 1. pretraining_tp 1 is the unsplit "
+            "down(silu(gate) * up) path. "
+            "The front-60 rows are llama-2-70b, llama-2-7b, and yi-1.5-34b. "
+            "The Carbon allowlist is not extended.")
+    return replace(spec, layers=layers, vec_kind="carbon_llama", notes=spec.notes + (note,))
+
+
 _OMNIASR_LLAMA = frozenset({
     "omniasr-llm-300m-v2",
     "omniasr-llm-1b-v2",
@@ -6738,7 +6836,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_qwen25_72b_vectors(
+    return _tag_llama2_vectors(
+        _tag_qwen25_72b_vectors(
         _tag_mistral_large_vectors(
         _tag_whisper_decoder_vectors(
         _tag_ernie_moe_vectors(
@@ -6751,7 +6850,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

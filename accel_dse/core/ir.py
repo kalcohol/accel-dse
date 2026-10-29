@@ -1342,6 +1342,8 @@ def _carbon_dense(L: Layer) -> bool:
     # ERNIE-4.5 MoE (0.458) subclasses LlamaRMSNorm and reuses carbon_llama.
     # Mistral-Large (0.462) is MistralForCausalLM and reuses mistral_small.
     # Qwen2.5-72B (0.463) is Qwen2ForCausalLM and reuses qwen2_text.
+    # Llama-2 and Yi-1.5 (0.464) are LlamaForCausalLM and reuse carbon_llama.
+    # Omitted bias and pretraining_tp keys are the published defaults.
     # mlp_mul is inserted only when the FFN is dense gate_up/down. MoE layers
     # keep expert_act. Shared-expert products stay on that path.
     return L.vec_kind in (
@@ -1907,7 +1909,8 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
             "step_audio", "mistral_small", "qwen2_text", "whisper"):
         # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm /
         # GraniteRMSNorm / Qwen2RMSNorm / MistralRMSNorm / Moshi rms_norm_f32 /
-        # Ernie4_5_MoeRMSNorm / Whisper decoder LayerNorm on every token row,
+        # Ernie4_5_MoeRMSNorm / Whisper decoder LayerNorm / Llama-2 and
+        # Yi-1.5 (0.464, same carbon_llama path) on every token row,
         # then the head reads the last rows. Kimi-Audio
         # publishes two Qwen2RMSNorms (norm and mimo_norm); final_norm_params
         # is 2 * hidden. Whisper's final_norm_params is also 2 * hidden, but
