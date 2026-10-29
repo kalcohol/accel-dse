@@ -1398,6 +1398,10 @@ def _carbon_dense(L: Layer) -> bool:
     # experts. There is no shared expert. Dense layers stay carbon_llama.
     # The 0.458 fp32 block norms stay on the norm sites below. The
     # routing-weight multiply after down is not this op.
+    # 0.479 glm5_swiglu does the same multiply on GLM-5, GLM-5.2, GLM-5.3,
+    # and Atria-Dawn. Dense layers, routed experts, and the one shared
+    # expert each insert mlp_mul. Shared SiLU stays unbilled. The MTP
+    # block stays untagged. Block RMSNorm stays on the historical ops.
     # 0.469 kimi_situ replaces the historical SiLU counts. SituAndMul is not
     # silu(gate) * up, so those layers do not emit act or expert_act.
     return L.vec_kind in (
@@ -1749,6 +1753,22 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
         elif L.vec_kind == "ernie300_swiglu":
             raise ValueError("ernie300 swiglu layer is not moe")
+        elif L.vec_kind == "glm5_swiglu":
+            # GlmMoeDsaMLP: down_proj(act_fn(gate_proj(x)) * up_proj(x)).
+            # hidden_act is silu. The class does not upcast. SiLU stays act.
+            # The product is mlp_mul on the intermediate width, not the fused
+            # gate_up rows. These are the three dense layers before the MoE.
+            # RMSNorm stays on the historical ops.
+            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("glm5 swiglu mlp is not gate_up then down")
+            nact = t * _cdiv(f.d_ff, tp)
+            af = model.act_fmt
+            for l in L.ffn_linears:
+                k, n = _lin_local(l, tp)
+                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
+                if l.name == "gate_up":
+                    ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
         else:
             for l in L.ffn_linears:
                 k, n = _lin_local(l, tp)
@@ -1779,6 +1799,15 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 # unbilled on this path. The sigmoid output gate is not this op.
                 if not f.gated or not f.n_shared or not f.d_shared:
                     raise ValueError("qwen35 moe shared expert is not swiglu")
+                n_loc = _cdiv(f.n_shared * f.d_shared, tp)
+                ops.append(Op("mlp_mul", "vector", li, vec=float(t * n_loc), a_fmt=model.act_fmt))
+            if L.vec_kind == "glm5_swiglu" and l.name == "shared_gate_up":
+                # GlmMoeDsaMoE shared expert is one GlmMoeDsaMLP of width
+                # moe_intermediate_size * n_shared_experts. The product is
+                # one multiply on every token. Shared SiLU stays unbilled.
+                # The routing-weight multiply is not this op.
+                if not f.gated or f.n_shared != 1 or not f.d_shared:
+                    raise ValueError("glm5 swiglu shared expert is not swiglu")
                 n_loc = _cdiv(f.n_shared * f.d_shared, tp)
                 ops.append(Op("mlp_mul", "vector", li, vec=float(t * n_loc), a_fmt=model.act_fmt))
             if L.vec_kind == "kimi_situ" and l.name == "shared_gate_up":
@@ -1824,6 +1853,11 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     or f.n_experts_b or f.d_expert_b or f.zero_experts or f.groups
                     or f.expert_role):
                 raise ValueError("ernie300 swiglu expert is not swiglu")
+            if L.vec_kind == "glm5_swiglu" and (
+                    not f.gated or f.latent or f.n_shared != 1 or not f.d_shared
+                    or f.d_ff or f.n_experts_b or f.d_expert_b or f.zero_experts
+                    or f.groups or f.expert_role):
+                raise ValueError("glm5 swiglu expert is not swiglu")
             if tokens <= 0 or n_exp <= 0:
                 return
             if zero and not f.groups:
@@ -1901,6 +1935,17 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(act)
                     ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
                                   a_fmt=model.act_fmt))
+                if L.vec_kind == "glm5_swiglu":
+                    # GlmMoeDsaExperts: act_fn(gate) * up, then down.
+                    # hidden_act is silu. The class does not upcast. SiLU
+                    # stays expert_act. The product is one multiply on the
+                    # useful token-expert pairs, not the padded GEMM rows.
+                    # a_fmt follows act_fmt. The shared expert is a separate
+                    # multiply. The routing-weight multiply after down is
+                    # not this op.
+                    ops.append(act)
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
+                                  a_fmt=model.act_fmt))
                 if L.vec_kind == "kimi_situ":
                     # KimiBlockSparseMLP: SituAndMul(cat(w1, w3)) then w2.
                     # The historical SiLU expert_act is not this formula.
@@ -1913,7 +1958,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                                    share=u))
                 if L.vec_kind not in (
                         "qwen35_moe", "kimi_situ", "muse_swiglu", "mixtral_swiglu",
-                        "ernievl_swiglu", "minimax_swiglu", "ernie300_swiglu"):
+                        "ernievl_swiglu", "minimax_swiglu", "ernie300_swiglu",
+                        "glm5_swiglu"):
                     ops.append(act)
             if sh.ep > 1:
                 pay = r.pairs_local * ein * ab

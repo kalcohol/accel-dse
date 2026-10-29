@@ -111,7 +111,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_476():
-    assert __version__ == "0.478.0"
+    assert __version__ == "0.479.0"
 
 
 def test_two_rows_bill_the_text_product():
@@ -186,10 +186,10 @@ def test_two_rows_bill_the_text_product():
         assert _tag_ernievl_swiglu_vectors(_bare(m), cfg).vec_kind == "ernievl_swiglu"
     for mid in ("ernie-4.5-vl-28b-a3b-pt", "ernie-4.5-vl-28b-a3b",
                 "ernie-4.5-vl-28b-a3b-base", "ernie-4.5-vl-28b-a3b-thinking",
-                "jais-3-7b", "jais-3-3.7b", "jais-3-0.9b",
-                "glm-5", "glm-5.2", "glm-5.3", "atria-dawn",
-                "atria-dawn-fp8", "drama-3"):
+                "jais-3-7b", "jais-3-3.7b", "jais-3-0.9b", "drama-3"):
         assert get_model(mid).vec_kind == ""
+    for mid in ("glm-5", "glm-5.2", "glm-5.3", "atria-dawn", "atria-dawn-fp8"):
+        assert get_model(mid).vec_kind == "glm5_swiglu"
     assert get_model("jais-3-32b").vec_kind == "jais3_swiglu"
     assert get_model("olmo-3-32b-think").vec_kind == "olmo3_swiglu"
     assert get_model("seed-oss-36b").vec_kind == "seed_swiglu"
