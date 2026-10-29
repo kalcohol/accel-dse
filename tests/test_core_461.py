@@ -96,7 +96,7 @@ def _bad(mid: str, edit):
 
 
 def test_version_is_461():
-    assert __version__ == "0.467.0"
+    assert __version__ == "0.468.0"
 
 
 def test_whisper_decoder_bills_erf_gelu_between_the_linears():
@@ -239,7 +239,7 @@ def test_non_vector_schedule_fingerprints_and_kpis():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "7d44cdadbf38cc9e"
+    assert _fp({}) == "19cac027be730bc4"
     from accel_dse.core.evaluate import evaluate
     from accel_dse.core.scenario import Scenario
 
@@ -257,7 +257,7 @@ def test_non_vector_schedule_fingerprints_and_kpis():
                     h.update(type(ex).__name__.encode())
         return h.hexdigest()[:16]
 
-    assert fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e" and fpx({}) == "903976206252d461"
+    assert fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e" and fpx({}) == "0f2c94a6e5524bc5"
     assert "whisper-large-v3" not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"
     assert _FULL_0651["esm2-3b"] == "34f7544287cd"

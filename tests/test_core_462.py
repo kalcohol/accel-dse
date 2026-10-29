@@ -109,7 +109,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_462():
-    assert __version__ == "0.467.0"
+    assert __version__ == "0.468.0"
 
 
 def test_mistral_large_is_the_front60_row_and_reuses_mistral_small():
@@ -364,9 +364,9 @@ def test_fingerprints_and_kpi():
     from tests.test_core_coverage import _FULL_0651, _kpi
     # Stage stays f54f33dfa13cdd41. Default pipe moves.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "7d44cdadbf38cc9e"
+    assert _fp({}) == "19cac027be730bc4"
     assert _fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e"
-    assert _fpx({}) == "903976206252d461"
+    assert _fpx({}) == "0f2c94a6e5524bc5"
     # The locked KPI is the unfused wide stage path (pin_module_unfused). Those
     # 10-digit fields do not move. The default fused pipe fingerprint does.
     from accel_dse.core import evaluate as E
