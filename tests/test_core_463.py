@@ -41,7 +41,7 @@ _FFN = 476_225_973_780_480
 # published config fails an existing gate.
 _UNTOUCHED = (
     # 0.464 bills llama-2-70b, llama-2-7b, and yi-1.5-34b with carbon_llama.
-    "qwen2.5-3b", "qwen2.5-1.5b",
+    # 0.466 bills qwen2.5-3b and qwen2.5-1.5b with qwen2_text.
     "llama-3.1-8b",
     # 0.465 bills qwen3-8b, its fp8 and AWQ twins, and qwen3-1.7b with qwen3.
     "qwen3-32b", "qwen3-4b", "qwen3-0.6b",
@@ -111,7 +111,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_463():
-    assert __version__ == "0.465.0"
+    assert __version__ == "0.466.0"
 
 
 def test_qwen25_72b_is_the_front60_row_and_reuses_qwen2_text():
@@ -270,7 +270,11 @@ def test_non_vector_schedule_and_other_rows_stay_untagged():
         assert all(L.vec_kind == "" for L in other.layers), mid
         pops = build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard())
         assert "mlp_mul" not in [o.name for o in pops], mid
-    assert _tag_qwen25_72b_vectors(get_model("qwen2.5-3b"), c).vec_kind == ""
+    # 0.466 bills qwen2.5-3b on a separate gate. This function still does not claim it.
+    small3 = get_model("qwen2.5-3b")
+    assert small3.vec_kind == "qwen2_text" and any(n.startswith("0.466") for n in small3.notes)
+    assert not any(n.startswith("0.463") for n in small3.notes)
+    assert _tag_qwen25_72b_vectors(_bare(small3), c).vec_kind == ""
     small = get_model("qwen2.5-omni-7b")
     assert small.vec_kind == "qwen2_text"
     assert any("0.452" in n for n in small.notes)
@@ -342,7 +346,9 @@ def test_published_flags_and_linear_shape_are_refused():
     _raises(lambda: _tag_qwen25_72b_vectors(two, c_ok),
             "qwen2.5 72b final norm is not one")
     other = get_model("qwen2.5-3b")
-    assert _tag_qwen25_72b_vectors(other, _tc(load_release(other.hf_id)["config"])).vec_kind == ""
+    assert "qwen2.5-3b" not in _QWEN25_72B
+    assert _tag_qwen25_72b_vectors(
+        _bare(other), _tc(load_release(other.hf_id)["config"])).vec_kind == ""
     fp32 = replace(m, act_fmt="fp32")
     _raises(lambda: _tag_qwen25_72b_vectors(fp32, c_ok),
             "qwen2.5 72b activation dtype is not bf16")
@@ -389,9 +395,9 @@ def test_fingerprints_and_kpi():
     # 0.463 left these hashes in place. 0.464 moves the default pipe and the
     # no-DeepSeek-V4 pipe. Stage hashes stay.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "25e9cd50ab57455e"
+    assert _fp({}) == "555d25ec2cbe1bfe"
     assert _fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e"
-    assert _fpx({}) == "a1484d51a9ad1ed3"
+    assert _fpx({}) == "666d0c5f91fbb6a4"
     from accel_dse.core import evaluate as E
     with E.model_flags(FUSE_QKV=False):
         assert _kpi("qwen2.5-72b") == "51b90d8f5e68"

@@ -73,6 +73,6 @@ def test_docs_and_no_ui_patch():
     cl = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read()
     sec = cl.split("## [0.336.0]")[1].split("## [")[0]
     assert "§281" in md and "## [0.336.0]" in cl and "OmniASR" in sec
-    # Portable "UI not applied" check (0.337): do NOT require /workspace/ui-audit/ui.patch —
-    # that path is authoring-box only and absents on other hosts (msa1). Docs must say so.
+    # Portable "UI not applied" check (0.337): the 0.336 changelog records that
+    # the UI patch was not applied. Do not require a host-local patch file.
     assert "UI patch not applied" in sec

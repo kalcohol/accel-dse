@@ -6,6 +6,23 @@
 
 
 
+## [0.466.0] — 2026-10-29
+
+### 前 60 条里剩下的 Qwen2.5 补上已执行的 RMSNorm 和门控 MLP 相乘
+
+- **选择。** 0.465 之后，前 60 条里还没入账、而且对得上现成 `qwen2_text` 的是 `qwen2.5-3b`（`Qwen/Qwen2.5-3B-Instruct`，相乘元素 `36 * 11008 = 396,288`）和 `qwen2.5-1.5b`（`28 * 8960 = 250,880`）。配方与 0.463 的 `qwen2.5-72b` 相同。不打 hidden 不等于头数乘 `head_dim` 的 `qwen3-32b` / `qwen3-4b` / `qwen3-0.6b`。不重做 0.445–0.465。
+- **入账。** 没有新的激活种类，也没有新的 `vec_kind`。两行都打已有的 `qwen2_text`。不放宽 `_QWEN2_TEXT`，也不放宽 `_QWEN25_72B`。新名单只认这两行。`Qwen2RMSNorm` 是 T5 配方：fp32 归约，一次 rsqrt，再乘 weight。SiLU 仍叫 `act`。门乘是 `mlp_mul`。没有 q/k norm。q 宽等于 hidden。`use_sliding_window` 是 false，JSON 里的 `sliding_window` 不打开滑窗。`rel_err` 都是 0，`tie_embeddings` 为 true。3B 的 `params()` 是 3,085,938,688，`norm` 角色参数是 149,504，层上 `misc_params` 是 6656。1.5B 是 1,543,714,304 / 87,552 / 5120。权重和激活都是 bf16。1.5B 的 `max_window_layers` 是 21，小于 28 层，窗口仍是 None。
+- **默认窗口。** 提示长度 4096。3B：隐藏 2048，inner 11008，36 层，16 / 2 头，head 128。1.5B：1536 / 8960 / 28 层 / 12 / 2。`act` 的 `vec` 是 token 乘 inner 乘 4，`sfu` 是 token 乘 inner 乘 2。`mlp_mul` 的 `vec` 是 token 乘 inner。范数 `a_fmt` 是 fp32，`sfu` 是行数。顺序与 72B 相同，没有 `q_rms` / `k_rms` / `gelu`。`final_norm` 的 `layer` 等于深度。36 层与 28 层 FFN GEMM 之和是 19.945828122624 TFLOP 和 9.470402887680 TFLOP。向量 FLOPs 是 0。GEMM 的名字、形状和 FLOPs 不变。
+- **TP2 和请求 fp8。** 没有发布的 fp8 行。TP2 切中间维，不复制范数。本地 inner 是 5504 和 4480。`mlp.gate_up` 的 N 仍是完整 inner，`mlp.down` 的 K 是 inner 的一半。kv 头是 2，TP4 / TP8 不能整除，沿用现成的不均匀 GQA，不新写切分。请求 fp8（把 `act_fmt` 换成 fp8，不重跑打标）：`act` 和 `mlp_mul` 的 `a_fmt` 是 fp8。范数仍是 fp32。GEMM 的 `a_fmt` 是 fp8，`w_fmt` 仍是 bf16，`w_bits` 仍是 16。
+- **延迟例子。** 100T 没有 SFU，所以只有 `mlp_mul` 改时间。预填充 4096 的增量：3B 是 0.000452901 s，1.5B 是 0.000286720 s，LPDDR 和 HBM3E、os 和 reconf 相同。3B LPDDR os 从 0.274559306 s 变成 0.275012206 s，reconf 从 0.260808872 s 变成 0.261261772 s，HBM3E os 从 0.271757314 s 变成 0.272210214 s，reconf 从 0.257748693 s 变成 0.258201593 s，`round(tick, 1)` 仍是 0.3 s，仍是 MAC，放得下。1.5B 四个窗口从 0.131479042 / 0.127418913 / 0.129432984 / 0.125177891 s 变成 0.131765762 / 0.127705633 / 0.129719704 / 0.125464611 s，仍是 0.1 s。两行的 LPDDR 解码 tick 逐位相同（DRAM）。HBM3E 解码 os：3B 的 6 位从 0.003567 s 变成 0.003568 s，1.5B 仍是 0.001815 s，`round(tick, 1)` 仍是 0.0 s。reconf 解码逐位相同。预填充 batch 2 的增量是 0.000905801 s 和 0.000573440 s，`round(tick, 1)` 仍是 0.5 s 和 0.3 s。HBM3E、os、TP 1 / 2 / 4 / 8 的预填充 `round(tick, 1)`：3B 仍是 0.3 / 0.1 / 0.1 / 0.0 s，1.5B 仍是 0.1 / 0.1 / 0.0 / 0.0 s。H100-SXM 预填充 8192：3B 从 0.070809962 s 变成 0.070914948 s（仍是 0.1 s），1.5B 从 0.036607847 s 变成 0.036674312 s（仍是 0.0 s）。请求 fp8 的预填充与 bf16 窗口相同（权重仍是 bf16）。测过的窗口里没有 0.1 s 改档。`docs/MODEL.md` §382 记下这笔 pre-norm。
+- **指纹。** 前 60 条的 stage 指纹仍是 `f54f33dfa13cdd41`。默认 pipe 从 `25e9cd50ab57455e` 变成 `555d25ec2cbe1bfe`。去掉 DeepSeek-V4 之后 stage 仍是 `5c058c9ed0f8f61e`，pipe 从 `a1484d51a9ad1ed3` 变成 `666d0c5f91fbb6a4`。动的是 `qwen2.5-1.5b` 在 SLC 256 MiB（不是 LRU）上的 summary 末位：`tpot_ms` / `step_ms` 与 `tok_s` / `tok_s_card`。tick 不变。3B 的四份解码 summary 逐字段相同。LPDDR 解码 tick 两行都逐位相同。KPI 在 `FUSE_QKV=False` 下不动：`qwen2.5-3b` 仍是 `8b8d7db5d3eb`，`qwen2.5-1.5b` 仍是 `45cf41450b64`，`qwen2.5-72b` 仍是 `51b90d8f5e68`，`mistral-large` 仍是 `4ce7bca4c910`，`yi-1.5-34b` 仍是 `4a9848721f34`，`qwen3-8b` 仍是 `11f6f3a5d21f`，`qwen3-8b-fp8` 仍是 `25b06545a766`，`qwen3-8b-awq` 仍是 `d0c28036e214`，`qwen3-1.7b` 仍是 `c062686f3bf2`，`esmfold` 仍是 `3bbede544308`，ESM-2 3B 仍是 `34f7544287cd`，Wan2.1-1.3B 仍是 `309919c00604`。
+- **不改。** 不新写激活种类。不改 GEMM 名字、形状和 FLOPs。不新开目录行。不重做 0.445–0.465。`qwen2.5-72b` 仍是 0.463。`qwen3-8b` 及其 fp8 / awq 与 `qwen3-1.7b` 仍是 0.465。`qwen3-14b` 仍是 0.449。`qwen3-8b-dspine` 仍是 0.453。前 60 条的末尾仍是 `wan2.1-14b` 和 `wan2.1-1.3b`。
+- **未纳入：**
+  - **`qwen3-32b`、`qwen3-4b`、`qwen3-0.6b`。** hidden 不等于头数乘 `head_dim`。不放宽。
+  - **Llama-3.x 带 `rope_scaling`、Olmo 整段投影 q/k、Jais 分组 RMS、Gemma-4 的 tanh-GELU 和 `1 + weight`、Qwen3.5、TTS / ASR 的 mRoPE、Fun-ASR-Nano、Granite 的非 0.5 残差、ERNIE 0.3B / VL、MoE 专家相乘。** 对不上现成门。
+- **质量修复。** `tests/test_core_337.py` 仍检查 `tests/test_core_336.py` 不含本机绝对路径，并要求「UI patch not applied」。读文件改为相对该测试文件的路径。`SPEECH_MODELS` 从 0.360 起是 55 条，`test_core_338` / `test_core_339` 把过期的 34 改成 55。不新开语音模型。
+
+
 ## [0.465.0] — 2026-10-29
 
 ### 前 60 条里几何对得上的 Qwen3 补上已执行的 RMSNorm、按头 q/k RMSNorm 和门控 MLP 相乘

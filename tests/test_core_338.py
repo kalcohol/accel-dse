@@ -51,7 +51,7 @@ class TestQwen3Tts338(unittest.TestCase):
     def test_speech_models_include_qwen3_tts(self):
         for mid in IDS:
             self.assertIn(mid, SPEECH_MODELS)
-        self.assertEqual(len(SPEECH_MODELS), 34)  # 0.341 +ming-omni  # 0.340 +ming-0.5b  # 0.339: +moshika +step-base/think +omni-3b
+        self.assertEqual(len(SPEECH_MODELS), 55)  # 0.360 catalog; 0.466 refreshes the stale 34 pin
 
 
 class TestAdversarial338(unittest.TestCase):

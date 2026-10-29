@@ -101,7 +101,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_455():
-    assert __version__ == "0.465.0"
+    assert __version__ == "0.466.0"
 
 
 def test_qwen2_05b_backbones_bill_fp32_rmsnorm_and_the_product():
@@ -276,7 +276,7 @@ def test_non_vector_schedule_and_other_models():
         cleared = _bare(m)
         for shard in (Shard(), Shard(tp=2), Shard(tp=4)):
             assert _sched(m, ph, shard) == _sched(cleared, ph, shard)
-    for mid in ("qwen3-32b", "qwen3-8b", "qwen3-1.7b", "qwen2.5-3b", "llama-3.1-8b",
+    for mid in ("qwen3-32b", "qwen3-8b", "qwen3-1.7b", "llama-3.1-8b",
                 "olmo-3-32b-think", "jais-3-32b",
                 "qwen3-vl-235b-a22b", "qwen3-coder-480b-a35b",
                 "qwen3-tts-1.7b-base", "qwen3-tts-0.6b-base", "qwen3-asr-1.7b", "qwen3-asr-0.6b",
@@ -290,6 +290,11 @@ def test_non_vector_schedule_and_other_models():
     assert get_model("qwen2.5-72b").vec_kind == "qwen2_text"
     assert any("0.463" in n for n in get_model("qwen2.5-72b").notes)
     assert not any("0.455" in n for n in get_model("qwen2.5-72b").notes)
+    # 0.466 bills front-60 qwen2.5-3b on a separate gate. Not a 0.455 note.
+    small = get_model("qwen2.5-3b")
+    assert small.vec_kind == "qwen2_text"
+    assert any(n.startswith("0.466") for n in small.notes)
+    assert not any(n.startswith("0.455") for n in small.notes)
     kimi = get_model("kimi-audio-7b")
     assert kimi.vec_kind == "qwen2_text"
     assert any("0.452" in n for n in kimi.notes)
@@ -313,7 +318,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "25e9cd50ab57455e"
+    assert _fp({}) == "555d25ec2cbe1bfe"
     for mid in _ROWS:
         assert mid not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"

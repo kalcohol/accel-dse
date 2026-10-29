@@ -122,7 +122,7 @@ def _geom(row):
 
 
 def test_version_is_452():
-    assert __version__ == "0.465.0"
+    assert __version__ == "0.466.0"
 
 
 def test_qwen2_text_bills_fp32_rmsnorm_and_the_product():
@@ -308,8 +308,9 @@ def test_non_vector_schedule_and_other_models():
             assert _sched(m, ph, shard) == _sched(bare, ph, shard)
     # 0.455 bills the Ming-0.5B Qwen2 backbone as qwen2_text. Qwen3-TTS stays off it.
     # 0.463 bills front-60 qwen2.5-72b with this same vec_kind, through a
-    # separate gate. The 0.452 allowlist is unchanged. The other rows stay off it.
-    for mid in ("qwen3-32b", "qwen2.5-3b", "llama-3.1-8b", "mistral-large", "mistral-7b",
+    # separate gate. 0.466 bills qwen2.5-3b the same way. The 0.452 allowlist
+    # is unchanged.
+    for mid in ("qwen3-32b", "llama-3.1-8b", "mistral-large", "mistral-7b",
                 "mixtral-8x22b", "magistral-small", "olmo-3-32b-think", "qwen3-vl-235b-a22b",
                 "qwen3-coder-480b-a35b", "qwen3-tts-1.7b-base"):
         other = get_model(mid)
@@ -323,7 +324,12 @@ def test_non_vector_schedule_and_other_models():
     assert get_model("qwen3-vl-32b").vec_kind == "qwen3vl_text"
     assert get_model("carbon-x").vec_kind == "carbon_qwen"
     assert get_model("mistral-small-3.2-24b-instruct-2506").vec_kind == "mistral_small"
-    plain = get_model("qwen2.5-3b")
+    billed = get_model("qwen2.5-3b")
+    assert billed.vec_kind == "qwen2_text"
+    assert any(n.startswith("0.466") for n in billed.notes)
+    assert not any(n.startswith("0.452") or n.startswith("0.455") for n in billed.notes)
+    # 0.466 bills qwen2.5-3b. The shared-tail exemplar stays qwen3-32b.
+    plain = get_model("qwen3-32b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]
@@ -337,7 +343,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "25e9cd50ab57455e"
+    assert _fp({}) == "555d25ec2cbe1bfe"
     for mid in _ROWS:
         assert mid not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"

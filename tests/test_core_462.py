@@ -39,7 +39,7 @@ _FFN = 761_961_558_048_768
 _UNTOUCHED = (
     # 0.463 bills qwen2.5-72b with vec_kind qwen2_text.
     # 0.464 bills llama-2-70b, llama-2-7b, and yi-1.5-34b with carbon_llama.
-    "qwen2.5-3b", "qwen2.5-1.5b",
+    # 0.466 bills qwen2.5-3b and qwen2.5-1.5b with qwen2_text.
     "llama-3.1-8b",
     # 0.465 bills qwen3-8b, its fp8 and AWQ twins, and qwen3-1.7b with qwen3.
     "qwen3-32b", "qwen3-4b", "qwen3-0.6b",
@@ -109,7 +109,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_462():
-    assert __version__ == "0.465.0"
+    assert __version__ == "0.466.0"
 
 
 def test_mistral_large_is_the_front60_row_and_reuses_mistral_small():
@@ -364,9 +364,9 @@ def test_fingerprints_and_kpi():
     from tests.test_core_coverage import _FULL_0651, _kpi
     # Stage stays f54f33dfa13cdd41. Default pipe moves.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "25e9cd50ab57455e"
+    assert _fp({}) == "555d25ec2cbe1bfe"
     assert _fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e"
-    assert _fpx({}) == "a1484d51a9ad1ed3"
+    assert _fpx({}) == "666d0c5f91fbb6a4"
     # The locked KPI is the unfused wide stage path (pin_module_unfused). Those
     # 10-digit fields do not move. The default fused pipe fingerprint does.
     from accel_dse.core import evaluate as E

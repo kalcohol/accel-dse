@@ -68,7 +68,7 @@ class TestSpeechFreshness339(unittest.TestCase):
         self.assertIsNotNone(ka.moshi)
 
     def test_speech_count(self):
-        self.assertEqual(len(SPEECH_MODELS), 34)  # 0.341  # 0.340 +ming-0.5b
+        self.assertEqual(len(SPEECH_MODELS), 55)  # 0.360 catalog; 0.466 refreshes the stale 34 pin
 
 
 class TestDocs339(unittest.TestCase):

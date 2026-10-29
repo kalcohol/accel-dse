@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from accel_dse.core.catalog import get_model, list_models
 from accel_dse.core.vision import audio_ops
@@ -61,9 +62,9 @@ class TestOmniAsrShapes337(unittest.TestCase):
 
 class TestUiPatchAssertPortable337(unittest.TestCase):
     def test_336_ui_patch_assert_portable(self):
-        src = open("tests/test_core_336.py", encoding="utf-8").read()
-        self.assertNotIn('/workspace/ui-audit/ui.patch', src)
-        self.assertIn('UI patch not applied', src)
+        src = (Path(__file__).resolve().parent / "test_core_336.py").read_text(encoding="utf-8")
+        self.assertNotIn("/workspace/ui-audit/ui.patch", src)
+        self.assertIn("UI patch not applied", src)
 
 
 if __name__ == "__main__":
