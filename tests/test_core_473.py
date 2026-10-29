@@ -92,7 +92,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_473():
-    assert __version__ == "0.473.0"
+    assert __version__ == "0.474.0"
 
 
 def test_one_row_bills_the_dense_product():
@@ -141,7 +141,7 @@ def test_one_row_bills_the_dense_product():
     assert get_model("kimi-k3").vec_kind == "kimi_situ"
     assert get_model("llama-3.3-70b").vec_kind == "carbon_llama"
     assert get_model("muse-spark-open").vec_kind == "muse_swiglu"
-    assert get_model("olmo-3-32b-think").vec_kind == ""
+    assert get_model("olmo-3-32b-think").vec_kind != "seed_swiglu"
 
 
 def test_default_window_product_and_gemm_flops():

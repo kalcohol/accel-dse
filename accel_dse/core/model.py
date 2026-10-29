@@ -416,6 +416,9 @@ class Layer:
     # norms stay on the historical dtype.
     # 0.473 Seed-OSS-36B: seed_swiglu bills down(silu(gate) * up) on the
     # dense MLP. The class does not upcast. Block norms stay historical.
+    # 0.474 OLMo-3 32B: olmo3_swiglu bills the same product on the dense MLP.
+    # The class does not upcast. Post-norms, full-projection q/k RMSNorm,
+    # and YaRN stay off this tag. The 7B rows stay untagged.
     # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
     # up and down, and fp32 LayerNorm on the four published norms.
     # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
@@ -609,6 +612,8 @@ class ModelSpec:
     # 0.472: mixtral_swiglu bills the Mixtral-8x22B routed expert product.
     # The historical final norm stays on the shared formula.
     # 0.473: seed_swiglu bills the Seed-OSS-36B dense SwiGLU product.
+    # The historical final norm stays on the shared formula.
+    # 0.474: olmo3_swiglu bills the OLMo-3 32B dense SwiGLU product.
     # The historical final norm stays on the shared formula.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
@@ -5462,6 +5467,129 @@ def _tag_seed_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="seed_swiglu", notes=spec.notes + (note,))
 
 
+# 0.474: the three OLMo-3 32B rows. Olmo3MLP is down(act_fn(gate) * up)
+# with hidden_act silu. The 7B rows are a smaller product and stay off.
+_OLMO3_SWIGLU = frozenset({
+    "olmo-3-32b-think",
+    "olmo-3.1-32b-instruct",
+    "olmo-3-1125-32b",
+})
+_OLMO3_YARN_FACTOR = 1.2079441541679836
+
+
+def _tag_olmo3_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.474: bill the published OLMo-3 32B SwiGLU product.
+
+    Olmo3MLP is down_proj(act_fn(gate_proj(x)) * up_proj(x)). These releases
+    set hidden_act to silu. The class does not upcast. SiLU stays act. The
+    product is mlp_mul on the intermediate width. a_fmt follows act_fmt.
+    Olmo3DecoderLayer applies post_attention_layernorm and
+    post_feedforward_layernorm after the sublayer and before the residual
+    add. Those RMSNorms are the T5 recipe. The historical hidden norms
+    already have the same vec and sfu, so this bill does not move them and
+    does not retag their dtype. q_norm and k_norm run on the full projection
+    before the head view. YaRN scales the full-layer cos/sin by
+    attention_factor. Sliding layers use rope_type default. Neither is this
+    multiply. The sliding window is already on the attention core. vec_kind
+    is olmo3_swiglu. No earlier allowlist is extended. The 7B rows stay
+    untagged.
+    """
+    if spec.id not in _OLMO3_SWIGLU:
+        return spec
+    if c.get("model_type") != "olmo3":
+        raise ValueError("olmo3 swiglu model_type is not olmo3")
+    if c.get("architectures") != ["Olmo3ForCausalLM"]:
+        raise ValueError("olmo3 swiglu architecture is not olmo3")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("olmo3 swiglu hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("olmo3 swiglu swiglu_limit is set")
+    if c.get("attention_bias") is not False:
+        raise ValueError("olmo3 swiglu attention_bias is not false")
+    if "attention_out_bias" in c:
+        raise ValueError("olmo3 swiglu attention_out_bias is set")
+    if c.get("mlp_bias") is True:
+        raise ValueError("olmo3 swiglu mlp_bias is not false")
+    if "residual_dropout" in c:
+        raise ValueError("olmo3 swiglu residual_dropout is set")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("olmo3 swiglu attention_dropout is not 0")
+    rope = c.get("rope_scaling")
+    if not isinstance(rope, dict) or rope.get("rope_type") != "yarn":
+        raise ValueError("olmo3 swiglu rope_scaling is not yarn")
+    if rope.get("attention_factor") != _OLMO3_YARN_FACTOR:
+        raise ValueError("olmo3 swiglu attention_factor is not published")
+    if c.get("sliding_window") != 4096:
+        raise ValueError("olmo3 swiglu sliding_window is not 4096")
+    dtype = c.get("dtype") or c.get("torch_dtype")
+    if dtype != "bfloat16":
+        raise ValueError("olmo3 swiglu dtype is not bfloat16")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("olmo3 swiglu tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-6:
+        raise ValueError("olmo3 swiglu rms_norm_eps is not 1e-6")
+    for key in ("num_experts", "num_local_experts", "n_routed_experts",
+                "num_experts_per_tok", "moe_intermediate_size",
+                "num_shared_experts", "shared_expert_intermediate_size"):
+        if key in c:
+            raise ValueError("olmo3 swiglu moe key is set")
+    h = c.get("hidden_size")
+    de = c.get("intermediate_size")
+    depth = c.get("num_hidden_layers")
+    heads = c.get("num_attention_heads")
+    hkv = c.get("num_key_value_heads")
+
+    def _pos(v) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+    if not (_pos(h) and _pos(de) and _pos(depth) and _pos(heads) and _pos(hkv)):
+        raise ValueError("olmo3 swiglu width is not positive")
+    if heads % hkv != 0 or h % heads != 0 or depth % 4 != 0:
+        raise ValueError("olmo3 swiglu heads are not a multiple of kv heads")
+    hd = h // heads
+    if c.get("head_dim") not in (None, hd):
+        raise ValueError("olmo3 swiglu head_dim is not hidden over heads")
+    pattern = (["sliding_attention"] * 3 + ["full_attention"]) * (depth // 4)
+    if c.get("layer_types") != pattern:
+        raise ValueError("olmo3 swiglu layer_types is not 3 sliding then full")
+    if spec.act_fmt != "bf16" or spec.fmt("mlp").fmt != "bf16":
+        raise ValueError("olmo3 swiglu dtype is not bfloat16")
+    if len(spec.layers) != depth:
+        raise ValueError("olmo3 swiglu depth is not num_hidden_layers")
+    if spec.mtp_layers:
+        raise ValueError("olmo3 swiglu mtp is set")
+    expect_misc = 2 * h + heads * hd + hkv * hd
+    for i, L in enumerate(spec.layers):
+        f = L.ffn
+        if (f.kind != "dense" or not f.gated or f.d_ff != de or f.n_experts or f.top_k
+                or f.d_expert or f.n_shared or f.d_shared or f.latent):
+            raise ValueError("olmo3 swiglu mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("olmo3 swiglu mlp is not gate_up then down")
+        up, down = L.ffn_linears
+        if up.k != h or up.n != 2 * de or down.k != de or down.n != h:
+            raise ValueError("olmo3 swiglu mlp is not gate_up then down")
+        window = 4096 if pattern[i] == "sliding_attention" else None
+        if (L.core.kind != "gqa" or L.core.n_q != heads or L.core.n_kv != hkv
+                or L.core.qk_dim != hd or L.core.v_dim != hd or L.core.window != window
+                or L.core.no_rope or L.core.rope_dim != 0):
+            raise ValueError("olmo3 swiglu attention is not gqa")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("olmo3 swiglu attention is not qkv o")
+        q, k, v, o = L.attn_linears
+        if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
+                or o.k != heads * hd or o.n != h or L.misc_params != expect_misc):
+            raise ValueError("olmo3 swiglu attention is not qkv o")
+    layers = tuple(replace(L, vec_kind="olmo3_swiglu") for L in spec.layers)
+    note = ("0.474: OLMo-3 32B MLP is down(silu(gate) * up). "
+            "SiLU stays act. The product is mlp_mul. "
+            "a_fmt follows act_fmt. The class does not upcast. "
+            "Post-attention and post-feedforward RMSNorms stay on the historical ops. "
+            "q/k RMSNorm, YaRN attention_scaling, and the sliding window are not this product. "
+            "The rows are olmo-3-32b-think, olmo-3.1-32b-instruct, and olmo-3-1125-32b.")
+    return replace(spec, layers=layers, vec_kind="olmo3_swiglu", notes=spec.notes + (note,))
+
+
 _STEP_AUDIO = frozenset({
     "step-audio-2-mini",
     "step-audio-2-mini-base",
@@ -7605,7 +7733,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_seed_swiglu_vectors(
+    return _tag_olmo3_swiglu_vectors(
+        _tag_seed_swiglu_vectors(
         _tag_mixtral_swiglu_vectors(
         _tag_muse_swiglu_vectors(
         _tag_llama3_vectors(
@@ -7627,7 +7756,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
