@@ -74,7 +74,7 @@ def _nv(model, ph, shard):
 
 
 def test_version_is_459():
-    assert __version__ == "0.468.0"
+    assert __version__ == "0.469.0"
 
 
 def test_openfold_transition_output_multiply():

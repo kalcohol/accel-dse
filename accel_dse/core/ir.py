@@ -1312,6 +1312,25 @@ def _dea_ops(model: ModelSpec, li: int, L: Layer, ph: Phase, sh: Shard, b_loc: i
     return ops
 
 
+# SituAndMul (moonshotai/Kimi-K3 modeling_kimi_linear.py): the arithmetic is
+# fp32. A constant reciprocal is not an element. tanh is one transcendental,
+# the same count as dea_tanh. sigmoid is the SiLU census without the final
+# multiply by x: exp, one add, one reciprocal.
+_SITU_VEC = 11
+_SITU_SFU = 4
+
+
+def _situ_op(li: int, n: float) -> Op:
+    """beta * tanh(gate / beta) * sigmoid(gate) * (linear_beta * tanh(up / linear_beta)).
+
+    Width is the intermediate size, not the fused gate_up width. Casts to
+    fp32 and back are the dtype, not extra element ops.
+    """
+    if n < 0:
+        raise ValueError("kimi situ width is negative")
+    return Op("situ", "vector", li, vec=float(n) * _SITU_VEC, sfu=float(n) * _SITU_SFU, a_fmt="fp32")
+
+
 def _evo2_mlp_vecs(kind: str, nact: int, li: int, af: str) -> list[Op]:
     """ParallelGatedMLP product, and F.gelu on layer 0 only.
 
@@ -1353,6 +1372,8 @@ def _carbon_dense(L: Layer) -> bool:
     # dense path. 0.468 qwen35_moe is the exception: the published expert and
     # the published shared expert are both down(silu(gate) * up), so those
     # layers insert mlp_mul. Other MoE kinds are unchanged.
+    # 0.469 kimi_situ replaces the historical SiLU counts. SituAndMul is not
+    # silu(gate) * up, so those layers do not emit act or expert_act.
     return L.vec_kind in (
         "carbon_llama", "carbon_qwen", "qwen3vl_text", "granite", "qwen3", "step_audio",
         "mistral_small", "qwen2_text")
@@ -1603,6 +1624,17 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 if l.name == "gate_up":
                     ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
                     ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
+        elif L.vec_kind == "kimi_situ":
+            # KimiMLP: down(SituAndMul(cat(gate, up))). The class casts the
+            # two halves to fp32. There is no separate silu and no second multiply.
+            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("kimi situ mlp is not gate_up then down")
+            nact = t * _cdiv(f.d_ff, tp)
+            for l in L.ffn_linears:
+                k, n = _lin_local(l, tp)
+                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
+                if l.name == "gate_up":
+                    ops.append(_situ_op(li, nact))
         elif _whisper_dec(L):
             # WhisperDecoderLayer: fc2(ACT2FN["gelu"](fc1(x))). gelu is
             # x * 0.5 * (1 + erf(x / sqrt(2))): five element-ops, one erf.
@@ -1650,6 +1682,15 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     raise ValueError("qwen35 moe shared expert is not swiglu")
                 n_loc = _cdiv(f.n_shared * f.d_shared, tp)
                 ops.append(Op("mlp_mul", "vector", li, vec=float(t * n_loc), a_fmt=model.act_fmt))
+            if L.vec_kind == "kimi_situ" and l.name == "shared_gate_up":
+                # KimiSparseMoeBlock shared expert is one KimiMLP whose
+                # intermediate is moe_intermediate_size * num_shared_experts.
+                # SituAndMul runs on every token, before down. It is not
+                # the routed top-k width.
+                if not f.gated or not f.n_shared or not f.d_shared:
+                    raise ValueError("kimi situ shared expert is not situ")
+                n_loc = _cdiv(f.n_shared * f.d_shared, tp)
+                ops.append(_situ_op(li, t * n_loc))
         if f.d_ff:
             # Parallel dense SwiGLU (LongCat-Flash sublayer 0): every token, not a shared expert.
             ops.append(Op("act", "vector", li, vec=t * _cdiv(f.d_ff, tp) * 4, sfu=t * _cdiv(f.d_ff, tp) * 2))
@@ -1660,6 +1701,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
         def _pool(name: str, n_exp: int, d_exp: int, tokens: int, zero: int, role: str) -> None:
             if L.vec_kind == "qwen35_moe" and not f.gated:
                 raise ValueError("qwen35 moe expert is not swiglu")
+            if L.vec_kind == "kimi_situ" and not f.gated:
+                raise ValueError("kimi situ expert is not situ")
             if tokens <= 0 or n_exp <= 0:
                 return
             if zero and not f.groups:
@@ -1684,9 +1727,17 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(act)
                     ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
                                   a_fmt=model.act_fmt))
+                if L.vec_kind == "kimi_situ":
+                    # KimiBlockSparseMLP: SituAndMul(cat(w1, w3)) then w2.
+                    # The historical SiLU expert_act is not this formula.
+                    # Width is the useful token-expert pairs times local
+                    # moe_intermediate_size, not the latent width and not
+                    # the padded GEMM rows. The routing-weight multiply and
+                    # the latent RMSNorm are not this op.
+                    ops.append(_situ_op(li, r.pairs_local * d_loc))
                 ops.append(replace(gemm(model, f"{name}.down", li, r.m_e, d_loc, ein, role, count=r.hit),
                                    share=u))
-                if L.vec_kind != "qwen35_moe":
+                if L.vec_kind not in ("qwen35_moe", "kimi_situ"):
                     ops.append(act)
             if sh.ep > 1:
                 pay = r.pairs_local * ein * ab
