@@ -102,7 +102,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_466():
-    assert __version__ == "0.469.0"
+    assert __version__ == "0.470.0"
 
 
 def test_two_rows_are_front60_and_reuse_qwen2_text():

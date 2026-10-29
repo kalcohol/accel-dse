@@ -122,7 +122,7 @@ def _geom(row):
 
 
 def test_version_is_452():
-    assert __version__ == "0.469.0"
+    assert __version__ == "0.470.0"
 
 
 def test_qwen2_text_bills_fp32_rmsnorm_and_the_product():
