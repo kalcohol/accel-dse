@@ -42,5 +42,6 @@ def test_case_e_quantiles_monotone_near_saturation():
     # (DES ≈ 18.43); 0.246 slot account (budget-chunked, phase chain + k̄): 18.73 (long-run DES 18.59);
     # 0.248 age-structured deaths + queue-ful entry base ((β/d)·(S̄ + S_e)): 18.73 → 18.62;
     # 0.249 state-dependent σ_b²(f) below 0: 18.62 → 18.73
+    # 0.465: qwen3-8b vector time. 18.73 → 18.66
     c = rep["queue"]["modes"]["coloc_chunked"]
-    assert abs(c["slo_rate_rps"] - 18.73) < 0.05, c["slo_rate_rps"]
+    assert abs(c["slo_rate_rps"] - 18.66) < 0.05, c["slo_rate_rps"]

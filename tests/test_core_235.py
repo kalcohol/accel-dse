@@ -32,7 +32,8 @@ def test_sglang_tail_share_reported_only_off_multiples():
     ts = q["modes"]["coloc_chunked"]["prefill"].get("tail_share")
     assert ts and ts["C"] == 4096 and 0.05 < ts["pi"][0] < 0.4
     # case D (4096 = C) and E (16384 = 4·C): no tail → the 0.234 numbers
-    for kw, mean in ((dict(cap=48.0), 40.488), (dict(prompt=16384, out=256, batch=32, cap=48.0), 190.310)):
+    # 0.465 re-pin: qwen3-8b vector time. 40.488 → 40.648, 190.310 → 190.952
+    for kw, mean in ((dict(cap=48.0), 40.648), (dict(prompt=16384, out=256, batch=32, cap=48.0), 190.952)):
         c = disagg_report(_pd(chunk_profile="sglang", **kw))["queue"]["modes"]["coloc_chunked"]
         assert "tail_share" not in c["prefill"] and abs(c["ttft_ms"]["mean"] - mean) < 0.02
 

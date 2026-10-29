@@ -38,8 +38,9 @@ def test_slot_backlog_a_monotone_and_mechanism():
         assert r["ttft"]["p90"] >= prev, (lam, r["ttft"]["p90"], prev)
         prev, prev_p = r["ttft"]["p90"], sb["p_sat"]
     # long-run DES TTFT p90 (ms) 55.06 → 2019, 55.7 → 3344 (0.243 analytic: 97 ms at 55.7)
+    # 0.465: qwen3-8b prefill bills mlp_mul and q/k RMS. Analytic p90 at 55.06 moves to 2487 ms.
     r = pdqueue._coloc_chunked({**ctx, "slo": (2.0, 0.05)}, 55.06)
-    assert 1700 < r["ttft"]["p90"] * 1e3 < 2400
+    assert 2400 < r["ttft"]["p90"] * 1e3 < 2600
     # far from saturation the backlog branch vanishes
     r = pdqueue._coloc_chunked({**ctx, "slo": (2.0, 0.05)}, 30.0)
     assert r["prefill"]["slot_backlog"]["p_sat"] < 1e-3

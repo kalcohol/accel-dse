@@ -56,14 +56,17 @@ def test_std_unchanged_from_0323():
         # 9.10 → 100.9 W of the 400 W cap (paper's own HBM4 idle extrapolation ≈ 11.8 W/stack 「推导」), so the dfs
         # point s 0.778 → 0.384: J 0.037492266659349203 → 0.05834957496937111, $/M 0.012256563438298044 →
         # 0.024809665451833468 (×2.02)
-        assert e["energy"]["J_per_unit"] == 0.05834957496937111
+        # 0.465 re-pin: default qwen3-8b bills mlp_mul and q/k RMS. J 0.05834957496937111 →
+        # 0.05836083656381357, $/M 0.024809665451833468 → 0.02481175251594338
+        assert e["energy"]["J_per_unit"] == 0.05836083656381357
         # 0.328 re-pin: n5_derived carries the HBM4 controller area 8 × 7.15 mm² (MODEL §273): die 820.4 → 894.7 mm²,
         # $/M 0.011879644207241864 → 0.012256563438298044; J unchanged (eval energy has no area term on this path)
-        assert e["tco"]["usd_per_Munit"] == 0.024809665451833468
+        assert e["tco"]["usd_per_Munit"] == 0.02481175251594338
         assert "hbm_base" not in e
         r = _dse(_body(hb))
         # 0.328: was 0.03774018739951754 (larger die); 0.333: 0.037764624854310015 → 0.07519524238934748 (as above)
-        assert r["rows"][r["base"]]["J_per_unit"] == 0.07519524238934748
+        # 0.465: 0.07519524238934748 → 0.07520153485613394
+        assert r["rows"][r["base"]]["J_per_unit"] == 0.07520153485613394
         assert "hbm_base" not in r and not any("hbm_custom" in x for x in r["rows"])
     assert api.api_eval(_body(None))["energy"]["phy_pJ_per_bit"] == _approx(0.29)   # new output (0.324)
 

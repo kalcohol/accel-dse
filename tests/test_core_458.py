@@ -85,7 +85,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_458():
-    assert __version__ == "0.464.0"
+    assert __version__ == "0.465.0"
 
 
 def test_ernie_moe_dense_bills_fp32_rmsnorm_and_the_product():
@@ -176,7 +176,7 @@ def test_non_vector_schedule_and_other_models():
     assert get_model("ernie-4.5-0.3b-pt").vec_kind == ""
     assert get_model("ernie-4.5-vl-28b-a3b-pt").vec_kind == ""
     assert get_model("qwen3-32b").vec_kind == ""
-    assert get_model("qwen3-8b").vec_kind == ""
+    assert get_model("qwen3-8b").vec_kind == "qwen3"
     assert get_model("moshiko-7b").vec_kind == "carbon_llama"
     assert not any("0.458" in n for n in get_model("moshiko-7b").notes)
     carbon = get_model("carbon-8b")

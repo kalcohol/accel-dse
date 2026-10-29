@@ -1344,6 +1344,7 @@ def _carbon_dense(L: Layer) -> bool:
     # Qwen2.5-72B (0.463) is Qwen2ForCausalLM and reuses qwen2_text.
     # Llama-2 and Yi-1.5 (0.464) are LlamaForCausalLM and reuse carbon_llama.
     # Omitted bias and pretraining_tp keys are the published defaults.
+    # Qwen3-8B, its fp8 and AWQ releases, and Qwen3-1.7B (0.465) reuse qwen3.
     # mlp_mul is inserted only when the FFN is dense gate_up/down. MoE layers
     # keep expert_act. Shared-expert products stay on that path.
     return L.vec_kind in (

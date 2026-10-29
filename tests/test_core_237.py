@@ -53,7 +53,8 @@ def test_corr_marginal_and_monte_carlo():
 
 def test_sglang_short_prompt_p99_parity_and_mean_unchanged():
     # DES p99 over 6 seeds (n 3000): 0.236 analytic was −0.15 (2500) / −0.12 (3000); now within ±0.08
-    for prompt, mean in ((2500, 26.86), (3000, 31.85)):
+    # 0.465 re-pin: qwen3-8b vector time. 26.86 → 26.961, 31.85 → 31.973
+    for prompt, mean in ((2500, 26.961), (3000, 31.973)):
         rep, ctx = pdsim.capture_ctx(_pd(prompt=prompt, cap=48.0, load=0.85, chunk_profile="sglang"))
         c = rep["queue"]["modes"]["coloc_chunked"]
         assert abs(c["ttft_ms"]["mean"] - mean) < 0.02           # the mean is unchanged (same marginal π)

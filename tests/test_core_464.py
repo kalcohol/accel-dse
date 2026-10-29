@@ -49,7 +49,8 @@ _BANNED = ("gelu", "silu", "relu", "sigmoid", "softplus", "clamp", "quick_gelu",
 _UNTOUCHED = (
     "qwen2.5-3b", "qwen2.5-1.5b",
     "llama-3.1-8b",
-    "qwen3-8b", "qwen3-8b-fp8", "qwen3-8b-awq", "qwen3-1.7b", "qwen3-32b",
+    # 0.465 bills qwen3-8b, its fp8 and AWQ twins, and qwen3-1.7b with qwen3.
+    "qwen3-32b", "qwen3-4b", "qwen3-0.6b",
     "mistral-7b", "mixtral-8x22b", "magistral-small",
 )
 
@@ -120,7 +121,7 @@ def _ffn(depth: int, h: int, inner: int, t: int = 4096) -> int:
 
 
 def test_version_is_464():
-    assert __version__ == "0.464.0"
+    assert __version__ == "0.465.0"
 
 
 def test_three_rows_are_front60_and_reuse_carbon_llama():

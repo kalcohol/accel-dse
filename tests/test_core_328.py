@@ -59,7 +59,8 @@ def test_eval_default_numbers_and_decision():
     # the decision flips (old → new): std 9.7658 m$ < custom 9.8678 → std 9.8969 m$ > custom 9.8678
     # 0.333 re-pin (HBM 5.80 pJ/bit + per-channel standby, MODEL §278): on 0.009896946997665858 → 0.01085371734447578
     # (off 0.009766 → 0.010723, custom 0.009868 → 0.010825); the decision order is unchanged
-    assert on["tco"]["usd_per_Munit"] == _approx(0.01085371734447578, rel=1e-9)
+    # 0.465 re-pin: qwen3-8b vector energy. on 0.01085371734447578 → 0.010859921122886203; order unchanged
+    assert on["tco"]["usd_per_Munit"] == _approx(0.010859921122886203, rel=1e-9)
     assert off["tco"]["usd_per_Munit"] < cu["tco"]["usd_per_Munit"] < on["tco"]["usd_per_Munit"]
     assert cu["hbm_base"]["mc_mm2_per_stack"] == _approx(7.15) and cu["hbm_base"]["mc_reclaim_mm2"] == _approx(57.2)
     e4e = api.api_eval(_body(mem=HBM4E))

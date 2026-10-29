@@ -403,7 +403,9 @@ class Layer:
     # 0.448 Granite-4.1 / 4.2 dense LMs: granite is the pre-norm T5 RMSNorm
     # and SiLU product, with no q/k norm. Residual scalars are not 0.5.
     # 0.449 Qwen3-14B dense: qwen3 is the same pre-norm T5 RMSNorm, SiLU
-    # product, and head_dim q/k RMSNorm. Front-60 Qwen3 rows stay untagged.
+    # product, and head_dim q/k RMSNorm.
+    # 0.465 extends that tag to the front-60 rows whose hidden equals
+    # heads * head_dim (qwen3-8b, its fp8 and AWQ twins, and qwen3-1.7b).
     # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
     # up and down, and fp32 LayerNorm on the four published norms.
     # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
@@ -588,6 +590,7 @@ class ModelSpec:
     # 0.463: Qwen2.5-72B reuses qwen2_text for the same final RMSNorm.
     # 0.464: Llama-2 and Yi-1.5 reuse carbon_llama. Omitted attention_bias,
     # mlp_bias, and pretraining_tp are the published defaults False / False / 1.
+    # 0.465: front-60 Qwen3 rows with hidden = heads * head_dim reuse qwen3.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
     workload: NativeWorkload | None = None
@@ -4802,25 +4805,33 @@ def _tag_granite_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="granite", notes=spec.notes + (note,))
 
 
-_QWEN3_DENSE = frozenset({
+_QWEN3_449 = frozenset({
     "qwen3-14b", "qwen3-14b-fp8",
-    "qwen3-8b-dspine", "moss-tts", "fireredtts3-base",
 })
 # 0.453 ids. DSpine's five draft layers are the published Qwen3 decoder
 # and take the same per-layer checks. MOSS and FireRed have no draft layers.
 _QWEN3_453 = frozenset({"qwen3-8b-dspine", "moss-tts", "fireredtts3-base"})
+# 0.465: front-60 rows whose hidden equals heads * head_dim. The fp8 and AWQ
+# releases share that geometry. qwen3-32b, qwen3-4b, and qwen3-0.6b do not
+# (hidden is not heads * head_dim) and stay off this set.
+_QWEN3_465 = frozenset({
+    "qwen3-8b", "qwen3-8b-fp8", "qwen3-8b-awq", "qwen3-1.7b",
+})
+_QWEN3_DENSE = _QWEN3_449 | _QWEN3_453 | _QWEN3_465
 
 
 def _tag_qwen3_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
-    """0.449 / 0.453: bill published Qwen3 RMSNorm and the SwiGLU product.
+    """0.449 / 0.453 / 0.465: bill published Qwen3 RMSNorm and the SwiGLU product.
 
     Qwen3RMSNorm matches T5LayerNorm: fp32 mean of squares, one rsqrt,
     times weight. The MLP is down(silu(gate) * up) with Linear bias False.
     q_norm and k_norm run on head_dim after the head view, one rsqrt per
     head. Hidden norms stay pre-norm. 0.449 covers Qwen3-14B. 0.453 adds
     qwen3-8b-dspine (target layers and the five draft layers), moss-tts,
-    and fireredtts3-base. Those ids are outside the first 60 catalog rows.
-    Front-60 Qwen3 rows stay on the shared tail. rope stays after the score.
+    and fireredtts3-base. 0.465 adds the front-60 rows whose hidden equals
+    heads times head_dim: qwen3-8b, qwen3-8b-fp8, qwen3-8b-awq, and
+    qwen3-1.7b. Rows that fail that product stay on the shared tail.
+    rope stays after the score.
     """
     if spec.id not in _QWEN3_DENSE:
         return spec
@@ -4876,6 +4887,14 @@ def _tag_qwen3_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             _one(L)
         mtp = tuple(replace(L, vec_kind="qwen3") for L in spec.mtp_layers)
     layers = tuple(replace(L, vec_kind="qwen3") for L in spec.layers)
+    if spec.id in _QWEN3_465:
+        note = ("0.465：Qwen3RMSNorm 是 T5 配方，fp32 归约。"
+                "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。"
+                "q_norm 和 k_norm 是 head_dim 上的 RMSNorm，每个头一次 rsqrt。"
+                "q 宽等于 hidden。前 60 条里打 hidden 等于头数乘 head_dim 的四行。"
+                "hidden 不等于头数乘 head_dim 的 Qwen3 不打。")
+        return replace(spec, layers=layers, mtp_layers=mtp, vec_kind="qwen3",
+                       notes=spec.notes + (note,))
     note = ("0.449：Qwen3RMSNorm 是 T5 配方，fp32 归约。"
             "SiLU 仍是现有的 act。门和值的相乘是 mlp_mul。"
             "q_norm 和 k_norm 是 head_dim 上的 RMSNorm，每个头一次 rsqrt。"
