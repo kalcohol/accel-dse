@@ -60,7 +60,7 @@ def _bad(edit):
 
 
 def test_version_is_438():
-    assert __version__ == "0.469.0"
+    assert __version__ == "0.470.0"
 
 
 def test_carbon_a_bills_rmsnorm_and_silu():

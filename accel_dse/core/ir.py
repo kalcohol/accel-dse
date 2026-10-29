@@ -1364,6 +1364,9 @@ def _carbon_dense(L: Layer) -> bool:
     # Qwen2.5-3B and Qwen2.5-1.5B (0.466) reuse that same recipe.
     # Llama-2 and Yi-1.5 (0.464) are LlamaForCausalLM and reuse carbon_llama.
     # Omitted bias and pretraining_tp keys are the published defaults.
+    # Llama-3.3-70B (0.470) is LlamaForCausalLM and reuses carbon_llama.
+    # Published rope_scaling only rescales inv_freq at init. attention_scaling
+    # is 1, so the existing rope op is unchanged. There is no new vector kind.
     # Qwen3-8B, its fp8 and AWQ releases, and Qwen3-1.7B (0.465) reuse qwen3.
     # Qwen3-32B, its fp8 and AWQ releases, Qwen3-4B, and Qwen3-0.6B (0.467)
     # reuse qwen3. q width is heads * head_dim and is not hidden.
@@ -1990,7 +1993,8 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
         # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm /
         # GraniteRMSNorm / Qwen2RMSNorm / MistralRMSNorm / Moshi rms_norm_f32 /
         # Ernie4_5_MoeRMSNorm / Whisper decoder LayerNorm / Llama-2 and
-        # Yi-1.5 (0.464, same carbon_llama path) on every token row,
+        # Yi-1.5 (0.464, same carbon_llama path) / Llama-3.3-70B (0.470,
+        # same carbon_llama path) on every token row,
         # then the head reads the last rows. Kimi-Audio
         # publishes two Qwen2RMSNorms (norm and mimo_norm); final_norm_params
         # is 2 * hidden. Whisper's final_norm_params is also 2 * hidden, but

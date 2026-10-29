@@ -5824,6 +5824,121 @@ def _tag_llama2_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="carbon_llama", notes=spec.notes + (note,))
 
 
+_LLAMA3 = frozenset({"llama-3.3-70b"})
+_LLAMA3_ROPE_KEYS = (
+    "factor", "high_freq_factor", "low_freq_factor",
+    "original_max_position_embeddings", "rope_type",
+)
+_LLAMA3_ROPE_NUM = {
+    "factor": 8.0,
+    "high_freq_factor": 4.0,
+    "low_freq_factor": 1.0,
+    "original_max_position_embeddings": 8192.0,
+}
+
+
+def _llama3_rope_published(raw) -> bool:
+    """Published Llama-3.3 rope_scaling: llama3 factors, numeric-equal."""
+    if not isinstance(raw, dict) or set(raw) != set(_LLAMA3_ROPE_KEYS):
+        return False
+    if raw.get("rope_type") != "llama3":
+        return False
+    for key, want in _LLAMA3_ROPE_NUM.items():
+        val = raw[key]
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            return False
+        if float(val) != want:
+            return False
+    return True
+
+
+def _tag_llama3_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.470: bill published Llama-3.3 RMSNorm and the SwiGLU product.
+
+    Llama-3.3-70B is LlamaForCausalLM. LlamaRMSNorm matches T5LayerNorm:
+    fp32 mean of squares, one rsqrt, times weight. The MLP is
+    down(silu(gate) * up) when pretraining_tp is 1. attention_bias and
+    mlp_bias are published False, not omitted defaults. There is no q/k
+    norm. q width equals hidden. The published rope_scaling dict only
+    rescales inv_freq at init. RotaryEmbedding multiplies cos/sin by
+    attention_scaling, and the llama3 path leaves that factor at 1, so
+    the existing rope op is unchanged. vec_kind reuses carbon_llama.
+    The Llama-2 and Carbon allowlists are not extended. Smaller Llama-3
+    rows stay on the shared tail.
+    """
+    if spec.id not in _LLAMA3:
+        return spec
+    if c.get("model_type") != "llama":
+        raise ValueError("llama3 model_type is not llama")
+    if c.get("architectures") != ["LlamaForCausalLM"]:
+        raise ValueError("llama3 architecture is not llama")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("llama3 hidden_act is not silu")
+    # Published keys, not the Llama-2 omitted defaults.
+    if c.get("attention_bias") is not False:
+        raise ValueError("llama3 attention_bias is not false")
+    if c.get("mlp_bias") is not False:
+        raise ValueError("llama3 mlp_bias is not false")
+    tp = c.get("pretraining_tp")
+    if isinstance(tp, bool) or tp != 1:
+        raise ValueError("llama3 pretraining_tp is not 1")
+    raw = c.get("rope_scaling")
+    if isinstance(raw, dict) and "rope_type" in raw and raw.get("rope_type") != "llama3":
+        raise ValueError("llama3 rope_scaling is not llama3")
+    if not _llama3_rope_published(raw):
+        raise ValueError("llama3 rope_scaling is not the published llama3 factors")
+    drop = c.get("attention_dropout")
+    if isinstance(drop, bool) or drop not in (0, 0.0):
+        raise ValueError("llama3 attention_dropout is not 0")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("llama3 use_sliding_window is not false")
+    if c.get("sliding_window") is not None:
+        raise ValueError("llama3 sliding_window is not null")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("llama3 layer_types is not full_attention")
+    h = c.get("hidden_size")
+    heads = c.get("num_attention_heads")
+    hkv = c.get("num_key_value_heads")
+    if (not isinstance(h, int) or isinstance(h, bool) or h <= 0
+            or not isinstance(heads, int) or isinstance(heads, bool) or heads <= 0
+            or not isinstance(hkv, int) or isinstance(hkv, bool) or hkv <= 0
+            or h % heads != 0):
+        raise ValueError("llama3 hidden is not heads times head_dim")
+    hd = h // heads
+    published = c.get("head_dim")
+    if published is not None and published != hd:
+        raise ValueError("llama3 head_dim is not hidden over heads")
+    if spec.act_fmt != "bf16":
+        raise ValueError("llama3 activation dtype is not bf16")
+    if spec.fmt("mlp").fmt != "bf16" or spec.fmt("attn").fmt != "bf16":
+        raise ValueError("llama3 weight dtype is not bf16")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("llama3 final norm is not one")
+    for L in spec.layers:
+        if L.ffn.kind != "dense" or not L.ffn.gated or L.ffn.d_ff != c["intermediate_size"]:
+            raise ValueError("llama3 mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("llama3 mlp is not gate_up then down")
+        if L.core.kind != "gqa" or L.core.qk_dim != hd or L.core.window is not None:
+            raise ValueError("llama3 attention is not gqa head_dim")
+        if L.misc_params != 2 * h:
+            raise ValueError("llama3 has no qk norm")
+        by = {ln.name: ln for ln in L.attn_linears}
+        if "q" not in by or "k" not in by:
+            raise ValueError("llama3 attention is not q then k")
+        if by["q"].n != heads * hd or by["k"].n != hkv * hd or by["q"].n != h:
+            raise ValueError("llama3 qk width is not heads times head_dim")
+    layers = tuple(replace(L, vec_kind="carbon_llama") for L in spec.layers)
+    note = ("0.470: LlamaRMSNorm is the T5 recipe, reduced in fp32. "
+            "SiLU stays the existing act op. The gate times up product is mlp_mul. "
+            "There is no q/k norm. q width equals hidden. "
+            "rope_scaling llama3 only changes init inv_freq. "
+            "attention_scaling is 1. The existing rope op is unchanged. "
+            "The front-60 row is llama-3.3-70b. "
+            "The Llama-2 and Carbon allowlists are not extended.")
+    return replace(spec, layers=layers, vec_kind="carbon_llama", notes=spec.notes + (note,))
+
+
 _OMNIASR_LLAMA = frozenset({
     "omniasr-llm-300m-v2",
     "omniasr-llm-1b-v2",
@@ -7192,7 +7307,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_kimi_situ_vectors(
+    return _tag_llama3_vectors(
+        _tag_kimi_situ_vectors(
         _tag_qwen35_moe_vectors(
         _tag_llama2_vectors(
         _tag_qwen25_466_vectors(
@@ -7210,7 +7326,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

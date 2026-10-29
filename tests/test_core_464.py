@@ -121,7 +121,7 @@ def _ffn(depth: int, h: int, inner: int, t: int = 4096) -> int:
 
 
 def test_version_is_464():
-    assert __version__ == "0.469.0"
+    assert __version__ == "0.470.0"
 
 
 def test_three_rows_are_front60_and_reuse_carbon_llama():
