@@ -93,7 +93,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_451():
-    assert __version__ == "0.461.0"
+    assert __version__ == "0.462.0"
 
 
 def test_mistral_small_bills_fp32_rmsnorm_and_the_product():
@@ -265,19 +265,22 @@ def test_non_vector_schedule_and_other_models():
     bare = _bare(m)
     for shard in (Shard(), Shard(tp=2), Shard(tp=4)):
         assert _sched(m, ph, shard) == _sched(bare, ph, shard)
-    for mid in ("qwen3-32b", "qwen2.5-72b", "llama-3.1-8b", "mistral-large", "mistral-7b",
+    # 0.462 bills front-60 mistral-large with this same vec_kind. The other
+    # rows in this list stay on the shared tail.
+    for mid in ("qwen3-32b", "qwen2.5-72b", "llama-3.1-8b", "mistral-7b",
                 "mixtral-8x22b", "magistral-small", "qwen2.5-omni-7b", "qwen2-audio-7b-instruct",
                 "olmo-3-32b-think", "qwen3-vl-235b-a22b", "qwen3-coder-480b-a35b"):
         other = get_model(mid)
         assert other.vec_kind != "mistral_small"
         assert all(L.vec_kind != "mistral_small" for L in other.layers)
+    assert get_model("mistral-large").vec_kind == "mistral_small"
     assert get_model("step-audio-2-r1.1").vec_kind == "step_audio"
     assert get_model("qwen3-14b").vec_kind == "qwen3"
     assert get_model("granite-4.1-30b").vec_kind == "granite"
     assert get_model("exaone-4.0-32b").vec_kind == "exaone4"
     assert get_model("qwen3-vl-32b").vec_kind == "qwen3vl_text"
     assert get_model("carbon-x").vec_kind == "carbon_qwen"
-    plain = get_model("mistral-large")
+    plain = get_model("mistral-7b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]
@@ -291,7 +294,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "1e15ae85430a04f3"
+    assert _fp({}) == "a9cc980add47b869"
     for mid in _ROWS:
         assert mid not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"
