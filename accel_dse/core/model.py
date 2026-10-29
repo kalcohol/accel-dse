@@ -414,6 +414,8 @@ class Layer:
     # 0.472 Mixtral-8x22B: mixtral_swiglu bills the same product on the
     # routed experts. There is no latent pool and no shared expert. Block
     # norms stay on the historical dtype.
+    # 0.473 Seed-OSS-36B: seed_swiglu bills down(silu(gate) * up) on the
+    # dense MLP. The class does not upcast. Block norms stay historical.
     # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
     # up and down, and fp32 LayerNorm on the four published norms.
     # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
@@ -605,6 +607,8 @@ class ModelSpec:
     # 0.471: muse_swiglu bills the Muse Spark latent expert product.
     # The historical final norm stays on the shared formula.
     # 0.472: mixtral_swiglu bills the Mixtral-8x22B routed expert product.
+    # The historical final norm stays on the shared formula.
+    # 0.473: seed_swiglu bills the Seed-OSS-36B dense SwiGLU product.
     # The historical final norm stays on the shared formula.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
@@ -5355,6 +5359,109 @@ def _tag_mixtral_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="mixtral_swiglu", notes=spec.notes + (note,))
 
 
+# 0.473: Seed-OSS-36B dense MLP. The published forward is
+# down(act_fn(gate) * up) with hidden_act silu. There is no MoE.
+_SEED_SWIGLU = frozenset({"seed-oss-36b"})
+
+
+def _tag_seed_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.473: bill the published Seed-OSS-36B SwiGLU product.
+
+    SeedOssMLP is down_proj(act_fn(gate_proj(x)) * up_proj(x)). This release
+    sets hidden_act to silu. The class does not upcast. SiLU stays act. The
+    product is mlp_mul on the intermediate width. a_fmt follows act_fmt.
+    Residual dropout and attention dropout run only while training, so they
+    are not inference ops. SeedOssRMSNorm is the T5 recipe, but the historical
+    hidden norms already have the same vec and sfu counts, and this bill does
+    not retag them. rope_type default leaves attention_scaling at 1, so the
+    existing rope op is unchanged. vec_kind is seed_swiglu. No earlier
+    allowlist is extended.
+    """
+    if spec.id not in _SEED_SWIGLU:
+        return spec
+    if c.get("model_type") != "seed_oss":
+        raise ValueError("seed swiglu model_type is not seed_oss")
+    if c.get("architectures") != ["SeedOssForCausalLM"]:
+        raise ValueError("seed swiglu architecture is not seed_oss")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("seed swiglu hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("seed swiglu swiglu_limit is set")
+    if c.get("attention_bias") is not True:
+        raise ValueError("seed swiglu attention_bias is not true")
+    if c.get("attention_out_bias") is not False:
+        raise ValueError("seed swiglu attention_out_bias is not false")
+    if c.get("mlp_bias") is not False:
+        raise ValueError("seed swiglu mlp_bias is not false")
+    if c.get("attention_dropout") != 0.1:
+        raise ValueError("seed swiglu attention_dropout is not 0.1")
+    if c.get("residual_dropout") != 0.1:
+        raise ValueError("seed swiglu residual_dropout is not 0.1")
+    if c.get("rope_scaling") != {"rope_type": "default"}:
+        raise ValueError("seed swiglu rope_scaling is not default")
+    if c.get("torch_dtype") != "bfloat16":
+        raise ValueError("seed swiglu dtype is not bfloat16")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("seed swiglu tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-6:
+        raise ValueError("seed swiglu rms_norm_eps is not 1e-6")
+    for key in ("sliding_window", "layer_types", "num_experts", "num_local_experts",
+                "n_routed_experts", "num_experts_per_tok", "moe_intermediate_size",
+                "num_shared_experts", "shared_expert_intermediate_size"):
+        if key in c:
+            raise ValueError("seed swiglu moe or sliding key is set")
+    h = c.get("hidden_size")
+    de = c.get("intermediate_size")
+    depth = c.get("num_hidden_layers")
+    heads = c.get("num_attention_heads")
+    hkv = c.get("num_key_value_heads")
+    hd = c.get("head_dim")
+
+    def _pos(v) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+    if not (_pos(h) and _pos(de) and _pos(depth) and _pos(heads) and _pos(hkv) and _pos(hd)):
+        raise ValueError("seed swiglu width is not positive")
+    if heads % hkv != 0:
+        raise ValueError("seed swiglu heads are not a multiple of kv heads")
+    if spec.act_fmt != "bf16" or spec.fmt("mlp").fmt != "bf16":
+        raise ValueError("seed swiglu dtype is not bfloat16")
+    if len(spec.layers) != depth:
+        raise ValueError("seed swiglu depth is not num_hidden_layers")
+    if spec.mtp_layers:
+        raise ValueError("seed swiglu mtp is set")
+    expect_misc = 2 * h + heads * hd + 2 * hkv * hd
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "dense" or not f.gated or f.d_ff != de or f.n_experts or f.top_k
+                or f.d_expert or f.n_shared or f.d_shared or f.latent or f.d_ff == 0):
+            raise ValueError("seed swiglu mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("seed swiglu mlp is not gate_up then down")
+        up, down = L.ffn_linears
+        if up.k != h or up.n != 2 * de or down.k != de or down.n != h:
+            raise ValueError("seed swiglu mlp is not gate_up then down")
+        if (L.core.kind != "gqa" or L.core.n_q != heads or L.core.n_kv != hkv
+                or L.core.qk_dim != hd or L.core.v_dim != hd or L.core.window is not None
+                or L.core.no_rope):
+            raise ValueError("seed swiglu attention is not gqa")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("seed swiglu attention is not qkv o")
+        q, k, v, o = L.attn_linears
+        if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
+                or o.k != heads * hd or o.n != h or L.misc_params != expect_misc):
+            raise ValueError("seed swiglu attention is not qkv o")
+    layers = tuple(replace(L, vec_kind="seed_swiglu") for L in spec.layers)
+    note = ("0.473: Seed-OSS-36B MLP is down(silu(gate) * up). "
+            "SiLU stays act. The product is mlp_mul. "
+            "a_fmt follows act_fmt. The class does not upcast. "
+            "Residual dropout and attention dropout run only while training. "
+            "Block RMSNorms stay on the historical dtype. "
+            "rope_type default keeps attention_scaling at 1. "
+            "The front-60 row is seed-oss-36b.")
+    return replace(spec, layers=layers, vec_kind="seed_swiglu", notes=spec.notes + (note,))
+
+
 _STEP_AUDIO = frozenset({
     "step-audio-2-mini",
     "step-audio-2-mini-base",
@@ -7498,7 +7605,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_mixtral_swiglu_vectors(
+    return _tag_seed_swiglu_vectors(
+        _tag_mixtral_swiglu_vectors(
         _tag_muse_swiglu_vectors(
         _tag_llama3_vectors(
         _tag_kimi_situ_vectors(
@@ -7519,7 +7627,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

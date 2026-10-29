@@ -122,7 +122,7 @@ def _ffn(depth: int, h: int, inner: int, t: int = 4096) -> int:
 
 
 def test_version_is_464():
-    assert __version__ == "0.472.0"
+    assert __version__ == "0.473.0"
 
 
 def test_three_rows_are_front60_and_reuse_carbon_llama():
@@ -465,9 +465,9 @@ def test_fingerprints_and_kpi():
     # LPDDR decode ticks stay bit-identical. The pipe hash covers the full
     # summary, so the default pipe and the no-DeepSeek-V4 pipe move.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "afa0f7989c12811a"
+    assert _fp({}) == "9a66da621b20a5f8"
     assert _fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e"
-    assert _fpx({}) == "eb4847bbe1543d12"
+    assert _fpx({}) == "f8346734e98af4a2"
     from accel_dse.core import evaluate as E
     with E.model_flags(FUSE_QKV=False):
         assert _kpi("yi-1.5-34b") == "4a9848721f34"

@@ -119,7 +119,7 @@ def _ffn(depth: int, h: int, inner: int, t: int = 4096) -> int:
 
 
 def test_version_is_470():
-    assert __version__ == "0.472.0"
+    assert __version__ == "0.473.0"
 
 
 def test_row_is_front60_and_reuses_carbon_llama():
@@ -437,7 +437,7 @@ def test_fingerprints_and_kpi():
     # Decode summaries on the locked window match the untagged model, so
     # the pipe hashes stay at the 0.468 / 0.469 values.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "afa0f7989c12811a"
+    assert _fp({}) == "9a66da621b20a5f8"
     from tests.test_core_125 import test_fingerprints_change_only_v4
     test_fingerprints_change_only_v4()
     from accel_dse.core import evaluate as E

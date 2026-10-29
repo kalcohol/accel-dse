@@ -1378,6 +1378,8 @@ def _carbon_dense(L: Layer) -> bool:
     # latent expert only. There is no shared expert. 0.472 mixtral_swiglu does
     # the same multiply on Mixtral-8x22B routed experts. There is no latent
     # pool and no shared expert. Other MoE kinds are unchanged.
+    # 0.473 seed_swiglu does the same multiply on the Seed-OSS-36B dense MLP.
+    # SiLU stays act. Block norms stay on the historical dtype.
     # 0.469 kimi_situ replaces the historical SiLU counts. SituAndMul is not
     # silu(gate) * up, so those layers do not emit act or expert_act.
     return L.vec_kind in (
@@ -1656,6 +1658,21 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
                 if l.name == "up":
                     ops.append(Op("gelu", "vector", li, vec=nact * 5, sfu=float(nact), a_fmt=af))
+        elif L.vec_kind == "seed_swiglu":
+            # SeedOssMLP: down_proj(act_fn(gate_proj(x)) * up_proj(x)).
+            # hidden_act is silu. The class does not upcast. SiLU stays act.
+            # The product is mlp_mul on the intermediate width, not the fused
+            # gate_up rows. Residual dropout runs only while training.
+            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("seed swiglu mlp is not gate_up then down")
+            nact = t * _cdiv(f.d_ff, tp)
+            af = model.act_fmt
+            for l in L.ffn_linears:
+                k, n = _lin_local(l, tp)
+                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
+                if l.name == "gate_up":
+                    ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
         else:
             for l in L.ffn_linears:
                 k, n = _lin_local(l, tp)
