@@ -80,7 +80,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_447():
-    assert __version__ == "0.473.0"
+    assert __version__ == "0.474.0"
 
 
 def test_post_rmsnorm_qk_and_the_product():
@@ -235,10 +235,14 @@ def test_non_vector_schedule_and_other_models():
         assert _sched(m, ph, shard) == _sched(bare, ph, shard)
     for mid in ("llama-3.1-8b",
                 "qwen3-vl-235b-a22b", "qwen3-vl-30b-a3b",
-                "olmo-3-32b-think", "qwen3-coder-480b-a35b"):
+                "qwen3-coder-480b-a35b"):
         other = get_model(mid)
         assert other.vec_kind == ""
         assert all(L.vec_kind != "exaone4" for L in other.layers)
+    # 0.474 bills the OLMo-3 32B product on its own tag. It is not EXAONE post-norm.
+    olmo = get_model("olmo-3-32b-think")
+    assert olmo.vec_kind != "exaone4"
+    assert all(L.vec_kind != "exaone4" for L in olmo.layers)
     # 0.449 bills qwen3-14b. It stays off the EXAONE post-norm path.
     billed = get_model("qwen3-14b")
     assert billed.vec_kind == "qwen3"
