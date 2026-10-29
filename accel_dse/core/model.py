@@ -419,6 +419,10 @@ class Layer:
     # 0.474 OLMo-3 32B: olmo3_swiglu bills the same product on the dense MLP.
     # The class does not upcast. Post-norms, full-projection q/k RMSNorm,
     # and YaRN stay off this tag. The 7B rows stay untagged.
+    # 0.475 Jais-3-32B: jais3_swiglu bills the same product on the dense MLP
+    # of the bf16 row and the FP8 row. The class does not upcast. Group
+    # RMSNorm, the missing q/k norm, and full-head RoPE stay off this tag.
+    # Smaller Jais rows stay untagged.
     # 0.461 Whisper / Distil-Whisper decoders: whisper bills erf-GELU between
     # up and down, and fp32 LayerNorm on the four published norms.
     # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
@@ -614,6 +618,8 @@ class ModelSpec:
     # 0.473: seed_swiglu bills the Seed-OSS-36B dense SwiGLU product.
     # The historical final norm stays on the shared formula.
     # 0.474: olmo3_swiglu bills the OLMo-3 32B dense SwiGLU product.
+    # The historical final norm stays on the shared formula.
+    # 0.475: jais3_swiglu bills the Jais-3-32B dense SwiGLU product.
     # The historical final norm stays on the shared formula.
     # "" keeps the shared full-forward formulas.
     vec_kind: str = ""
@@ -5590,6 +5596,152 @@ def _tag_olmo3_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="olmo3_swiglu", notes=spec.notes + (note,))
 
 
+# 0.475: Jais-3-32B and its IFM FP8 twin. K2HorizonMLP is
+# down(act_fn(gate) * up) with hidden_act silu. Smaller Jais rows stay off.
+_JAIS3_SWIGLU = frozenset({
+    "jais-3-32b",
+    "jais-3-32b-fp8",
+})
+_JAIS3_H = 5120
+_JAIS3_INNER = 26624
+_JAIS3_DEPTH = 64
+_JAIS3_HEADS = 64
+_JAIS3_KV = 8
+_JAIS3_HD = 128
+_JAIS3_GROUPS = 4
+
+
+def _tag_jais3_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.475: bill the published Jais-3-32B SwiGLU product.
+
+    K2HorizonMLP is down_proj(act_fn(gate_proj(x)) * up_proj(x)). These
+    releases set hidden_act to silu. The three Linear biases are false.
+    The class does not upcast. SiLU stays act. The product is mlp_mul on
+    the intermediate width. a_fmt follows act_fmt. Every layer is dense:
+    mlp_only_layers lists all 64 layers and num_experts is 0.
+    K2HorizonRMSNorm reshapes to layernorm_num_groups (4), reduces in
+    fp32, and applies one rsqrt per group. The historical attn_norm,
+    ffn_norm, and final_norm already have the same element width and one
+    rsqrt per token, so this bill does not move them and does not add the
+    extra per-group rsqrt. query_key_norm is false, so there is no q/k
+    RMSNorm. rope_head_dim equals head_dim, so apply_rotary_pos_emb is the
+    full-head path and the existing rope op is unchanged. attention_dropout
+    is 0. There is no attention output gate and no sliding window.
+    vec_kind is jais3_swiglu. No earlier allowlist is extended. The 7B,
+    3.7B, 0.9B, 375B, and MoVA rows stay untagged.
+    """
+    if spec.id not in _JAIS3_SWIGLU:
+        return spec
+    if c.get("model_type") != "k2_horizon":
+        raise ValueError("jais3 swiglu model_type is not k2_horizon")
+    if c.get("architectures") != ["K2HorizonForCausalLM"]:
+        raise ValueError("jais3 swiglu architecture is not k2_horizon")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("jais3 swiglu hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("jais3 swiglu swiglu_limit is set")
+    if c.get("attention_bias") is not False:
+        raise ValueError("jais3 swiglu attention_bias is not false")
+    if "attention_out_bias" in c or "mlp_bias" in c or "residual_dropout" in c:
+        raise ValueError("jais3 swiglu bias key is set")
+    if "attention_gate_func" not in c or c.get("attention_gate_func") is not None:
+        raise ValueError("jais3 swiglu attention_gate_func is set")
+    if c.get("query_key_norm") is not False:
+        raise ValueError("jais3 swiglu query_key_norm is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("jais3 swiglu attention_dropout is not 0")
+    if c.get("layernorm_num_groups") != _JAIS3_GROUPS:
+        raise ValueError("jais3 swiglu layernorm_num_groups is not 4")
+    rope = c.get("rope_parameters")
+    if not isinstance(rope, dict) or rope.get("rope_type") != "default":
+        raise ValueError("jais3 swiglu rope_type is not default")
+    if c.get("rope_head_dim") != _JAIS3_HD or c.get("head_dim") != _JAIS3_HD:
+        raise ValueError("jais3 swiglu rope_head_dim is not head_dim")
+    if "sliding_window" not in c or c.get("sliding_window") is not None:
+        raise ValueError("jais3 swiglu sliding_window is set")
+    if c.get("use_sliding_window") is not False:
+        raise ValueError("jais3 swiglu use_sliding_window is not false")
+    dtype = c.get("dtype") or c.get("torch_dtype")
+    if dtype != "bfloat16":
+        raise ValueError("jais3 swiglu dtype is not bfloat16")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("jais3 swiglu tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-6:
+        raise ValueError("jais3 swiglu rms_norm_eps is not 1e-6")
+    if c.get("decoder_sparse_step") != 1:
+        raise ValueError("jais3 swiglu decoder_sparse_step is not 1")
+    for key, expect in (
+            ("num_experts", 0), ("num_experts_per_tok", 0),
+            ("moe_intermediate_size", 0), ("num_shared_experts", 0),
+            ("mova_num_experts", 0), ("mova_num_experts_per_tok", 0)):
+        if c.get(key) != expect:
+            raise ValueError("jais3 swiglu moe key is set")
+    if c.get("moe_gate_bias") is not False:
+        raise ValueError("jais3 swiglu moe_gate_bias is not false")
+    if c.get("hidden_size") != _JAIS3_H or c.get("intermediate_size") != _JAIS3_INNER:
+        raise ValueError("jais3 swiglu width is not the 32b release")
+    if c.get("num_hidden_layers") != _JAIS3_DEPTH:
+        raise ValueError("jais3 swiglu depth is not 64")
+    if c.get("num_attention_heads") != _JAIS3_HEADS or c.get("num_key_value_heads") != _JAIS3_KV:
+        raise ValueError("jais3 swiglu heads are not the 32b release")
+    if c.get("mlp_only_layers") != list(range(_JAIS3_DEPTH)):
+        raise ValueError("jais3 swiglu mlp_only_layers is not every layer")
+    qcfg = c.get("quantization_config")
+    if spec.id == "jais-3-32b":
+        if qcfg is not None:
+            raise ValueError("jais3 swiglu quantization_config is set")
+        if (spec.act_fmt != "bf16" or spec.fmt("mlp").fmt != "bf16"
+                or spec.fmt("attn").fmt != "bf16" or spec.quantized_release):
+            raise ValueError("jais3 swiglu dtype is not bfloat16")
+    else:
+        if not isinstance(qcfg, dict) or qcfg.get("quant_method") != "compressed-tensors":
+            raise ValueError("jais3 swiglu quant method is not compressed-tensors")
+        if qcfg.get("ignore") != ["lm_head"]:
+            raise ValueError("jais3 swiglu quant ignore is not lm_head")
+        if (spec.act_fmt != "fp8" or spec.fmt("mlp").fmt != "fp8"
+                or spec.fmt("attn").fmt != "fp8" or not spec.quantized_release):
+            raise ValueError("jais3 swiglu activation is not fp8")
+        if spec.fmt("embed").fmt != "bf16" or spec.fmt("lm_head").fmt != "bf16":
+            raise ValueError("jais3 swiglu embed is not bf16")
+    if spec.kv_fmt != "bf16":
+        raise ValueError("jais3 swiglu kv is not bf16")
+    if len(spec.layers) != _JAIS3_DEPTH or spec.mtp_layers:
+        raise ValueError("jais3 swiglu depth is not num_hidden_layers")
+    expect_misc = 2 * _JAIS3_H
+    q_n = _JAIS3_HEADS * _JAIS3_HD
+    kv_n = _JAIS3_KV * _JAIS3_HD
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "dense" or not f.gated or f.d_ff != _JAIS3_INNER or f.n_experts
+                or f.top_k or f.d_expert or f.n_shared or f.d_shared or f.latent):
+            raise ValueError("jais3 swiglu mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("jais3 swiglu mlp is not gate_up then down")
+        up, down = L.ffn_linears
+        if up.k != _JAIS3_H or up.n != 2 * _JAIS3_INNER or down.k != _JAIS3_INNER or down.n != _JAIS3_H:
+            raise ValueError("jais3 swiglu mlp is not gate_up then down")
+        if (L.core.kind != "gqa" or L.core.n_q != _JAIS3_HEADS or L.core.n_kv != _JAIS3_KV
+                or L.core.qk_dim != _JAIS3_HD or L.core.v_dim != _JAIS3_HD
+                or L.core.window is not None or L.core.no_rope or L.core.rope_dim != 0
+                or L.core.out_gate_fn):
+            raise ValueError("jais3 swiglu attention is not gqa")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("jais3 swiglu attention is not qkv o")
+        q, k, v, o = L.attn_linears
+        if (q.k != _JAIS3_H or q.n != q_n or k.n != kv_n or v.n != kv_n
+                or o.k != q_n or o.n != _JAIS3_H or L.misc_params != expect_misc
+                or q_n == _JAIS3_H):
+            raise ValueError("jais3 swiglu attention is not qkv o")
+    layers = tuple(replace(L, vec_kind="jais3_swiglu") for L in spec.layers)
+    note = ("0.475: Jais-3-32B MLP is down(silu(gate) * up). "
+            "SiLU stays act. The product is mlp_mul. "
+            "a_fmt follows act_fmt. The class does not upcast. "
+            "Group RMSNorm stays on the historical ops. "
+            "query_key_norm is false. rope_head_dim equals head_dim. "
+            "The rows are jais-3-32b and jais-3-32b-fp8.")
+    return replace(spec, layers=layers, vec_kind="jais3_swiglu", notes=spec.notes + (note,))
+
+
 _STEP_AUDIO = frozenset({
     "step-audio-2-mini",
     "step-audio-2-mini-base",
@@ -7733,7 +7885,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_olmo3_swiglu_vectors(
+    return _tag_jais3_swiglu_vectors(
+        _tag_olmo3_swiglu_vectors(
         _tag_seed_swiglu_vectors(
         _tag_mixtral_swiglu_vectors(
         _tag_muse_swiglu_vectors(
@@ -7756,7 +7909,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

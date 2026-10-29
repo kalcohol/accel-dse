@@ -70,7 +70,7 @@ def _phase(seq_len: int, batch: int = 1):
 
 
 def test_version_is_439():
-    assert __version__ == "0.474.0"
+    assert __version__ == "0.475.0"
 
 
 def test_esmfold_language_layers_use_esm2_width():

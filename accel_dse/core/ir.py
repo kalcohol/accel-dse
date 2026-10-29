@@ -1384,6 +1384,9 @@ def _carbon_dense(L: Layer) -> bool:
     # SiLU stays act. Post-attention and post-feedforward RMSNorms stay on
     # the historical pre-norm ops. Full-projection q/k RMSNorm and YaRN
     # attention_scaling are not this op.
+    # 0.475 jais3_swiglu does the same multiply on the Jais-3-32B dense MLP.
+    # SiLU stays act. Group RMSNorm (4 groups, fp32) stays on the historical
+    # pre-norm ops. query_key_norm is false. rope_head_dim equals head_dim.
     # 0.469 kimi_situ replaces the historical SiLU counts. SituAndMul is not
     # silu(gate) * up, so those layers do not emit act or expert_act.
     return L.vec_kind in (
@@ -1687,6 +1690,26 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             # RMSNorm and YaRN attention_scaling are not this op.
             if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
                 raise ValueError("olmo3 swiglu mlp is not gate_up then down")
+            nact = t * _cdiv(f.d_ff, tp)
+            af = model.act_fmt
+            for l in L.ffn_linears:
+                k, n = _lin_local(l, tp)
+                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
+                if l.name == "gate_up":
+                    ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
+        elif L.vec_kind == "jais3_swiglu":
+            # K2HorizonMLP: down_proj(act_fn(gate_proj(x)) * up_proj(x)).
+            # hidden_act is silu. The class does not upcast. SiLU stays act.
+            # The product is mlp_mul on the intermediate width, not the fused
+            # gate_up rows. K2HorizonRMSNorm is grouped (layernorm_num_groups
+            # is 4) and runs in fp32. The historical pre-norm ops already
+            # cover the same element width, so this path does not retag them
+            # and does not add the extra per-group rsqrt. query_key_norm is
+            # false. rope_head_dim equals head_dim, so the existing rope op
+            # is unchanged.
+            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("jais3 swiglu mlp is not gate_up then down")
             nact = t * _cdiv(f.d_ff, tp)
             af = model.act_fmt
             for l in L.ffn_linears:

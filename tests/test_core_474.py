@@ -97,7 +97,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_474():
-    assert __version__ == "0.474.0"
+    assert __version__ == "0.475.0"
 
 
 def test_three_rows_bill_the_dense_product():
@@ -155,7 +155,7 @@ def test_three_rows_bill_the_dense_product():
     assert get_model("olmo-3-1025-7b").vec_kind == ""
     assert get_model("seed-oss-36b").vec_kind == "seed_swiglu"
     assert get_model("mixtral-8x22b").vec_kind == "mixtral_swiglu"
-    assert get_model("jais-3-32b").vec_kind == ""
+    assert get_model("jais-3-32b").vec_kind != "olmo3_swiglu"
     assert get_model("exaone-4.0-32b").vec_kind == "exaone4"
 
 
