@@ -103,7 +103,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_468():
-    assert __version__ == "0.477.0"
+    assert __version__ == "0.478.0"
 
 
 def test_fifteen_rows_bill_the_published_product():
@@ -253,8 +253,9 @@ def test_other_moe_rows_stay_untagged():
     ernie = get_model("ernie-4.5-300b-a47b-pt")
     li = next(i for i, L in enumerate(ernie.layers) if L.ffn.kind == "moe")
     names = _names(build_rank_ops(ernie, li, ph, Shard()))
-    assert "mlp_mul" not in names
-    assert names.index("expert.gate_up") < names.index("expert.down") < names.index("expert_act")
+    assert names.index("expert.gate_up") < names.index("expert_act") < names.index("mlp_mul")
+    assert names.index("mlp_mul") < names.index("expert.down")
+    assert ernie.layers[li].vec_kind == "ernie300_swiglu"
     wide = get_model("qwen3.8-2.4t")
     other = get_model("qwen3-235b-a22b")
     spoof = replace(_bare(other), id="qwen3.8-2.4t")

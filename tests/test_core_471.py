@@ -102,7 +102,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_471():
-    assert __version__ == "0.477.0"
+    assert __version__ == "0.478.0"
 
 
 def test_six_rows_bill_the_latent_product():
@@ -254,8 +254,9 @@ def test_other_rows_and_refuses():
     ernie = get_model("ernie-4.5-300b-a47b-pt")
     li = next(i for i, L in enumerate(ernie.layers) if L.ffn.kind == "moe")
     names = _names(build_rank_ops(ernie, li, ph, Shard()))
-    assert "mlp_mul" not in names
-    assert names.index("expert.gate_up") < names.index("expert.down") < names.index("expert_act")
+    assert names.index("expert.gate_up") < names.index("expert_act") < names.index("mlp_mul")
+    assert names.index("mlp_mul") < names.index("expert.down")
+    assert ernie.layers[li].vec_kind == "ernie300_swiglu"
     wide = get_model(_MID)
     other = get_model("mixtral-8x22b")
     c_ok = _tc(load_release(_HF)["config"])

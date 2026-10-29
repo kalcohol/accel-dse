@@ -1394,6 +1394,10 @@ def _carbon_dense(L: Layer) -> bool:
     # 0.477 minimax_swiglu does the same multiply on MiniMax-Text-01 and
     # MiniMax-M1 routed experts. There is no shared expert. Lightning SiLU
     # on qkv, the sigmoid output gate, and the residual alpha stay off this op.
+    # 0.478 ernie300_swiglu does the same multiply on ERNIE-4.5-300B routed
+    # experts. There is no shared expert. Dense layers stay carbon_llama.
+    # The 0.458 fp32 block norms stay on the norm sites below. The
+    # routing-weight multiply after down is not this op.
     # 0.469 kimi_situ replaces the historical SiLU counts. SituAndMul is not
     # silu(gate) * up, so those layers do not emit act or expert_act.
     return L.vec_kind in (
@@ -1498,10 +1502,11 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     if L.gres_n:
         ops.append(_gres_op(model, li, L, t, tp, "attn"))
     else:
-        if _carbon_dense(L) or _whisper_dec(L):
+        if _carbon_dense(L) or _whisper_dec(L) or L.vec_kind == "ernie300_swiglu":
             # WhisperDecoderLayer.self_attn_layer_norm is nn.LayerNorm. The
             # reduction is fp32. One rsqrt per token row. Affine is already
-            # in misc. The op name stays attn_norm.
+            # in misc. The op name stays attn_norm. 0.478 ernie300_swiglu
+            # keeps the 0.458 Ernie4_5_MoeRMSNorm on MoE layers.
             ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
         elif not _exaone_dense(L):
             # EXAONE-4 is post-norm. The same attn_norm op is emitted after
@@ -1595,9 +1600,10 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             Nh = L.gres_n * h
             ops.append(Op("gres_head", "vector", li, replicated=tp, vec=t * (4 * Nh + 4 * Nh + 2 * Nh)))
     else:
-        if _carbon_dense(L) or _whisper_dec(L):
+        if _carbon_dense(L) or _whisper_dec(L) or L.vec_kind == "ernie300_swiglu":
             # WhisperDecoderLayer.final_layer_norm is the pre-MLP LayerNorm,
             # not a second copy after both linears. fp32, one rsqrt per row.
+            # 0.478 ernie300_swiglu keeps the 0.458 post-attention RMSNorm.
             ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
         elif not _exaone_dense(L):
             # EXAONE-4 post_feedforward_layernorm is emitted after mlp.down
@@ -1741,6 +1747,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 if l.name == "gate_up":
                     ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
                     ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
+        elif L.vec_kind == "ernie300_swiglu":
+            raise ValueError("ernie300 swiglu layer is not moe")
         else:
             for l in L.ffn_linears:
                 k, n = _lin_local(l, tp)
@@ -1811,6 +1819,11 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     or f.n_experts_b or f.d_expert_b or f.zero_experts or f.groups
                     or f.expert_role):
                 raise ValueError("minimax swiglu expert is not swiglu")
+            if L.vec_kind == "ernie300_swiglu" and (
+                    not f.gated or f.latent or f.n_shared or f.d_shared or f.d_ff
+                    or f.n_experts_b or f.d_expert_b or f.zero_experts or f.groups
+                    or f.expert_role):
+                raise ValueError("ernie300 swiglu expert is not swiglu")
             if tokens <= 0 or n_exp <= 0:
                 return
             if zero and not f.groups:
@@ -1877,6 +1890,17 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(act)
                     ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
                                   a_fmt=model.act_fmt))
+                if L.vec_kind == "ernie300_swiglu":
+                    # Ernie4_5_MoeExperts: act_fn(gate) * up, then down.
+                    # hidden_act is silu. The class does not upcast. SiLU
+                    # stays expert_act. The product is one multiply on the
+                    # useful token-expert pairs, not the padded GEMM rows
+                    # and not moe_capacity. a_fmt follows act_fmt. There is
+                    # no shared expert. The routing-weight multiply after
+                    # down is not this op.
+                    ops.append(act)
+                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
+                                  a_fmt=model.act_fmt))
                 if L.vec_kind == "kimi_situ":
                     # KimiBlockSparseMLP: SituAndMul(cat(w1, w3)) then w2.
                     # The historical SiLU expert_act is not this formula.
@@ -1889,7 +1913,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                                    share=u))
                 if L.vec_kind not in (
                         "qwen35_moe", "kimi_situ", "muse_swiglu", "mixtral_swiglu",
-                        "ernievl_swiglu", "minimax_swiglu"):
+                        "ernievl_swiglu", "minimax_swiglu", "ernie300_swiglu"):
                     ops.append(act)
             if sh.ep > 1:
                 pay = r.pairs_local * ein * ab
@@ -2138,12 +2162,13 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
                 Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
     if model.vec_kind in (
             "carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4", "granite", "qwen3",
-            "step_audio", "mistral_small", "qwen2_text", "whisper"):
+            "step_audio", "mistral_small", "qwen2_text", "whisper", "ernie300_swiglu"):
         # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm /
         # GraniteRMSNorm / Qwen2RMSNorm / MistralRMSNorm / Moshi rms_norm_f32 /
         # Ernie4_5_MoeRMSNorm / Whisper decoder LayerNorm / Llama-2 and
         # Yi-1.5 (0.464, same carbon_llama path) / Llama-3.3-70B (0.470,
-        # same carbon_llama path) on every token row,
+        # same carbon_llama path) / ERNIE-4.5-300B (0.478 keeps the 0.458
+        # Ernie4_5_MoeRMSNorm) on every token row,
         # then the head reads the last rows. Kimi-Audio
         # publishes two Qwen2RMSNorms (norm and mimo_norm); final_norm_params
         # is 2 * hidden. Whisper's final_norm_params is also 2 * hidden, but
