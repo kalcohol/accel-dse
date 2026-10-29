@@ -5079,6 +5079,91 @@ def _tag_qwen35_moe_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="qwen35_moe", notes=spec.notes + (note,))
 
 
+# 0.469: Kimi-K3 text stack. SituAndMul is not ACT2FN["silu"] times up.
+# Raon and every other hidden_act stay off this allowlist.
+_KIMI_SITU = frozenset({"kimi-k3"})
+
+
+def _tag_kimi_situ_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.469: bill the published Kimi-K3 SituAndMul.
+
+    modeling_kimi_linear.py SituAndMul casts gate and up to fp32 and returns
+    beta * tanh(gate / beta) * sigmoid(gate) * (linear_beta * tanh(up / linear_beta)).
+    The released betas are 4 and 25. The dense layer is KimiMLP. Each MoE
+    layer's routed expert is KimiBlockSparseMLP at moe_intermediate_size.
+    The shared expert is one KimiMLP whose intermediate is
+    moe_intermediate_size * num_shared_experts. vec_kind is kimi_situ so the
+    historical final norm and the block norms stay on their old dtype.
+    The routing-weight multiply, the latent RMSNorm, and the vision tower
+    are not this bill. No earlier allowlist is extended.
+    """
+    if spec.id not in _KIMI_SITU:
+        return spec
+    if c.get("model_type") != "kimi_linear":
+        raise ValueError("kimi situ model_type is not kimi_linear")
+    if c.get("hidden_act") != "situ":
+        raise ValueError("kimi situ hidden_act is not situ")
+    if c.get("activation_situ_beta") != 4.0 or c.get("activation_situ_linear_beta") != 25.0:
+        raise ValueError("kimi situ beta is not 4 and 25")
+    if any("swiglu" in k or k == "clamp" for k in c):
+        raise ValueError("kimi situ swiglu_limit is set")
+    if c.get("first_k_dense_replace") != 1:
+        raise ValueError("kimi situ first dense layer is not 1")
+    de = c.get("moe_intermediate_size")
+    n_exp = c.get("num_experts")
+    topk = c.get("num_experts_per_token")
+    n_sh = c.get("num_shared_experts")
+    d_dense = c.get("intermediate_size")
+    latent = c.get("routed_expert_hidden_size")
+
+    def _pos(v) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+    if not (_pos(de) and _pos(n_exp) and _pos(topk) and _pos(n_sh) and _pos(d_dense) and _pos(latent)):
+        raise ValueError("kimi situ expert width is not positive")
+    if c.get("latent_moe_use_norm") is not True:
+        raise ValueError("kimi situ latent norm flag is not true")
+    if spec.mtp_layers:
+        raise ValueError("kimi situ mtp layers are present")
+    if len(spec.layers) != c.get("num_hidden_layers"):
+        raise ValueError("kimi situ depth is not num_hidden_layers")
+    for i, L in enumerate(spec.layers):
+        f = L.ffn
+        if i == 0:
+            if f.kind != "dense" or not f.gated or f.d_ff != d_dense:
+                raise ValueError("kimi situ dense mlp is not swiglu")
+            if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+                raise ValueError("kimi situ dense mlp is not gate_up then down")
+            up, down = L.ffn_linears
+            if up.n != 2 * d_dense or down.k != d_dense or up.k != spec.hidden or down.n != spec.hidden:
+                raise ValueError("kimi situ dense width is not intermediate_size")
+            continue
+        if (f.kind != "moe" or not f.gated or f.d_expert != de or f.top_k != topk
+                or f.n_experts != n_exp or f.n_shared != n_sh or f.d_shared != de
+                or f.latent != latent or f.zero_experts or f.n_experts_b or f.d_ff or f.groups):
+            raise ValueError("kimi situ expert is not situ")
+        by = {ln.name: ln for ln in L.ffn_linears}
+        need = ("router", "shared_gate_up", "shared_down", "latent_up", "latent_down")
+        if any(name not in by for name in need):
+            raise ValueError("kimi situ linears are not router shared and latent")
+        up, down = by["shared_gate_up"], by["shared_down"]
+        width = n_sh * de
+        if (up.n != 2 * width or up.k != spec.hidden or down.k != width or down.n != spec.hidden):
+            raise ValueError("kimi situ shared expert is not situ")
+        if by["latent_up"].n != latent or by["latent_down"].k != latent:
+            raise ValueError("kimi situ latent width is not routed_expert_hidden_size")
+    layers = tuple(replace(L, vec_kind="kimi_situ") for L in spec.layers)
+    note = ("0.469: SituAndMul is beta * tanh(gate / beta) * sigmoid(gate) "
+            "* (linear_beta * tanh(up / linear_beta)), computed in fp32. "
+            "beta is 4 and linear_beta is 25. The op is situ. "
+            "The historical SiLU act and expert_act are not this formula. "
+            "The shared expert is one MLP at moe_intermediate_size * num_shared_experts. "
+            "The routing-weight multiply and the latent RMSNorm are not billed. "
+            "Block norms stay on the historical dtype. "
+            "The front-60 row is kimi-k3.")
+    return replace(spec, layers=layers, vec_kind="kimi_situ", notes=spec.notes + (note,))
+
+
 _STEP_AUDIO = frozenset({
     "step-audio-2-mini",
     "step-audio-2-mini-base",
@@ -7107,7 +7192,8 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_qwen35_moe_vectors(
+    return _tag_kimi_situ_vectors(
+        _tag_qwen35_moe_vectors(
         _tag_llama2_vectors(
         _tag_qwen25_466_vectors(
         _tag_qwen25_72b_vectors(
@@ -7124,7 +7210,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:
