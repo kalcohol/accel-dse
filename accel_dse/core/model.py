@@ -29,6 +29,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .vector_rules import (
+    ALLOW_ROWS as _ALLOW_ROWS,
     ERNIE300_IDS as _ERNIE300_SWIGLU,
     ERNIEVL_IDS as _ERNIEVL_SWIGLU,
     GLM5_BF16_IDS as _GLM5_SWIGLU_BF16,
@@ -39,6 +40,7 @@ from .vector_rules import (
     MIXTRAL_IDS as _MIXTRAL_SWIGLU,
     MUSE_IDS as _MUSE_SWIGLU,
     OLMO3_IDS as _OLMO3_SWIGLU,
+    ORDER_SLOTS as _ORDER_SLOTS,
     QWEN35_IDS as _QWEN35_MOE,
     SEED_IDS as _SEED_SWIGLU,
     TAG_ORDER as _PRODUCT_TAG_ORDER,
@@ -5076,6 +5078,8 @@ def _tag_qwen3_467_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
 # 0.468: Qwen3.5 / Qwen3.8 MoE text stacks whose published expert is
 # down(silu(gate) * up), including the shared expert of the same MLP.
 # Dense SwiGLU rows and other MoE classes stay on their own gates.
+# 0.481: the ten LEGACY_TAGGERS below are AllowRow predicates (_pred_*).
+# The historical names remain as aliases for callers. kimi_situ is not one.
 def _stamp_swiglu(spec: ModelSpec, kind: str, note: str) -> ModelSpec:
     """Tag every main-stack layer with a frozen product kind.
 
@@ -5085,7 +5089,7 @@ def _stamp_swiglu(spec: ModelSpec, kind: str, note: str) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind=kind, notes=spec.notes + (note,))
 
 
-def _tag_qwen35_moe_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+def _pred_qwen35_moe(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.468: bill the published Qwen3.5 MoE expert product.
 
     Qwen3_5MoeMLP is down_proj(act_fn(gate_proj(x)) * up_proj(x)) with
@@ -5234,7 +5238,7 @@ def _tag_kimi_situ_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
 # 0.471: Muse Spark latent MoE. The published expert is
 # down(silu(gate) * up) at moe_intermediate_size after the pooler.
 # There is no shared expert. Dense draft towers stay untagged.
-def _tag_muse_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+def _pred_muse_swiglu(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.471: bill the published Muse Spark latent expert product.
 
     The routed experts are down(silu(gate) * up) at moe_intermediate_size
@@ -5308,7 +5312,7 @@ def _tag_muse_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
 
 # 0.472: Mixtral-8x22B routed experts. The published MLP is
 # w2(silu(w1(x)) * w3(x)). There is no latent pool and no shared expert.
-def _tag_mixtral_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+def _pred_mixtral_swiglu(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.472: bill the published Mixtral-8x22B expert product.
 
     MixtralBlockSparseTop2MLP is w2(silu(w1(x)) * w3(x)). These releases
@@ -5399,7 +5403,7 @@ def _tag_mixtral_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
 
 # 0.473: Seed-OSS-36B dense MLP. The published forward is
 # down(act_fn(gate) * up) with hidden_act silu. There is no MoE.
-def _tag_seed_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+def _pred_seed_swiglu(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.473: bill the published Seed-OSS-36B SwiGLU product.
 
     SeedOssMLP is down_proj(act_fn(gate_proj(x)) * up_proj(x)). This release
@@ -5501,7 +5505,7 @@ def _tag_seed_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
 _OLMO3_YARN_FACTOR = 1.2079441541679836
 
 
-def _tag_olmo3_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+def _pred_olmo3_swiglu(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.474: bill the published OLMo-3 32B SwiGLU product.
 
     Olmo3MLP is down_proj(act_fn(gate_proj(x)) * up_proj(x)). These releases
@@ -5624,7 +5628,7 @@ _JAIS3_HD = 128
 _JAIS3_GROUPS = 4
 
 
-def _tag_jais3_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+def _pred_jais3_swiglu(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.475: bill the published Jais-3-32B SwiGLU product.
 
     K2HorizonMLP is down_proj(act_fn(gate_proj(x)) * up_proj(x)). These
@@ -5772,7 +5776,7 @@ _ERNIEVL_DEB = 1536
 _ERNIEVL_ROPE = {"mrope_section": [22, 22, 20], "type": "default"}
 
 
-def _tag_ernievl_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+def _pred_ernievl_swiglu(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.476: bill the published ERNIE-4.5-VL 424B SwiGLU product.
 
     Ernie4_5_MLP and Ernie4_5_MoeMLP are both down(F.silu(gate) * up).
@@ -5938,7 +5942,7 @@ _MINIMAX_ALPHA = 3.5565588200778455
 _MINIMAX_TYPES = [0, 0, 0, 0, 0, 0, 0, 1] * 10
 
 
-def _tag_minimax_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+def _pred_minimax_swiglu(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.477: bill the published MiniMax-Text-01 and MiniMax-M1 expert product.
 
     MiniMaxText01BlockSparseTop2MLP and MiniMaxM1BlockSparseTop2MLP are
@@ -6092,7 +6096,7 @@ _ERNIE300_TOPK = 8
 _ERNIE300_DE = 3584
 
 
-def _tag_ernie300_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+def _pred_ernie300_swiglu(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.478: bill the published ERNIE-4.5-300B routed expert product.
 
     Ernie4_5_MoeExperts (transformers v5.12.0 modeling_ernie4_5_moe.py) is
@@ -6263,7 +6267,7 @@ _GLM5_MISC_MOE = 15104
 _GLM5_MISC_MOE_IDX = 15360
 
 
-def _tag_glm5_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
+def _pred_glm5_swiglu(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.479: bill the published GLM-5 / Atria SwiGLU product.
 
     GlmMoeDsaMLP.forward (transformers v5.10.2 modeling_glm_moe_dsa.py) is
@@ -7631,34 +7635,58 @@ def _tag_whisper_decoder_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="whisper", notes=spec.notes + (note,))
 
 
-def _tag_product_cluster(spec: ModelSpec, c: dict) -> ModelSpec:
-    """Registered silu(gate)*up taggers, in historical from_release order.
+def _apply_one_predicate(spec: ModelSpec, c: dict, legacy_name: str) -> ModelSpec:
+    """Run the AllowRow predicate registered under a historical tagger name."""
+    row = next((r for r in _ALLOW_ROWS if r.legacy_tagger == legacy_name), None)
+    if row is None:
+        raise KeyError(legacy_name)
+    return _PREDICATES[row.predicate](spec, c)
 
-    Order is vector_rules.TAG_ORDER. kimi_situ and the Llama-3 tagger are
-    slots between qwen35_moe and muse_swiglu. They are not silu rules.
+
+_PREDICATES = {row.predicate: globals()[row.predicate] for row in _ALLOW_ROWS}
+
+
+def _legacy_alias(legacy_name: str):
+    """Historical ``_tag_*`` name. The body is the AllowRow predicate."""
+    def _run(spec: ModelSpec, c: dict) -> ModelSpec:
+        return _apply_one_predicate(spec, c, legacy_name)
+    _run.__name__ = legacy_name
+    return _run
+
+
+for _allow_row_i in _ALLOW_ROWS:
+    globals()[_allow_row_i.legacy_tagger] = _legacy_alias(_allow_row_i.legacy_tagger)
+
+
+_ORDER_SLOT_FN = {
+    "_tag_kimi_situ_vectors": _tag_kimi_situ_vectors,
+    "_tag_llama3_vectors": _tag_llama3_vectors,
+}
+
+
+def _tag_product_cluster(spec: ModelSpec, c: dict) -> ModelSpec:
+    """Silu product predicates, in historical from_release order.
+
+    Order is vector_rules.TAG_ORDER. The ten LEGACY_TAGGERS are AllowRow
+    predicates. kimi_situ and the Llama-3 tagger are the order slots
+    between qwen35_moe and muse_swiglu. They are not silu rules.
     Carbon, Qwen, Whisper, and the 0.458 ERNIE dense tagger run before
-    this cluster. Allowlists are disjoint. TODO(phase-b): fold
-    LEGACY_TAGGERS into allow-row predicates instead of adding a tagger.
+    this cluster. Allowlists are disjoint.
     """
-    taggers = (
-        _tag_qwen35_moe_vectors,
-        _tag_kimi_situ_vectors,
-        _tag_llama3_vectors,
-        _tag_muse_swiglu_vectors,
-        _tag_mixtral_swiglu_vectors,
-        _tag_seed_swiglu_vectors,
-        _tag_olmo3_swiglu_vectors,
-        _tag_jais3_swiglu_vectors,
-        _tag_ernievl_swiglu_vectors,
-        _tag_minimax_swiglu_vectors,
-        _tag_ernie300_swiglu_vectors,
-        _tag_glm5_swiglu_vectors,
-    )
-    names = tuple(fn.__name__ for fn in taggers)
-    if names != _PRODUCT_TAG_ORDER:
-        raise RuntimeError("product tagger order drifted from vector_rules.TAG_ORDER")
-    for fn in taggers:
-        spec = fn(spec, c)
+    if tuple(_ORDER_SLOT_FN) != tuple(
+            name for name in _PRODUCT_TAG_ORDER if name in _ORDER_SLOTS):
+        raise RuntimeError("product order slots drifted from vector_rules.TAG_ORDER")
+    if set(_ORDER_SLOT_FN) != set(_ORDER_SLOTS):
+        raise RuntimeError("product order slots drifted from vector_rules.ORDER_SLOTS")
+    named = tuple(row.legacy_tagger for row in _ALLOW_ROWS)
+    expected = tuple(name for name in _PRODUCT_TAG_ORDER if name not in _ORDER_SLOTS)
+    if named != expected:
+        raise RuntimeError("product predicates drifted from vector_rules.TAG_ORDER")
+    for name in _PRODUCT_TAG_ORDER:
+        if name in _ORDER_SLOTS:
+            spec = _ORDER_SLOT_FN[name](spec, c)
+        else:
+            spec = _apply_one_predicate(spec, c, name)
     return spec
 
 

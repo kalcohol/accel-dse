@@ -10369,3 +10369,9 @@ ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有
 规则表同时描述稠密 `gate_up` / `down`、路由专家、共享专家三处插入。`act` 或 `expert_act` 仍是 SiLU，相乘仍是 `mlp_mul`，插在 `down` 之前。共享 SiLU 仍不入账。已有 kind 的拒绝文本留在 `KindBinding` 上。`from_release` 里这一簇按 `TAG_ORDER` 调用：`kimi_situ` 和 Llama-3 打标是顺序槽，不是 silu 规则；carbon、Qwen、Whisper 和 0.458 的 ERNIE 稠密打标仍排在这一簇前面。允许表互斥。手写校验器登记在 `LEGACY_TAGGERS`，下一阶段再收成 `AllowRow` 上的谓词。
 
 目录新增默认留在 `EXTRA_TAIL`。把一行挪进前 60 条，要另开一次指纹重基线。CHANGELOG 写「指纹不动」时，stage 指纹、默认 pipe 指纹、以及该版本声明的 KPI 列表必须都重新跑过并且为绿。
+
+## §384 Phase B：LEGACY_TAGGERS 收成 AllowRow 谓词（0.481）
+
+0.480 登记的十个手写校验器不再各写一份 `_tag_*_swiglu_vectors`。它们是 `AllowRow.predicate`：`_pred_qwen35_moe`、`_pred_muse_swiglu`、`_pred_mixtral_swiglu`、`_pred_seed_swiglu`、`_pred_olmo3_swiglu`、`_pred_jais3_swiglu`、`_pred_ernievl_swiglu`、`_pred_minimax_swiglu`、`_pred_ernie300_swiglu`、`_pred_glm5_swiglu`。`_tag_product_cluster` 按 `TAG_ORDER` 只走这一张表。`kimi_situ` 和 Llama-3 仍是顺序槽，函数体不动。历史名字留作别名，测试仍按原来的拒绝文本调用。不新开 `vec_kind`，不新开 swiglu tagger，也不在 `ir.py` 里为新 kind 再抄一份 `elif`。
+
+块范数的 kind 判断也收进同一张表：`pre_norm_fp32`、`post_norm_fp32`、`fp32_final_norm`。`_rank_ops` 里 `L.vec_kind` 的字符串比较从 7 处降到 1 处（只剩 `kimi_situ`）。Whisper 解码器的 erf-GELU、`evo2_*`、未打标 MoE 和结构域路径不改。目录行不进前 60 条。指纹不重基线。

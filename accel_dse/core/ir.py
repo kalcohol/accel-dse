@@ -1352,68 +1352,6 @@ def _evo2_dense(L: Layer) -> bool:
     return L.vec_kind in ("evo2_gelu", "evo2_id")
 
 
-def _carbon_dense(L: Layer) -> bool:
-    # GraniteRMSNorm, Qwen3RMSNorm, Qwen2RMSNorm (Step-Audio text, Qwen2 /
-    # Qwen2.5-Omni / Kimi text), and MistralRMSNorm (Mistral-Small text) are
-    # the same pre-norm T5 recipe. Granite, Step-Audio, Mistral-Small, and
-    # Qwen2 text have no q/k norm. Qwen3 norms q and k on head_dim. Kimi's
-    # second final norm is head-side only. Moshi rms_norm_f32 (0.457) is the
-    # same pre-norm recipe and reuses carbon_llama. It has no q/k norm.
-    # ERNIE-4.5 MoE (0.458) subclasses LlamaRMSNorm and reuses carbon_llama.
-    # Mistral-Large (0.462) is MistralForCausalLM and reuses mistral_small.
-    # Qwen2.5-72B (0.463) is Qwen2ForCausalLM and reuses qwen2_text.
-    # Qwen2.5-3B and Qwen2.5-1.5B (0.466) reuse that same recipe.
-    # Llama-2 and Yi-1.5 (0.464) are LlamaForCausalLM and reuse carbon_llama.
-    # Omitted bias and pretraining_tp keys are the published defaults.
-    # Llama-3.3-70B (0.470) is LlamaForCausalLM and reuses carbon_llama.
-    # Published rope_scaling only rescales inv_freq at init. attention_scaling
-    # is 1, so the existing rope op is unchanged. There is no new vector kind.
-    # Qwen3-8B, its fp8 and AWQ releases, and Qwen3-1.7B (0.465) reuse qwen3.
-    # Qwen3-32B, its fp8 and AWQ releases, Qwen3-4B, and Qwen3-0.6B (0.467)
-    # reuse qwen3. q width is heads * head_dim and is not hidden.
-    # mlp_mul is inserted only when the FFN is dense gate_up/down. Untagged MoE
-    # layers keep expert_act after down. Shared-expert products stay off that
-    # dense path. 0.468 qwen35_moe is the exception: the published expert and
-    # the published shared expert are both down(silu(gate) * up), so those
-    # layers insert mlp_mul. 0.471 muse_swiglu does the same multiply on the
-    # latent expert only. There is no shared expert. 0.472 mixtral_swiglu does
-    # the same multiply on Mixtral-8x22B routed experts. There is no latent
-    # pool and no shared expert. Other MoE kinds are unchanged.
-    # 0.473 seed_swiglu does the same multiply on the Seed-OSS-36B dense MLP.
-    # SiLU stays act. Block norms stay on the historical dtype.
-    # 0.474 olmo3_swiglu does the same multiply on the OLMo-3 32B dense MLP.
-    # SiLU stays act. Post-attention and post-feedforward RMSNorms stay on
-    # the historical pre-norm ops. Full-projection q/k RMSNorm and YaRN
-    # attention_scaling are not this op.
-    # 0.475 jais3_swiglu does the same multiply on the Jais-3-32B dense MLP.
-    # SiLU stays act. Group RMSNorm (4 groups, fp32) stays on the historical
-    # pre-norm ops. query_key_norm is false. rope_head_dim equals head_dim.
-    # 0.476 ernievl_swiglu does the same multiply on ERNIE-4.5-VL 424B.
-    # Dense layers use Ernie4_5_MLP. Text experts and vision experts use
-    # Ernie4_5_MoeMLP. Vision experts run only on multimodal tokens.
-    # Block RMSNorm and the 3-D RoPE frequency split stay on the historical ops.
-    # 0.477 minimax_swiglu does the same multiply on MiniMax-Text-01 and
-    # MiniMax-M1 routed experts. There is no shared expert. Lightning SiLU
-    # on qkv, the sigmoid output gate, and the residual alpha stay off this op.
-    # 0.478 ernie300_swiglu does the same multiply on ERNIE-4.5-300B routed
-    # experts. There is no shared expert. Dense layers stay carbon_llama.
-    # The 0.458 fp32 block norms stay on the norm sites below. The
-    # routing-weight multiply after down is not this op.
-    # 0.479 glm5_swiglu does the same multiply on GLM-5, GLM-5.2, GLM-5.3,
-    # and Atria-Dawn. Dense layers, routed experts, and the one shared
-    # expert each insert mlp_mul. Shared SiLU stays unbilled. The MTP
-    # block stays untagged. Block RMSNorm stays on the historical ops.
-    # 0.480 those silu products share vector_rules. The kind strings stay
-    # frozen. This predicate is only the pre-norm carbon set.
-    # 0.469 kimi_situ replaces the historical SiLU counts. SituAndMul is not
-    # silu(gate) * up, so those layers do not emit act or expert_act.
-    return L.vec_kind in vr.CARBON_DENSE_KINDS
-
-
-def _exaone_dense(L: Layer) -> bool:
-    return L.vec_kind == "exaone4"
-
-
 def _whisper_dec(L: Layer) -> bool:
     """WhisperDecoderLayer: published erf-GELU between fc1 and fc2, fp32 LayerNorm."""
     return L.vec_kind == "whisper"
@@ -1440,18 +1378,6 @@ def _emit_dense_silu(model: ModelSpec, L: Layer, ops: list, li: int, t: int, tp:
             ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
 
 
-def _qk_rms_who(kind: str) -> str:
-    if kind == "carbon_qwen":
-        return "carbon-x"
-    if kind == "qwen3vl_text":
-        return "qwen3-vl"
-    if kind == "exaone4":
-        return "exaone4"
-    if kind == "qwen3":
-        return "qwen3"
-    return ""
-
-
 def _carbon_qk_rms(L: Layer, li: int, t: int, tp: int) -> list[Op]:
     """RMSNorm on head_dim after q_proj and k_proj.
 
@@ -1462,7 +1388,7 @@ def _carbon_qk_rms(L: Layer, li: int, t: int, tp: int) -> list[Op]:
     Carbon and Granite checkpoints have no q/k norm. The reduction is the
     published T5 recipe (fp32).
     """
-    who = _qk_rms_who(L.vec_kind)
+    who = vr.qk_rms_who(L.vec_kind)
     if not who:
         return []
     hd = L.core.qk_dim
@@ -1528,13 +1454,14 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
     if L.gres_n:
         ops.append(_gres_op(model, li, L, t, tp, "attn"))
     else:
-        if _carbon_dense(L) or _whisper_dec(L) or L.vec_kind == "ernie300_swiglu":
+        if vr.pre_norm_fp32(L.vec_kind):
             # WhisperDecoderLayer.self_attn_layer_norm is nn.LayerNorm. The
             # reduction is fp32. One rsqrt per token row. Affine is already
-            # in misc. The op name stays attn_norm. 0.478 ernie300_swiglu
-            # keeps the 0.458 Ernie4_5_MoeRMSNorm on MoE layers.
+            # in misc. The op name stays attn_norm. ernie300_swiglu keeps
+            # the 0.458 Ernie4_5_MoeRMSNorm on MoE layers. The kind test is
+            # vector_rules.pre_norm_fp32.
             ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
-        elif not _exaone_dense(L):
+        elif not vr.post_norm_fp32(L.vec_kind):
             # EXAONE-4 is post-norm. The same attn_norm op is emitted after
             # the attention all-reduce, not before qkv.
             ops.append(Op("attn_norm", "vector", li, vec=t * h * 4, sfu=t))
@@ -1600,7 +1527,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(Op("rope", "vector", li, vec=t * hq * max(L.core.rope_dim, L.core.qk_dim // 2) * 3))
     if tp > 1:
         ops.append(Op("attn_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
-    if _exaone_dense(L):
+    if vr.post_norm_fp32(L.vec_kind):
         # Exaone4DecoderLayer.post_attention_layernorm is T5 RMSNorm on the
         # full hidden, after the row-parallel o_proj all-reduce. One rsqrt
         # per token row. The residual add stays the combined residual below.
@@ -1626,15 +1553,17 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             Nh = L.gres_n * h
             ops.append(Op("gres_head", "vector", li, replicated=tp, vec=t * (4 * Nh + 4 * Nh + 2 * Nh)))
     else:
-        if _carbon_dense(L) or _whisper_dec(L) or L.vec_kind == "ernie300_swiglu":
+        if vr.pre_norm_fp32(L.vec_kind):
             # WhisperDecoderLayer.final_layer_norm is the pre-MLP LayerNorm,
             # not a second copy after both linears. fp32, one rsqrt per row.
-            # 0.478 ernie300_swiglu keeps the 0.458 post-attention RMSNorm.
+            # ernie300_swiglu keeps the 0.458 post-attention RMSNorm.
             ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
-        elif not _exaone_dense(L):
+        elif not vr.post_norm_fp32(L.vec_kind):
             # EXAONE-4 post_feedforward_layernorm is emitted after mlp.down
             # and the MLP all-reduce.
             ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t))
+    # One compare. SituAndMul below is unchanged: it is not silu(gate)*up.
+    situ = L.vec_kind == "kimi_situ"
     f = L.ffn
     if f.kind == "dense":
         if _evo2_dense(L):
@@ -1653,7 +1582,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             # 0.480: carbon, exaone, and the dense *_swiglu kinds share one emitter.
             # Kind-specific reject text still comes from the rule table.
             _emit_dense_silu(model, L, ops, li, t, tp, dense_msg)
-        elif L.vec_kind == "kimi_situ":
+        elif situ:
             # KimiMLP: down(SituAndMul(cat(gate, up))). The class casts the
             # two halves to fp32. There is no separate silu and no second multiply.
             if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
@@ -1688,7 +1617,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             ops.append(Op("act", "vector", li, vec=t * _cdiv(f.d_ff, tp) * 4, sfu=t * _cdiv(f.d_ff, tp) * 2))   # silu: exp + rcp
         if tp > 1:
             ops.append(Op("mlp_allreduce", "comm", li, comm_kind="allreduce", comm_group=tp, comm_bytes=t * h * rb))
-        if _exaone_dense(L):
+        if vr.post_norm_fp32(L.vec_kind):
             # post_feedforward_layernorm sees the full hidden. A row-parallel
             # down must all-reduce first.
             ops.append(Op("ffn_norm", "vector", li, vec=t * h * 4, sfu=t, a_fmt="fp32"))
@@ -1712,7 +1641,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             if shared_emit:
                 n_loc = _cdiv(f.n_shared * f.d_shared, tp)
                 ops.append(Op("mlp_mul", "vector", li, vec=float(t * n_loc), a_fmt=model.act_fmt))
-            if L.vec_kind == "kimi_situ" and l.name == "shared_gate_up":
+            if situ and l.name == "shared_gate_up":
                 # KimiSparseMoeBlock shared expert is one KimiMLP whose
                 # intermediate is moe_intermediate_size * num_shared_experts.
                 # SituAndMul runs on every token, before down. It is not
@@ -1733,7 +1662,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             expert_err = vr.expert_failure(L.vec_kind, L.product_rule, f)
             if expert_err:
                 raise ValueError(expert_err)
-            if L.vec_kind == "kimi_situ" and not f.gated:
+            if situ and not f.gated:
                 raise ValueError("kimi situ expert is not situ")
             if tokens <= 0 or n_exp <= 0:
                 return
@@ -1761,7 +1690,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(act)
                     ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
                                   a_fmt=a_fmt))
-                if L.vec_kind == "kimi_situ":
+                if situ:
                     # KimiBlockSparseMLP: SituAndMul(cat(w1, w3)) then w2.
                     # The historical SiLU expert_act is not this formula.
                     # Width is the useful token-expert pairs times local
@@ -1772,7 +1701,7 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 ops.append(replace(gemm(model, f"{name}.down", li, r.m_e, d_loc, ein, role, count=r.hit),
                                    share=u))
                 if (not vr.bills_expert_product(L.vec_kind, L.product_rule)
-                        and L.vec_kind != "kimi_situ"):
+                        and not situ):
                     ops.append(act)
             if sh.ep > 1:
                 pay = r.pairs_local * ein * ab
@@ -1990,7 +1919,7 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
         # backbone norm is Qwen2RMSNorm. The TTS head still reads one row per
         # sequence, not every prompt token. One rsqrt, fp32. The vec is not
         # scaled by the prompt length.
-        if model.vec_kind in ("qwen3", "qwen2_text") and model.final_norm_params != 0:
+        if vr.tts_fp32_backbone(model.vec_kind) and model.final_norm_params != 0:
             final = Op("final_norm", "vector", model.n_layers,
                        vec=b_loc * model.hidden * 4, sfu=float(b_loc), a_fmt="fp32")
         else:
@@ -2019,23 +1948,18 @@ def _head_ops(model: ModelSpec, ph: Phase, sh: Shard = Shard(), glue: bool = Fal
                    vec=0 if model.final_norm_params == 0 else b_loc * ph.q * model.hidden * 4),
                 gemm(model, "label_head", model.n_layers, m, model.hidden, L, role, stream=True),
                 Op("label_softmax", "vector", model.n_layers, vec=m * L * 3, sfu=m * L)]
-    if model.vec_kind in (
-            "carbon_llama", "carbon_qwen", "qwen3vl_text", "exaone4", "granite", "qwen3",
-            "step_audio", "mistral_small", "qwen2_text", "whisper", "ernie300_swiglu"):
+    if vr.fp32_final_norm(model.vec_kind):
         # LlamaRMSNorm / Qwen3RMSNorm / Qwen3VLTextRMSNorm / Exaone4RMSNorm /
         # GraniteRMSNorm / Qwen2RMSNorm / MistralRMSNorm / Moshi rms_norm_f32 /
-        # Ernie4_5_MoeRMSNorm / Whisper decoder LayerNorm / Llama-2 and
-        # Yi-1.5 (0.464, same carbon_llama path) / Llama-3.3-70B (0.470,
-        # same carbon_llama path) / ERNIE-4.5-300B (0.478 keeps the 0.458
-        # Ernie4_5_MoeRMSNorm) on every token row,
-        # then the head reads the last rows. Kimi-Audio
-        # publishes two Qwen2RMSNorms (norm and mimo_norm); final_norm_params
-        # is 2 * hidden. Whisper's final_norm_params is also 2 * hidden, but
-        # that is one LayerNorm (weight + bias), so the rsqrt count stays one
-        # per token row. The reduction width is hidden, not 2 * hidden.
+        # Ernie4_5_MoeRMSNorm / Whisper decoder LayerNorm on every token row,
+        # then the head reads the last rows. Kimi-Audio publishes two
+        # Qwen2RMSNorms (norm and mimo_norm); final_norm_params is 2 * hidden.
+        # Whisper's final_norm_params is also 2 * hidden, but that is one
+        # LayerNorm (weight + bias), so the rsqrt count stays one per token
+        # row. The reduction width is hidden, not 2 * hidden. The kind set
+        # is vector_rules.fp32_final_norm.
         rows = b_loc * ph.q
-        nrm = 2 if (
-            model.vec_kind == "qwen2_text" and model.final_norm_params == 2 * model.hidden) else 1
+        nrm = vr.final_norm_copies(model.vec_kind, model.final_norm_params, model.hidden)
         final = Op("final_norm", "vector", model.n_layers,
                    vec=0 if model.final_norm_params == 0 else rows * model.hidden * 4 * nrm,
                    sfu=0 if model.final_norm_params == 0 else float(rows * nrm), a_fmt="fp32")

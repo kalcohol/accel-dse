@@ -263,9 +263,83 @@ def test_product_registry_order_and_frozen_kinds():
     for kind in (
         "seed_swiglu", "olmo3_swiglu", "jais3_swiglu", "ernievl_swiglu",
         "glm5_swiglu", "qwen35_moe", "muse_swiglu", "mixtral_swiglu",
-        "minimax_swiglu",
+        "minimax_swiglu", "ernie300_swiglu", "exaone4",
     ):
         assert f'vec_kind == "{kind}"' not in src
     assert 'vec_kind == "kimi_situ"' in src
+    assert 'vec_kind == "whisper"' in src
     assert "_emit_dense_silu" in src
+
+
+def test_phase_b_legacy_taggers_are_allow_row_predicates():
+    """0.481: the ten hand-written swiglu taggers are AllowRow predicates.
+
+    Baseline at 0.480 was 29 ``def _tag_*_vectors`` and 12 of them ran inside
+    the product cluster. The cluster now calls only the two order slots.
+    """
+    import inspect
+    import re
+
+    from accel_dse.core import model as M
+
+    model_src = (Path(__file__).resolve().parents[1] / "accel_dse" / "core" / "model.py").read_text()
+    defs = re.findall(r"^def (_tag_\w+_vectors)\b", model_src, re.M)
+    assert len(defs) == 19
+    assert "_tag_kimi_situ_vectors" in defs and "_tag_llama3_vectors" in defs
+    assert not any(name.endswith("_swiglu_vectors") or name == "_tag_qwen35_moe_vectors" for name in defs)
+    covered = {
+        "muse_swiglu", "mixtral_swiglu", "seed_swiglu", "olmo3_swiglu",
+        "jais3_swiglu", "ernievl_swiglu", "minimax_swiglu", "ernie300_swiglu",
+        "glm5_swiglu", "qwen35_moe",
+    }
+    assert {row.name for row in vr.ALLOW_ROWS} == covered
+    for row in vr.ALLOW_ROWS:
+        assert row.predicate == "_pred_" + row.name
+        assert row.legacy_tagger in vr.LEGACY_TAGGERS
+        fn = getattr(M, row.predicate)
+        alias = getattr(M, row.legacy_tagger)
+        assert callable(fn) and alias.__name__ == row.legacy_tagger
+    cluster = inspect.getsource(M._tag_product_cluster)
+    assert not re.search(r"_tag_\w+_vectors\s*\(", cluster)
+    assert "_ORDER_SLOT_FN" in cluster
+    assert set(M._ORDER_SLOT_FN) == set(vr.ORDER_SLOTS)
+
+
+def test_phase_b_hot_zone_kind_compares_dropped():
+    """0.480 ``_rank_ops`` had 7 ``L.vec_kind`` string compares (2 ernie300, 5 kimi).
+
+    Predicates own the norm checks. SituAndMul stays one compare. That is an
+    85% drop, above the 40% gate. Whisper erf-GELU still uses its own guard.
+    """
+    import re
+
+    src = (Path(__file__).resolve().parents[1] / "accel_dse" / "core" / "ir.py").read_text()
+    lines = src.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("def _rank_ops"))
+    end = next(i for i, line in enumerate(lines) if line.startswith("def layer_skew"))
+    body = "\n".join(lines[start:end])
+    compares = re.findall(r"vec_kind\s*(?:==|!=)\s*\"[^\"]+\"", body)
+    assert compares == ['vec_kind == "kimi_situ"']
+    assert 'vec_kind == "ernie300_swiglu"' not in body
+    assert vr.pre_norm_fp32("whisper") and vr.pre_norm_fp32("ernie300_swiglu")
+    assert vr.pre_norm_fp32("carbon_llama") and not vr.pre_norm_fp32("exaone4")
+    assert vr.post_norm_fp32("exaone4") and not vr.post_norm_fp32("kimi_situ")
+    assert vr.fp32_final_norm("qwen2_text") and vr.final_norm_copies("qwen2_text", 16, 8) == 2
+    assert vr.final_norm_copies("whisper", 16, 8) == 1
+    assert not vr.fp32_final_norm("kimi_situ")
+    assert not vr.fp32_final_norm("evo2_gelu")
+
+
+def test_phase_b_predicate_leaves_foreign_id_untagged():
+    from accel_dse.core.model import _apply_one_predicate, _tc, load_release
+
+    spec = get_model("qwen3-8b")
+    cfg = _tc(load_release(spec.hf_id)["config"])
+    for name in vr.LEGACY_TAGGERS:
+        out = _apply_one_predicate(spec, cfg, name)
+        assert out is spec
+    one = next(iter(vr.allow_row("seed_swiglu").model_ids))
+    tagged = get_model(one)
+    assert tagged.vec_kind == "seed_swiglu"
+    assert tagged.layers[0].vec_kind == "seed_swiglu"
 

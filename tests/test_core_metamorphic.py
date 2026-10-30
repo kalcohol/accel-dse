@@ -80,6 +80,16 @@ def test_results_finite_and_positive():
             assert v > 0 and v < float("inf")
 
 
+def test_product_predicates_are_identity_off_the_allowlist():
+    """Re-running the Phase B dispatcher does not retag a row outside the ten lists."""
+    from accel_dse.core.catalog import get_model
+    from accel_dse.core.model import _tag_product_cluster, _tc, load_release
+
+    spec = get_model("qwen3-8b")
+    cfg = _tc(load_release(spec.hf_id)["config"])
+    assert _tag_product_cluster(spec, cfg) is spec
+
+
 def test_what_if_override_labelled():
     s = Scenario(model="qwen3-32b", formats_override=(("mlp", "int4"), ("attn", "int4")))
     r = evaluate(s)
