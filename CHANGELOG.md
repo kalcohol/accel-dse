@@ -6,6 +6,19 @@
 
 
 
+## [0.480.0] — 2026-10-30
+
+### Phase A：冻结 SwiGLU / RMSNorm 式相乘的新 vec_kind
+
+- **冻结。** `silu(gate)*up` 以及同一形状的 RMSNorm 式相乘，不再增加 `vec_kind` 字符串。新模型复用已经绑定的 kind，或者在 `accel_dse/core/vector_rules.py` 的 `RULES` 里增加规则 id，再用层上的 `product_rule` 指向它。`product_rule` 只在该层的 `vec_kind` 没有产品绑定时生效。不要新写 `_tag_*_swiglu_vectors`，也不要在 `ir.py` 里为新 kind 再抄一份 `elif`。目录新增默认留在 `EXTRA_TAIL`。把一行挪进前 60 条，要另开一次指纹重基线。`docs/MODEL.md` §383 记下同一条规则。
+- **规则表。** 八条规则：`dense_silu_product`、`routed_gated_silu_product`、`routed_plain_silu_product`、`routed_latent_silu_product`、`routed_vision_silu_product`、`routed_shared_one_silu_product`、`shared_positive_silu_product`、`shared_one_silu_product`。稠密发射是一份 `_emit_dense_silu`：`act` 然后 `mlp_mul`，插在融合的 `gate_up` 和 `down` 之间，宽度是本地 `d_ff`，`a_fmt` 跟随 `act_fmt`。路由专家在 `down` 之前插入 `expert_act`（或历史名字）和 `mlp_mul`，宽度是有用的 token-expert 对乘本地专家宽。共享专家在 `shared_gate_up` 之后插入 `mlp_mul`，共享 SiLU 仍不入账。拒绝文本留在原来的 kind 上。
+- **接到这张表上的 kind。** 稠密：`carbon_llama`、`carbon_qwen`、`qwen3vl_text`、`granite`、`qwen3`、`step_audio`、`mistral_small`、`qwen2_text`、`exaone4`、`seed_swiglu`、`olmo3_swiglu`、`jais3_swiglu`、`ernievl_swiglu`、`glm5_swiglu`。路由：`qwen35_moe`（门控专家加共享专家，共享档是 `n_shared` 与 `d_shared` 都为正）、`muse_swiglu`（latent，`a_fmt` 走 `act_fmt_for(expert role)`）、`mixtral_swiglu`、`minimax_swiglu`、`ernie300_swiglu`（普通路由）、`ernievl_swiglu`（视觉专家池）、`glm5_swiglu`（`n_shared == 1` 的路由和共享）。`ernie300_swiglu` 打在稠密层上仍拒绝，文本是 `ernie300 swiglu layer is not moe`。GEMM 的名字、K、N、M、FLOPs 和 `count` 与清掉 `vec_kind` 之后相同。算子顺序与 0.468–0.479 相同。
+- **打标。** 允许表在 `vector_rules.ALLOW_ROWS`。`from_release` 用 `_tag_product_cluster` 按 `TAG_ORDER` 调用这一簇，不再套十二层。顺序槽是 `_tag_kimi_situ_vectors` 和 `_tag_llama3_vectors`，它们不是 silu 规则。carbon、Qwen、Whisper 和 0.458 的 ERNIE 稠密打标仍排在这一簇前面。允许表互斥。十个手写校验器仍在，登记为 `LEGACY_TAGGERS`。下一阶段把它们收成 `AllowRow` 上的谓词，这一笔不删。`ernie300` 仍按层盖 `carbon_llama` 或 `ernie300_swiglu`，其余这一簇用 `allow_row(kind).vec_kind` 盖主栈。
+- **指纹。** 这一笔重跑了 stage、默认 pipe、去掉 DeepSeek-V4 的 stage / pipe，以及声明的 KPI 列表，都为绿。含 V4 的 stage 仍是 `f54f33dfa13cdd41`，默认 pipe 仍是 `9a66da621b20a5f8`。去掉 DeepSeek-V4 之后 stage 仍是 `5c058c9ed0f8f61e`，pipe 仍是 `f8346734e98af4a2`。KPI 在 `FUSE_QKV=False` 下仍是：`qwen3-32b` `b975b7b3760e`，`qwen3-8b` `11f6f3a5d21f`，`llama-3.3-70b` `8e50c6cabdc8`，`mixtral-8x22b` `0d8711691e1e`，`seed-oss-36b` `f547c49c5769`，`esmfold` `3bbede544308`，ESM-2 3B `34f7544287cd`，Wan2.1-1.3B `309919c00604`。没有重基线。
+- **仍走原来的 IR 路径。** `kimi_situ`（SituAndMul，不是 SiLU）、`evo2_gelu` / `evo2_id`、Whisper 解码器的 erf-GELU、未打标 MoE（`expert_act` 在 `down` 之后）、结构域的 `esm_*` / `of_*` / `bz_*` / `px_*`。`ernie300_swiglu` 的 fp32 块范数仍按 kind 判断，不走相乘发射器。上述十个校验器的函数体还在。
+- **不在这一笔。** 不新开 HF 家族，不新开 `vec_kind`，不加 `magistral-small`。不拆 `model.py`。不新开 mask 或激活种类，不加语音评测路径。不改 GEMM 形状。不把目录行挪进前 60 条。
+
+
 ## [0.479.0] — 2026-10-29
 
 ### GLM-5、GLM-5.2、GLM-5.3 与 Atria 按发布的共享专家 SwiGLU 相乘入账

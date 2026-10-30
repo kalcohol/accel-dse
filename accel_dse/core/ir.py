@@ -26,6 +26,7 @@ from dataclasses import dataclass, field, replace
 
 from .dtypes import fmt as _fmt
 from .model import AttnCore, Layer, Linear, ModelSpec, PairCore
+from . import vector_rules as vr
 
 
 @dataclass(frozen=True)
@@ -1402,11 +1403,11 @@ def _carbon_dense(L: Layer) -> bool:
     # and Atria-Dawn. Dense layers, routed experts, and the one shared
     # expert each insert mlp_mul. Shared SiLU stays unbilled. The MTP
     # block stays untagged. Block RMSNorm stays on the historical ops.
+    # 0.480 those silu products share vector_rules. The kind strings stay
+    # frozen. This predicate is only the pre-norm carbon set.
     # 0.469 kimi_situ replaces the historical SiLU counts. SituAndMul is not
     # silu(gate) * up, so those layers do not emit act or expert_act.
-    return L.vec_kind in (
-        "carbon_llama", "carbon_qwen", "qwen3vl_text", "granite", "qwen3", "step_audio",
-        "mistral_small", "qwen2_text")
+    return L.vec_kind in vr.CARBON_DENSE_KINDS
 
 
 def _exaone_dense(L: Layer) -> bool:
@@ -1416,6 +1417,27 @@ def _exaone_dense(L: Layer) -> bool:
 def _whisper_dec(L: Layer) -> bool:
     """WhisperDecoderLayer: published erf-GELU between fc1 and fc2, fp32 LayerNorm."""
     return L.vec_kind == "whisper"
+
+
+def _emit_dense_silu(model: ModelSpec, L: Layer, ops: list, li: int, t: int, tp: int,
+                     message: str) -> None:
+    """down(silu(gate) * up) between fused gate_up and down.
+
+    Width is the local intermediate, not the fused gate_up rows. SiLU stays
+    ``act``. The product is ``mlp_mul``. ``a_fmt`` follows ``act_fmt``.
+    The shape check and the reject text come from ``vector_rules``.
+    """
+    f = L.ffn
+    if not f.gated or [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+        raise ValueError(message)
+    nact = t * _cdiv(f.d_ff, tp)
+    af = model.act_fmt
+    for lin in L.ffn_linears:
+        k, n = _lin_local(lin, tp)
+        ops.append(gemm(model, f"mlp.{lin.name}", li, t, k, n, lin.role or "mlp"))
+        if lin.name == "gate_up":
+            ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
+            ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
 
 
 def _qk_rms_who(kind: str) -> str:
@@ -1627,35 +1649,10 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
                 if l.name == "gate_up":
                     ops.extend(_evo2_mlp_vecs(L.vec_kind, nact, li, af))
-        elif _carbon_dense(L) or _exaone_dense(L):
-            # down(silu(gate) * up). SiLU stays the existing act op. The product is mlp_mul.
-            # Both sit between the fused gate_up GEMM and down.
-            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
-                if L.vec_kind == "qwen3vl_text":
-                    who = "qwen3-vl"
-                elif L.vec_kind == "exaone4":
-                    who = "exaone4"
-                elif L.vec_kind == "granite":
-                    who = "granite"
-                elif L.vec_kind == "qwen3":
-                    who = "qwen3"
-                elif L.vec_kind == "step_audio":
-                    who = "step audio"
-                elif L.vec_kind == "mistral_small":
-                    who = "mistral small"
-                elif L.vec_kind == "qwen2_text":
-                    who = "qwen2 text"
-                else:
-                    who = "carbon"
-                raise ValueError(f"{who} mlp is not gate_up then down")
-            nact = t * _cdiv(f.d_ff, tp)
-            af = model.act_fmt
-            for l in L.ffn_linears:
-                k, n = _lin_local(l, tp)
-                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
-                if l.name == "gate_up":
-                    ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
+        elif (dense_msg := vr.dense_message(L.vec_kind, L.product_rule)) is not None:
+            # 0.480: carbon, exaone, and the dense *_swiglu kinds share one emitter.
+            # Kind-specific reject text still comes from the rule table.
+            _emit_dense_silu(model, L, ops, li, t, tp, dense_msg)
         elif L.vec_kind == "kimi_situ":
             # KimiMLP: down(SituAndMul(cat(gate, up))). The class casts the
             # two halves to fp32. There is no separate silu and no second multiply.
@@ -1682,93 +1679,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                 ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
                 if l.name == "up":
                     ops.append(Op("gelu", "vector", li, vec=nact * 5, sfu=float(nact), a_fmt=af))
-        elif L.vec_kind == "seed_swiglu":
-            # SeedOssMLP: down_proj(act_fn(gate_proj(x)) * up_proj(x)).
-            # hidden_act is silu. The class does not upcast. SiLU stays act.
-            # The product is mlp_mul on the intermediate width, not the fused
-            # gate_up rows. Residual dropout runs only while training.
-            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
-                raise ValueError("seed swiglu mlp is not gate_up then down")
-            nact = t * _cdiv(f.d_ff, tp)
-            af = model.act_fmt
-            for l in L.ffn_linears:
-                k, n = _lin_local(l, tp)
-                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
-                if l.name == "gate_up":
-                    ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
-        elif L.vec_kind == "olmo3_swiglu":
-            # Olmo3MLP: down_proj(act_fn(gate_proj(x)) * up_proj(x)).
-            # hidden_act is silu. The class does not upcast. SiLU stays act.
-            # The product is mlp_mul on the intermediate width, not the fused
-            # gate_up rows. Published post-attention and post-feedforward
-            # RMSNorms already have the same vec and sfu on the historical
-            # ops, so this path does not move them. Full-projection q/k
-            # RMSNorm and YaRN attention_scaling are not this op.
-            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
-                raise ValueError("olmo3 swiglu mlp is not gate_up then down")
-            nact = t * _cdiv(f.d_ff, tp)
-            af = model.act_fmt
-            for l in L.ffn_linears:
-                k, n = _lin_local(l, tp)
-                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
-                if l.name == "gate_up":
-                    ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
-        elif L.vec_kind == "jais3_swiglu":
-            # K2HorizonMLP: down_proj(act_fn(gate_proj(x)) * up_proj(x)).
-            # hidden_act is silu. The class does not upcast. SiLU stays act.
-            # The product is mlp_mul on the intermediate width, not the fused
-            # gate_up rows. K2HorizonRMSNorm is grouped (layernorm_num_groups
-            # is 4) and runs in fp32. The historical pre-norm ops already
-            # cover the same element width, so this path does not retag them
-            # and does not add the extra per-group rsqrt. query_key_norm is
-            # false. rope_head_dim equals head_dim, so the existing rope op
-            # is unchanged.
-            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
-                raise ValueError("jais3 swiglu mlp is not gate_up then down")
-            nact = t * _cdiv(f.d_ff, tp)
-            af = model.act_fmt
-            for l in L.ffn_linears:
-                k, n = _lin_local(l, tp)
-                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
-                if l.name == "gate_up":
-                    ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
-        elif L.vec_kind == "ernievl_swiglu":
-            # Ernie4_5_MLP: down_proj(F.silu(gate_proj(x)) * up_proj(x)).
-            # hidden_act is silu. The class does not upcast. SiLU stays act.
-            # The product is mlp_mul on the intermediate width, not the fused
-            # gate_up rows. These are the dense layers before the MoE interval.
-            # RMSNorm and the 3-D RoPE frequency split stay on the historical ops.
-            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
-                raise ValueError("ernievl swiglu mlp is not gate_up then down")
-            nact = t * _cdiv(f.d_ff, tp)
-            af = model.act_fmt
-            for l in L.ffn_linears:
-                k, n = _lin_local(l, tp)
-                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
-                if l.name == "gate_up":
-                    ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
-        elif L.vec_kind == "ernie300_swiglu":
-            raise ValueError("ernie300 swiglu layer is not moe")
-        elif L.vec_kind == "glm5_swiglu":
-            # GlmMoeDsaMLP: down_proj(act_fn(gate_proj(x)) * up_proj(x)).
-            # hidden_act is silu. The class does not upcast. SiLU stays act.
-            # The product is mlp_mul on the intermediate width, not the fused
-            # gate_up rows. These are the three dense layers before the MoE.
-            # RMSNorm stays on the historical ops.
-            if not f.gated or [l.name for l in L.ffn_linears] != ["gate_up", "down"]:
-                raise ValueError("glm5 swiglu mlp is not gate_up then down")
-            nact = t * _cdiv(f.d_ff, tp)
-            af = model.act_fmt
-            for l in L.ffn_linears:
-                k, n = _lin_local(l, tp)
-                ops.append(gemm(model, f"mlp.{l.name}", li, t, k, n, l.role or "mlp"))
-                if l.name == "gate_up":
-                    ops.append(Op("act", "vector", li, vec=nact * 4, sfu=nact * 2, a_fmt=af))
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(nact), a_fmt=af))
+        elif (bad := vr.dense_forbidden(L.vec_kind, L.product_rule)):
+            raise ValueError(bad)
         else:
             for l in L.ffn_linears:
                 k, n = _lin_local(l, tp)
@@ -1793,21 +1705,11 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
             role = l.role or ("router" if l.name.startswith(("router", "shared_expert_gate")) else (
                 "shared_expert" if l.name.startswith("shared") else "mlp"))
             ops.append(gemm(model, f"moe.{l.name}", li, t, k, n, role, replicated=_repl(l, tp)))
-            if L.vec_kind == "qwen35_moe" and l.name == "shared_gate_up":
-                # Qwen3_5MoeSparseMoeBlock shared expert is Qwen3_5MoeMLP:
-                # down(silu(gate) * up). One multiply. Shared SiLU stays
-                # unbilled on this path. The sigmoid output gate is not this op.
-                if not f.gated or not f.n_shared or not f.d_shared:
-                    raise ValueError("qwen35 moe shared expert is not swiglu")
-                n_loc = _cdiv(f.n_shared * f.d_shared, tp)
-                ops.append(Op("mlp_mul", "vector", li, vec=float(t * n_loc), a_fmt=model.act_fmt))
-            if L.vec_kind == "glm5_swiglu" and l.name == "shared_gate_up":
-                # GlmMoeDsaMoE shared expert is one GlmMoeDsaMLP of width
-                # moe_intermediate_size * n_shared_experts. The product is
-                # one multiply on every token. Shared SiLU stays unbilled.
-                # The routing-weight multiply is not this op.
-                if not f.gated or f.n_shared != 1 or not f.d_shared:
-                    raise ValueError("glm5 swiglu shared expert is not swiglu")
+            # 0.480: shared-expert silu(gate)*up. Shared SiLU stays unbilled.
+            shared_emit, shared_err = vr.shared_site(L.vec_kind, L.product_rule, l.name, f)
+            if shared_err:
+                raise ValueError(shared_err)
+            if shared_emit:
                 n_loc = _cdiv(f.n_shared * f.d_shared, tp)
                 ops.append(Op("mlp_mul", "vector", li, vec=float(t * n_loc), a_fmt=model.act_fmt))
             if L.vec_kind == "kimi_situ" and l.name == "shared_gate_up":
@@ -1827,37 +1729,12 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                               comm_bytes=t * h * rb))
 
         def _pool(name: str, n_exp: int, d_exp: int, tokens: int, zero: int, role: str) -> None:
-            if L.vec_kind == "qwen35_moe" and not f.gated:
-                raise ValueError("qwen35 moe expert is not swiglu")
+            # 0.480: routed silu(gate)*up guards live in vector_rules.
+            expert_err = vr.expert_failure(L.vec_kind, L.product_rule, f)
+            if expert_err:
+                raise ValueError(expert_err)
             if L.vec_kind == "kimi_situ" and not f.gated:
                 raise ValueError("kimi situ expert is not situ")
-            if L.vec_kind == "muse_swiglu" and (not f.gated or f.latent <= 0 or f.n_shared):
-                raise ValueError("muse swiglu expert is not latent swiglu")
-            if L.vec_kind == "mixtral_swiglu" and (
-                    not f.gated or f.latent or f.n_shared or f.d_shared or f.d_ff
-                    or f.n_experts_b or f.d_expert_b or f.zero_experts or f.groups
-                    or f.expert_role):
-                raise ValueError("mixtral swiglu expert is not swiglu")
-            if L.vec_kind == "ernievl_swiglu" and (
-                    not f.gated or f.latent or f.n_shared or f.d_shared or f.d_ff
-                    or not f.n_experts_b or not f.d_expert_b or f.zero_experts
-                    or f.groups or f.expert_role):
-                raise ValueError("ernievl swiglu expert is not swiglu")
-            if L.vec_kind == "minimax_swiglu" and (
-                    not f.gated or f.latent or f.n_shared or f.d_shared or f.d_ff
-                    or f.n_experts_b or f.d_expert_b or f.zero_experts or f.groups
-                    or f.expert_role):
-                raise ValueError("minimax swiglu expert is not swiglu")
-            if L.vec_kind == "ernie300_swiglu" and (
-                    not f.gated or f.latent or f.n_shared or f.d_shared or f.d_ff
-                    or f.n_experts_b or f.d_expert_b or f.zero_experts or f.groups
-                    or f.expert_role):
-                raise ValueError("ernie300 swiglu expert is not swiglu")
-            if L.vec_kind == "glm5_swiglu" and (
-                    not f.gated or f.latent or f.n_shared != 1 or not f.d_shared
-                    or f.d_ff or f.n_experts_b or f.d_expert_b or f.zero_experts
-                    or f.groups or f.expert_role):
-                raise ValueError("glm5 swiglu expert is not swiglu")
             if tokens <= 0 or n_exp <= 0:
                 return
             if zero and not f.groups:
@@ -1874,78 +1751,16 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                                         count=r.hit), share=u))
                 act = Op(f"{name}_act" if name == "expert" else f"{name}.act", "vector", li,
                          vec=r.pairs_local * d_loc * 4, sfu=r.pairs_local * d_loc * 2)
-                if L.vec_kind == "qwen35_moe":
-                    # Qwen3_5MoeExperts: current = act_fn(gate) * up, then down.
-                    # SiLU stays expert_act. The product is one multiply on the
-                    # useful token-expert pairs, not the padded GEMM rows.
-                    # Routing-weight scaling of the expert output is not this op.
+                if vr.bills_expert_product(L.vec_kind, L.product_rule):
+                    # silu(gate)*up on the useful pairs, before down.
+                    # SiLU stays the historical act op. Latent experts use
+                    # the published expert activation. Padded GEMM rows,
+                    # routing-weight scaling, and shared SiLU are not this op.
+                    fmt_key = vr.expert_fmt_key(L.vec_kind, L.product_rule)
+                    a_fmt = model.act_fmt_for(role) if fmt_key == "expert_role" else model.act_fmt
                     ops.append(act)
                     ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
-                                  a_fmt=model.act_fmt))
-                if L.vec_kind == "muse_swiglu":
-                    # Muse Spark latent experts: down(silu(gate) * up) at
-                    # moe_intermediate_size, after the pooler. SiLU stays
-                    # expert_act. The product is one multiply on the useful
-                    # token-expert pairs, not the latent width and not the
-                    # padded GEMM rows. a_fmt is the published expert
-                    # activation. Pre/post expert RMSNorm, the routing-weight
-                    # multiply, and the attention output gate are not this op.
-                    ops.append(act)
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
-                                  a_fmt=model.act_fmt_for(role)))
-                if L.vec_kind == "mixtral_swiglu":
-                    # MixtralBlockSparseTop2MLP: w2(act_fn(w1(x)) * w3(x))
-                    # with act_fn = ACT2FN["silu"]. SiLU stays expert_act.
-                    # The product is one multiply on the useful token-expert
-                    # pairs, not the padded GEMM rows. a_fmt follows act_fmt.
-                    # There is no shared expert and no latent pool. The
-                    # routing-weight multiply after the expert is not this op.
-                    ops.append(act)
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
-                                  a_fmt=model.act_fmt))
-                if L.vec_kind == "ernievl_swiglu":
-                    # Ernie4_5_MoeMLP: down(F.silu(gate) * up). SiLU stays
-                    # expert_act (text pool) or expert_b.act (vision pool).
-                    # The product is one multiply on the useful token-expert
-                    # pairs, not the padded GEMM rows and not the capacity
-                    # buffer. a_fmt follows act_fmt. The vision pool is only
-                    # invoked for multimodal tokens. There is no shared expert.
-                    # The routing-weight multiply is not this op.
-                    ops.append(act)
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
-                                  a_fmt=model.act_fmt))
-                if L.vec_kind == "minimax_swiglu":
-                    # MiniMaxText01BlockSparseTop2MLP and MiniMaxM1BlockSparseTop2MLP:
-                    # w2(ACT2FN["silu"](w1(x)) * w3(x)). SiLU stays expert_act.
-                    # The product is one multiply on the useful token-expert
-                    # pairs, not the padded GEMM rows. a_fmt follows act_fmt.
-                    # There is no shared expert. The routing-weight multiply,
-                    # lightning SiLU on qkv, and the residual alpha are not this op.
-                    ops.append(act)
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
-                                  a_fmt=model.act_fmt))
-                if L.vec_kind == "ernie300_swiglu":
-                    # Ernie4_5_MoeExperts: act_fn(gate) * up, then down.
-                    # hidden_act is silu. The class does not upcast. SiLU
-                    # stays expert_act. The product is one multiply on the
-                    # useful token-expert pairs, not the padded GEMM rows
-                    # and not moe_capacity. a_fmt follows act_fmt. There is
-                    # no shared expert. The routing-weight multiply after
-                    # down is not this op.
-                    ops.append(act)
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
-                                  a_fmt=model.act_fmt))
-                if L.vec_kind == "glm5_swiglu":
-                    # GlmMoeDsaExperts: act_fn(gate) * up, then down.
-                    # hidden_act is silu. The class does not upcast. SiLU
-                    # stays expert_act. The product is one multiply on the
-                    # useful token-expert pairs, not the padded GEMM rows.
-                    # a_fmt follows act_fmt. The shared expert is a separate
-                    # multiply. The routing-weight multiply after down is
-                    # not this op.
-                    ops.append(act)
-                    ops.append(Op("mlp_mul", "vector", li, vec=float(r.pairs_local * d_loc),
-                                  a_fmt=model.act_fmt))
+                                  a_fmt=a_fmt))
                 if L.vec_kind == "kimi_situ":
                     # KimiBlockSparseMLP: SituAndMul(cat(w1, w3)) then w2.
                     # The historical SiLU expert_act is not this formula.
@@ -1956,10 +1771,8 @@ def _rank_ops(model: ModelSpec, li: int, ph: Phase, sh: Shard = Shard(), layer: 
                     ops.append(_situ_op(li, r.pairs_local * d_loc))
                 ops.append(replace(gemm(model, f"{name}.down", li, r.m_e, d_loc, ein, role, count=r.hit),
                                    share=u))
-                if L.vec_kind not in (
-                        "qwen35_moe", "kimi_situ", "muse_swiglu", "mixtral_swiglu",
-                        "ernievl_swiglu", "minimax_swiglu", "ernie300_swiglu",
-                        "glm5_swiglu"):
+                if (not vr.bills_expert_product(L.vec_kind, L.product_rule)
+                        and L.vec_kind != "kimi_situ"):
                     ops.append(act)
             if sh.ep > 1:
                 pay = r.pairs_local * ein * ab

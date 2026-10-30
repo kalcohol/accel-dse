@@ -10361,3 +10361,11 @@ ROSA 不在这两个检查点里。TypeSafe Jev、Microsoft-Decision-1 仍没有
 ## §382 前 60 条 Qwen2.5-3B 与 1.5B 的 RMSNorm 与 SwiGLU 相乘（0.466）
 
 前 60 条里的 `qwen2.5-3b` 和 `qwen2.5-1.5b`。架构都是 `Qwen2ForCausalLM`，`model_type` 是 `qwen2`。`Qwen2RMSNorm` 和 `Qwen2MLP` 与 0.463 的 Qwen2.5-72B 是同一对类，所以 `vec_kind` 复用 `qwen2_text`，不新开种类，也不放宽 0.452 / 0.455 / 0.463 的名单。`carbon_llama` 要求 `model_type` 是 llama。公式仍是 T5：fp32 的 `pow(2).mean`，一次 `rsqrt`，再乘 weight。仍是 pre-norm。`attn_norm` / `ffn_norm` / `final_norm` 的 `a_fmt` 是 fp32。没有 q/k RMSNorm。SiLU 仍叫 `act`，门乘是 `mlp_mul`。q 宽等于 hidden。`use_sliding_window` 是 false，JSON 里的 `sliding_window` 不打开滑窗。3B 是 36 层、隐藏 2048、inner 11008、16 / 2 头、`head_dim` 128，每个 token 的相乘元素是 396,288。1.5B 是 28 层、隐藏 1536、inner 8960、12 / 2 头，相乘元素是 250,880。权重和激活都是 bf16。`qwen2.5-72b` 仍只带 0.463 的注释。`qwen3-32b` / `qwen3-4b` / `qwen3-0.6b` 的 hidden 不等于头数乘 `head_dim`，仍走通用尾项。
+
+## §383 Phase A：SwiGLU 相乘的 vec_kind 冻结（0.480）
+
+`silu(gate)*up` 以及同一形状的 RMSNorm 式相乘，不再为新的 HF 家族增加 `vec_kind` 字符串。新模型复用已经绑定的 kind，或者在 `accel_dse/core/vector_rules.py` 的 `RULES` 里增加一条规则 id，再用层上的 `product_rule` 指向它（仅当该层的 `vec_kind` 没有产品绑定）。不要新写 `_tag_*_swiglu_vectors`，也不要在 `ir.py` 里为新 kind 再抄一份 `elif`。
+
+规则表同时描述稠密 `gate_up` / `down`、路由专家、共享专家三处插入。`act` 或 `expert_act` 仍是 SiLU，相乘仍是 `mlp_mul`，插在 `down` 之前。共享 SiLU 仍不入账。已有 kind 的拒绝文本留在 `KindBinding` 上。`from_release` 里这一簇按 `TAG_ORDER` 调用：`kimi_situ` 和 Llama-3 打标是顺序槽，不是 silu 规则；carbon、Qwen、Whisper 和 0.458 的 ERNIE 稠密打标仍排在这一簇前面。允许表互斥。手写校验器登记在 `LEGACY_TAGGERS`，下一阶段再收成 `AllowRow` 上的谓词。
+
+目录新增默认留在 `EXTRA_TAIL`。把一行挪进前 60 条，要另开一次指纹重基线。CHANGELOG 写「指纹不动」时，stage 指纹、默认 pipe 指纹、以及该版本声明的 KPI 列表必须都重新跑过并且为绿。
