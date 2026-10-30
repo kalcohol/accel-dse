@@ -5,6 +5,10 @@ RMSNorm-style product billing. A new HF family extends an allowlist below
 or adds a rule id to ``RULES``. It does not add a ``vec_kind`` literal, a
 ``_tag_*_swiglu_vectors`` function, or an ``ir.py`` elif on a new kind.
 
+Phase B (0.481) folds the hand-written validators named by ``LEGACY_TAGGERS``
+into ``AllowRow.predicate``. One dispatcher walks ``TAG_ORDER``. The two
+order slots stay hand-written. Do not add another nested swiglu tagger.
+
 Catalog rows stay on ``EXTRA_TAIL``. Moving a row into the front 60 is a
 separate fingerprint rebaseline. A changelog may say the fingerprints are
 unchanged only after the stage fingerprint, the default pipe fingerprint,
@@ -15,10 +19,6 @@ and that version's declared KPI list have all been re-run and are green.
 and ``muse_swiglu``. They are not silu product rules. The silu allowlists
 are disjoint. Carbon, Qwen, Whisper, and the 0.458 ERNIE dense tagger stay
 outside this list and still run first.
-
-TODO(phase-b): fold the hand-written validators named by ``LEGACY_TAGGERS``
-into predicates on ``AllowRow``. Do not add another nested swiglu tagger
-while that hook is open.
 """
 
 from __future__ import annotations
@@ -356,8 +356,9 @@ GLM5_IDS = GLM5_BF16_IDS | GLM5_FP8_IDS
 class AllowRow:
     """Catalog ids that bill one frozen kind through the named rule ids.
 
-    ``legacy_tagger`` is still a hand-written release check. Extend
-    ``model_ids`` only when that check already accepts the release.
+    ``predicate`` is the Phase B checker (``_pred_<name>``). ``legacy_tagger``
+    is that checker's historical name. Extend ``model_ids`` only when the
+    predicate already accepts the release. Do not add a swiglu tagger.
     """
 
     name: str
@@ -365,11 +366,13 @@ class AllowRow:
     rule_ids: tuple[str, ...]
     model_ids: frozenset[str]
     legacy_tagger: str
+    predicate: str
 
 
 def _row(name: str, ids: frozenset[str], tagger: str) -> AllowRow:
     binding = BINDINGS[name]
-    return AllowRow(name, binding.vec_kind, binding.rule_ids, ids, tagger)
+    return AllowRow(
+        name, binding.vec_kind, binding.rule_ids, ids, tagger, "_pred_" + name)
 
 
 ALLOW_ROWS: tuple[AllowRow, ...] = (
@@ -420,20 +423,82 @@ def allow_row(vec_kind: str) -> AllowRow:
     return row
 
 
+# Block-norm placement. The dense/MoE emitter asks these predicates.
+# Pre-norm fp32 covers the carbon set, Whisper decoder LayerNorm, and the
+# 0.458 ERNIE RMSNorm kept on ernie300_swiglu MoE layers. Exaone is post-norm
+# and is not in that set. Untagged MoE and kimi_situ are not in either set.
+# The strings are existing kinds. This table does not add a vec_kind.
+PRE_NORM_FP32 = CARBON_DENSE_KINDS | frozenset({
+    "whisper",
+    "ernie300_swiglu",
+})
+POST_NORM_FP32 = frozenset({"exaone4"})
+FP32_FINAL_NORM = PRE_NORM_FP32 | POST_NORM_FP32
+TTS_FP32_BACKBONE = frozenset({"qwen3", "qwen2_text"})
+QK_RMS_WHO = {
+    "carbon_qwen": "carbon-x",
+    "qwen3vl_text": "qwen3-vl",
+    "exaone4": "exaone4",
+    "qwen3": "qwen3",
+}
+
+
+def pre_norm_fp32(kind: str) -> bool:
+    """True when attn_norm and ffn_norm reduce in fp32 before the sublayer."""
+    return kind in PRE_NORM_FP32
+
+
+def post_norm_fp32(kind: str) -> bool:
+    """True when the same norms are emitted after the all-reduce."""
+    return kind in POST_NORM_FP32
+
+
+def fp32_final_norm(kind: str) -> bool:
+    """True when final_norm is the published fp32 reduction."""
+    return kind in FP32_FINAL_NORM
+
+
+def tts_fp32_backbone(kind: str) -> bool:
+    """True when a TTS head reads one fp32 backbone norm per sequence."""
+    return kind in TTS_FP32_BACKBONE
+
+
+def qk_rms_who(kind: str) -> str:
+    """Reject-name for a head-dim q/k RMSNorm, or empty when the kind has none."""
+    return QK_RMS_WHO.get(kind, "")
+
+
+def final_norm_copies(kind: str, final_norm_params: int | None, hidden: int) -> int:
+    """Kimi-Audio's qwen2_text row publishes two final RMSNorms. Everyone else is one."""
+    if kind == "qwen2_text" and final_norm_params == 2 * hidden:
+        return 2
+    return 1
+
+
 def _check_tables() -> None:
     seen: dict[str, str] = {}
+    preds: list[str] = []
     for row in ALLOW_ROWS:
         if row.rule_ids != BINDINGS[row.vec_kind].rule_ids:
             raise RuntimeError(f"{row.vec_kind} allow row drifted from its binding")
+        if row.predicate != "_pred_" + row.name:
+            raise RuntimeError(f"{row.vec_kind} predicate is not _pred_{row.name}")
+        preds.append(row.predicate)
         for mid in row.model_ids:
             prev = seen.get(mid)
             if prev is not None:
                 raise RuntimeError(f"{mid} is in both {prev} and {row.vec_kind}")
             seen[mid] = row.vec_kind
+    if len(preds) != len(set(preds)):
+        raise RuntimeError("allow row predicates are not unique")
     named = [row.legacy_tagger for row in ALLOW_ROWS]
     expected = [name for name in TAG_ORDER if name not in ORDER_SLOTS]
     if named != expected:
         raise RuntimeError("allow rows are not in TAG_ORDER")
+    if PRE_NORM_FP32 & POST_NORM_FP32:
+        raise RuntimeError("pre-norm and post-norm kinds overlap")
+    if "kimi_situ" in FP32_FINAL_NORM or "evo2_gelu" in FP32_FINAL_NORM:
+        raise RuntimeError("norm predicates captured a protected kind")
     for binding in BINDINGS.values():
         for rule_id in binding.rule_ids:
             if rule_id not in RULES:

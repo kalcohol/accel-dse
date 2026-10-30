@@ -81,7 +81,7 @@ def _sched(model, ph, shard, li: int):
 
 
 def test_version_is_469():
-    assert __version__ == "0.480.0"
+    assert __version__ == "0.481.0"
 
 
 def test_kimi_k3_bills_published_situ():

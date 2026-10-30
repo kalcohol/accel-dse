@@ -6,6 +6,17 @@
 
 
 
+## [0.481.0] — 2026-10-30
+
+### Phase B：把 LEGACY_TAGGERS 收成 AllowRow 谓词
+
+- **谓词。** 0.480 留下的十个手写校验器改成 `AllowRow.predicate`，由 `_tag_product_cluster` 按 `TAG_ORDER` 统一分发。覆盖的是全部十个：`_tag_qwen35_moe_vectors` → `_pred_qwen35_moe`，`_tag_muse_swiglu_vectors` → `_pred_muse_swiglu`，`_tag_mixtral_swiglu_vectors` → `_pred_mixtral_swiglu`，`_tag_seed_swiglu_vectors` → `_pred_seed_swiglu`，`_tag_olmo3_swiglu_vectors` → `_pred_olmo3_swiglu`，`_tag_jais3_swiglu_vectors` → `_pred_jais3_swiglu`，`_tag_ernievl_swiglu_vectors` → `_pred_ernievl_swiglu`，`_tag_minimax_swiglu_vectors` → `_pred_minimax_swiglu`，`_tag_ernie300_swiglu_vectors` → `_pred_ernie300_swiglu`，`_tag_glm5_swiglu_vectors` → `_pred_glm5_swiglu`。删掉的是这十个 `def _tag_*_vectors` 函数体。历史名字仍是别名，拒绝文本不变。`kimi_situ` 与 `_tag_llama3_vectors` 仍是 `ORDER_SLOTS`，`TAG_ORDER` 不改。
+- **调用。** `def _tag_*_vectors` 从 29 个减到 19 个。产品簇里对 `_tag_*_vectors` 的直接调用从 12 个减到 0 个语法调用；运行时只再调用两个顺序槽。没有新的 `_tag_*_swiglu_vectors`，没有新的 `vec_kind` 字面量，也没有新的 `ir.py` elif。
+- **热区。** `_rank_ops` 里 `L.vec_kind ==/!= "..."` 从 7 处降到 1 处（只保留一次 `kimi_situ`，SituAndMul 公式不变），降幅约 86%。fp32 的 pre-norm、Exaone 的 post-norm 和 `final_norm` 的 kind 集合改由 `pre_norm_fp32` / `post_norm_fp32` / `fp32_final_norm` 回答。Whisper 解码器的 erf-GELU、`evo2_*`、未打标 MoE 和结构域路径不改。
+- **指纹。** 这一笔重跑了 stage、默认 pipe、去掉 DeepSeek-V4 的 stage / pipe，以及声明的 KPI 列表，都为绿。含 V4 的 stage 仍是 `f54f33dfa13cdd41`，默认 pipe 仍是 `9a66da621b20a5f8`。去掉 DeepSeek-V4 之后 stage 仍是 `5c058c9ed0f8f61e`，pipe 仍是 `f8346734e98af4a2`。KPI 在 `FUSE_QKV=False` 下仍是：`qwen3-32b` `b975b7b3760e`，`qwen3-8b` `11f6f3a5d21f`，`llama-3.3-70b` `8e50c6cabdc8`，`mixtral-8x22b` `0d8711691e1e`，`seed-oss-36b` `f547c49c5769`，`esmfold` `3bbede544308`，ESM-2 3B `34f7544287cd`，Wan2.1-1.3B `309919c00604`。没有重基线。
+- **不在这一笔。** 不新开 HF 家族，不加 `magistral-small`。不把目录行挪进前 60 条。不新开 `test_core_481` 指纹扫。
+
+
 ## [0.480.0] — 2026-10-30
 
 ### Phase A：冻结 SwiGLU / RMSNorm 式相乘的新 vec_kind
