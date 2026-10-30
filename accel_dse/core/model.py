@@ -28,6 +28,23 @@ from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 
+from .vector_rules import (
+    ERNIE300_IDS as _ERNIE300_SWIGLU,
+    ERNIEVL_IDS as _ERNIEVL_SWIGLU,
+    GLM5_BF16_IDS as _GLM5_SWIGLU_BF16,
+    GLM5_FP8_IDS as _GLM5_SWIGLU_FP8,
+    GLM5_IDS as _GLM5_SWIGLU,
+    JAIS3_IDS as _JAIS3_SWIGLU,
+    MINIMAX_IDS as _MINIMAX_SWIGLU,
+    MIXTRAL_IDS as _MIXTRAL_SWIGLU,
+    MUSE_IDS as _MUSE_SWIGLU,
+    OLMO3_IDS as _OLMO3_SWIGLU,
+    QWEN35_IDS as _QWEN35_MOE,
+    SEED_IDS as _SEED_SWIGLU,
+    TAG_ORDER as _PRODUCT_TAG_ORDER,
+    allow_row as _allow_row,
+)
+
 DATA = Path(__file__).resolve().parents[1] / "data"
 RELEASES = DATA / "releases"
 
@@ -443,7 +460,10 @@ class Layer:
     # 0.462 Mistral-Large reuses mistral_small (MistralRMSNorm + SwiGLU
     # product, q width equals hidden). Other front-60 rows stay untagged.
     # "" keeps the shared full-forward assumption.
+    # 0.480: product billing for silu(gate)*up is selected by vector_rules.
+    # product_rule is used only when vec_kind has no product binding.
     vec_kind: str = ""
+    product_rule: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
                                              # esm_proj sets the language width. esm_sm_pre and of_sm_pre set the
                                              # structure pair width.
@@ -5056,15 +5076,13 @@ def _tag_qwen3_467_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
 # 0.468: Qwen3.5 / Qwen3.8 MoE text stacks whose published expert is
 # down(silu(gate) * up), including the shared expert of the same MLP.
 # Dense SwiGLU rows and other MoE classes stay on their own gates.
-_QWEN35_MOE = frozenset({
-    "qwen3.8-2.4t", "qwen3.5-397b-a17b", "intern-s2-397b",
-    "minicpm-v-4.7-35b-a3b", "startlux-decision-v1-35b-a3b",
-    "ornith-1.5-122b", "ornith-1.5-122b-fp8",
-    "ornith-1.5-397b", "ornith-1.5-397b-fp8",
-    "ornith-1.5-35b-a3b", "ornith-1.5-35b-a3b-fp8",
-    "ornith-1.0-397b", "ornith-1.0-397b-fp8",
-    "ornith-1.0-35b", "ornith-1.0-35b-fp8",
-})
+def _stamp_swiglu(spec: ModelSpec, kind: str, note: str) -> ModelSpec:
+    """Tag every main-stack layer with a frozen product kind.
+
+    ``kind`` comes from an allow row. MTP layers stay as they are.
+    """
+    layers = tuple(replace(L, vec_kind=kind) for L in spec.layers)
+    return replace(spec, layers=layers, vec_kind=kind, notes=spec.notes + (note,))
 
 
 def _tag_qwen35_moe_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
@@ -5118,7 +5136,6 @@ def _tag_qwen35_moe_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
         if (up.n != 2 * d_sh or up.k != spec.hidden or down.k != d_sh
                 or down.n != spec.hidden or up.split != "col" or down.split != "row"):
             raise ValueError("qwen35 moe shared expert is not swiglu")
-    layers = tuple(replace(L, vec_kind="qwen35_moe") for L in spec.layers)
     note = ("0.468: Qwen3_5MoeExperts is down(silu(gate) * up). "
             "SiLU on routed experts stays expert_act. The product is mlp_mul. "
             "The shared expert is the same multiply. Shared SiLU is not billed. "
@@ -5126,7 +5143,7 @@ def _tag_qwen35_moe_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             "mRoPE, partial RoPE, and 1+weight RMSNorm are not this bill. "
             "MTP layers stay untagged. "
             "The front-60 rows are qwen3.8-2.4t and qwen3.5-397b-a17b.")
-    return replace(spec, layers=layers, vec_kind="qwen35_moe", notes=spec.notes + (note,))
+    return _stamp_swiglu(spec, _allow_row("qwen35_moe").vec_kind, note)
 
 
 # 0.469: Kimi-K3 text stack. SituAndMul is not ACT2FN["silu"] times up.
@@ -5217,16 +5234,6 @@ def _tag_kimi_situ_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
 # 0.471: Muse Spark latent MoE. The published expert is
 # down(silu(gate) * up) at moe_intermediate_size after the pooler.
 # There is no shared expert. Dense draft towers stay untagged.
-_MUSE_SWIGLU = frozenset({
-    "muse-spark-open",
-    "muse-spark-open-fp8",
-    "muse-spark-open-mxfp4",
-    "muse-spark-open-nvfp4",
-    "muse-spark-open-nvfp4-dspark",
-    "muse-spark-open-nvfp4-dflash2",
-})
-
-
 def _tag_muse_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.471: bill the published Muse Spark latent expert product.
 
@@ -5288,7 +5295,6 @@ def _tag_muse_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             raise ValueError("muse swiglu mtp is already tagged")
         if L.ffn.kind == "moe":
             raise ValueError("muse swiglu mtp is not dense")
-    layers = tuple(replace(L, vec_kind="muse_swiglu") for L in spec.layers)
     note = ("0.471: Muse Spark latent experts are down(silu(gate) * up) "
             "at moe_intermediate_size, after the pooler. "
             "SiLU stays expert_act. The product is mlp_mul. "
@@ -5297,14 +5303,11 @@ def _tag_muse_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             "Pre-expert RMSNorm, post-expert RMSNorm, the routing-weight multiply, "
             "and the attention output gate are not billed. "
             "Dense MTP drafts stay untagged.")
-    return replace(spec, layers=layers, vec_kind="muse_swiglu", notes=spec.notes + (note,))
+    return _stamp_swiglu(spec, _allow_row("muse_swiglu").vec_kind, note)
 
 
 # 0.472: Mixtral-8x22B routed experts. The published MLP is
 # w2(silu(w1(x)) * w3(x)). There is no latent pool and no shared expert.
-_MIXTRAL_SWIGLU = frozenset({"mixtral-8x22b"})
-
-
 def _tag_mixtral_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.472: bill the published Mixtral-8x22B expert product.
 
@@ -5385,21 +5388,17 @@ def _tag_mixtral_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
         if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
                 or o.k != heads * hd or o.n != h or L.misc_params != 2 * h):
             raise ValueError("mixtral swiglu attention is not gqa")
-    layers = tuple(replace(L, vec_kind="mixtral_swiglu") for L in spec.layers)
     note = ("0.472: Mixtral-8x22B routed experts are w2(silu(w1(x)) * w3(x)). "
             "SiLU stays expert_act. The product is mlp_mul on the useful "
             "token-expert pairs. a_fmt follows act_fmt. "
             "There is no shared expert and no latent pool. "
             "The routing-weight multiply and the block RMSNorms are not billed. "
             "The historical final norm stays on the shared formula.")
-    return replace(spec, layers=layers, vec_kind="mixtral_swiglu", notes=spec.notes + (note,))
+    return _stamp_swiglu(spec, _allow_row("mixtral_swiglu").vec_kind, note)
 
 
 # 0.473: Seed-OSS-36B dense MLP. The published forward is
 # down(act_fn(gate) * up) with hidden_act silu. There is no MoE.
-_SEED_SWIGLU = frozenset({"seed-oss-36b"})
-
-
 def _tag_seed_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     """0.473: bill the published Seed-OSS-36B SwiGLU product.
 
@@ -5487,7 +5486,6 @@ def _tag_seed_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
         if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
                 or o.k != heads * hd or o.n != h or L.misc_params != expect_misc):
             raise ValueError("seed swiglu attention is not qkv o")
-    layers = tuple(replace(L, vec_kind="seed_swiglu") for L in spec.layers)
     note = ("0.473: Seed-OSS-36B MLP is down(silu(gate) * up). "
             "SiLU stays act. The product is mlp_mul. "
             "a_fmt follows act_fmt. The class does not upcast. "
@@ -5495,16 +5493,11 @@ def _tag_seed_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             "Block RMSNorms stay on the historical dtype. "
             "rope_type default keeps attention_scaling at 1. "
             "The front-60 row is seed-oss-36b.")
-    return replace(spec, layers=layers, vec_kind="seed_swiglu", notes=spec.notes + (note,))
+    return _stamp_swiglu(spec, _allow_row("seed_swiglu").vec_kind, note)
 
 
 # 0.474: the three OLMo-3 32B rows. Olmo3MLP is down(act_fn(gate) * up)
 # with hidden_act silu. The 7B rows are a smaller product and stay off.
-_OLMO3_SWIGLU = frozenset({
-    "olmo-3-32b-think",
-    "olmo-3.1-32b-instruct",
-    "olmo-3-1125-32b",
-})
 _OLMO3_YARN_FACTOR = 1.2079441541679836
 
 
@@ -5611,22 +5604,17 @@ def _tag_olmo3_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
         if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
                 or o.k != heads * hd or o.n != h or L.misc_params != expect_misc):
             raise ValueError("olmo3 swiglu attention is not qkv o")
-    layers = tuple(replace(L, vec_kind="olmo3_swiglu") for L in spec.layers)
     note = ("0.474: OLMo-3 32B MLP is down(silu(gate) * up). "
             "SiLU stays act. The product is mlp_mul. "
             "a_fmt follows act_fmt. The class does not upcast. "
             "Post-attention and post-feedforward RMSNorms stay on the historical ops. "
             "q/k RMSNorm, YaRN attention_scaling, and the sliding window are not this product. "
             "The rows are olmo-3-32b-think, olmo-3.1-32b-instruct, and olmo-3-1125-32b.")
-    return replace(spec, layers=layers, vec_kind="olmo3_swiglu", notes=spec.notes + (note,))
+    return _stamp_swiglu(spec, _allow_row("olmo3_swiglu").vec_kind, note)
 
 
 # 0.475: Jais-3-32B and its IFM FP8 twin. K2HorizonMLP is
 # down(act_fn(gate) * up) with hidden_act silu. Smaller Jais rows stay off.
-_JAIS3_SWIGLU = frozenset({
-    "jais-3-32b",
-    "jais-3-32b-fp8",
-})
 _JAIS3_H = 5120
 _JAIS3_INNER = 26624
 _JAIS3_DEPTH = 64
@@ -5757,24 +5745,19 @@ def _tag_jais3_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
                 or o.k != q_n or o.n != _JAIS3_H or L.misc_params != expect_misc
                 or q_n == _JAIS3_H):
             raise ValueError("jais3 swiglu attention is not qkv o")
-    layers = tuple(replace(L, vec_kind="jais3_swiglu") for L in spec.layers)
     note = ("0.475: Jais-3-32B MLP is down(silu(gate) * up). "
             "SiLU stays act. The product is mlp_mul. "
             "a_fmt follows act_fmt. The class does not upcast. "
             "Group RMSNorm stays on the historical ops. "
             "query_key_norm is false. rope_head_dim equals head_dim. "
             "The rows are jais-3-32b and jais-3-32b-fp8.")
-    return replace(spec, layers=layers, vec_kind="jais3_swiglu", notes=spec.notes + (note,))
+    return _stamp_swiglu(spec, _allow_row("jais3_swiglu").vec_kind, note)
 
 
 # 0.476: ERNIE-4.5-VL 424B. Dense layers are Ernie4_5_MLP. MoE layers route
 # text tokens through Ernie4_5_MoeMLP of width moe_intermediate_size[0]
 # and multimodal tokens through the second pool. Both forwards are
 # down(F.silu(gate) * up). There is no shared expert on this release.
-_ERNIEVL_SWIGLU = frozenset({
-    "ernie-4.5-vl-424b-a47b-pt",
-    "ernie-4.5-vl-424b-a47b",
-})
 _ERNIEVL_H = 8192
 _ERNIEVL_INNER = 28672
 _ERNIEVL_DEPTH = 54
@@ -5926,7 +5909,6 @@ def _tag_ernievl_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             if (router.k != _ERNIEVL_H or router.n != _ERNIEVL_EXP
                     or router_b.k != _ERNIEVL_H or router_b.n != _ERNIEVL_EXP):
                 raise ValueError("ernievl swiglu linears are not two routers")
-    layers = tuple(replace(L, vec_kind="ernievl_swiglu") for L in spec.layers)
     note = ("0.476: ERNIE-4.5-VL 424B is down(F.silu(gate) * up) on the dense "
             "MLP and on both expert pools. SiLU stays act or expert_act. "
             "The product is mlp_mul. a_fmt follows act_fmt. The class does "
@@ -5934,13 +5916,12 @@ def _tag_ernievl_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             "There is no shared expert. RMSNorm and 3-D RoPE stay on the "
             "historical ops. The rows are ernie-4.5-vl-424b-a47b-pt and "
             "ernie-4.5-vl-424b-a47b.")
-    return replace(spec, layers=layers, vec_kind="ernievl_swiglu", notes=spec.notes + (note,))
+    return _stamp_swiglu(spec, _allow_row("ernievl_swiglu").vec_kind, note)
 
 
 # 0.477: MiniMax-Text-01 and MiniMax-M1 routed experts. The published MLP is
 # w2(silu(w1(x)) * w3(x)). shared_intermediate_size is 0, so the shared
 # MLP and its sigmoid coefficient are not built.
-_MINIMAX_SWIGLU = frozenset({"minimax-text-01", "minimax-m1-80k"})
 _MINIMAX_ARCH = {
     "minimax-text-01": ("minimax_text_01", ["MiniMaxText01ForCausalLM"], "fp32"),
     "minimax-m1-80k": ("minimax_m1", ["MiniMaxM1ForCausalLM"], "bf16"),
@@ -6086,7 +6067,6 @@ def _tag_minimax_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             if (q.k != _MINIMAX_H or q.n != q_n or k.n != kv_n or v.n != kv_n
                     or o.k != q_n or o.n != _MINIMAX_H):
                 raise ValueError("minimax swiglu attention is not qkv o")
-    layers = tuple(replace(L, vec_kind="minimax_swiglu") for L in spec.layers)
     note = ("0.477: MiniMax-Text-01 and MiniMax-M1 routed experts are "
             "w2(silu(w1(x)) * w3(x)). SiLU stays expert_act. The product "
             "is mlp_mul on the useful token-expert pairs. a_fmt follows "
@@ -6094,17 +6074,12 @@ def _tag_minimax_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             "the sigmoid output gate, post-norm placement, the residual "
             "alpha, and the routing-weight multiply are not billed. "
             "The historical final norm stays on the shared formula.")
-    return replace(spec, layers=layers, vec_kind="minimax_swiglu", notes=spec.notes + (note,))
+    return _stamp_swiglu(spec, _allow_row("minimax_swiglu").vec_kind, note)
 
 
 # 0.478 ERNIE-4.5-300B routed experts. Ernie4_5_MoeExperts is
 # act_fn(gate) * up, then down. moe_num_shared_experts is 0, so there is
 # no shared Ernie4_5_MoeMLP. The 21B rows are smaller and stay on 0.458.
-_ERNIE300_SWIGLU = frozenset({
-    "ernie-4.5-300b-a47b-pt",
-    "ernie-4.5-300b-a47b-base-pt",
-    "ernie-4.5-300b-a47b-base",
-})
 _ERNIE300_H = 8192
 _ERNIE300_INNER = 28672
 _ERNIE300_DEPTH = 54
@@ -6268,16 +6243,6 @@ def _tag_ernie300_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
 # GlmMoeDsaMLP and GlmMoeDsaExperts are both act_fn(gate) * up, then down.
 # The shared expert is one GlmMoeDsaMLP of width moe_intermediate_size *
 # n_shared_experts. GLM-5.3-Flash is Glm5Next and is not this class.
-_GLM5_SWIGLU_BF16 = frozenset({
-    "glm-5",
-    "glm-5.2",
-    "atria-dawn",
-})
-_GLM5_SWIGLU_FP8 = frozenset({
-    "glm-5.3",
-    "atria-dawn-fp8",
-})
-_GLM5_SWIGLU = _GLM5_SWIGLU_BF16 | _GLM5_SWIGLU_FP8
 _GLM5_H = 6144
 _GLM5_INNER = 12288
 _GLM5_DE = 2048
@@ -6460,14 +6425,13 @@ def _tag_glm5_swiglu_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
             or mtp.ffn.top_k != _GLM5_TOPK or mtp.ffn.d_expert != _GLM5_DE
             or mtp.ffn.n_shared != 1 or mtp.ffn.d_shared != _GLM5_DE):
         raise ValueError("glm5 swiglu mtp is not the release moe")
-    layers = tuple(replace(L, vec_kind="glm5_swiglu") for L in spec.layers)
     note = ("0.479: GLM-5, GLM-5.2, GLM-5.3, and Atria-Dawn are "
             "down(silu(gate) * up) on the dense MLP, the routed experts, "
             "and the one shared expert. SiLU stays act or expert_act. "
             "The product is mlp_mul. a_fmt follows act_fmt. Shared SiLU "
             "stays unbilled. The MTP block, the routing-weight multiply, "
             "and the historical RMSNorm stay off this op.")
-    return replace(spec, layers=layers, vec_kind="glm5_swiglu", notes=spec.notes + (note,))
+    return _stamp_swiglu(spec, _allow_row("glm5_swiglu").vec_kind, note)
 
 
 _STEP_AUDIO = frozenset({
@@ -7667,6 +7631,37 @@ def _tag_whisper_decoder_vectors(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, vec_kind="whisper", notes=spec.notes + (note,))
 
 
+def _tag_product_cluster(spec: ModelSpec, c: dict) -> ModelSpec:
+    """Registered silu(gate)*up taggers, in historical from_release order.
+
+    Order is vector_rules.TAG_ORDER. kimi_situ and the Llama-3 tagger are
+    slots between qwen35_moe and muse_swiglu. They are not silu rules.
+    Carbon, Qwen, Whisper, and the 0.458 ERNIE dense tagger run before
+    this cluster. Allowlists are disjoint. TODO(phase-b): fold
+    LEGACY_TAGGERS into allow-row predicates instead of adding a tagger.
+    """
+    taggers = (
+        _tag_qwen35_moe_vectors,
+        _tag_kimi_situ_vectors,
+        _tag_llama3_vectors,
+        _tag_muse_swiglu_vectors,
+        _tag_mixtral_swiglu_vectors,
+        _tag_seed_swiglu_vectors,
+        _tag_olmo3_swiglu_vectors,
+        _tag_jais3_swiglu_vectors,
+        _tag_ernievl_swiglu_vectors,
+        _tag_minimax_swiglu_vectors,
+        _tag_ernie300_swiglu_vectors,
+        _tag_glm5_swiglu_vectors,
+    )
+    names = tuple(fn.__name__ for fn in taggers)
+    if names != _PRODUCT_TAG_ORDER:
+        raise RuntimeError("product tagger order drifted from vector_rules.TAG_ORDER")
+    for fn in taggers:
+        spec = fn(spec, c)
+    return spec
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -8613,18 +8608,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_glm5_swiglu_vectors(
-        _tag_ernie300_swiglu_vectors(
-        _tag_minimax_swiglu_vectors(
-        _tag_ernievl_swiglu_vectors(
-        _tag_jais3_swiglu_vectors(
-        _tag_olmo3_swiglu_vectors(
-        _tag_seed_swiglu_vectors(
-        _tag_mixtral_swiglu_vectors(
-        _tag_muse_swiglu_vectors(
-        _tag_llama3_vectors(
-        _tag_kimi_situ_vectors(
-        _tag_qwen35_moe_vectors(
+    return _tag_product_cluster(
         _tag_llama2_vectors(
         _tag_qwen25_466_vectors(
         _tag_qwen25_72b_vectors(
@@ -8641,7 +8625,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

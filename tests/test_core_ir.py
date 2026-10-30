@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
+from pathlib import Path
 
 from accel_dse.core.catalog import get_model
 from accel_dse.core.ir import Phase, Shard, build_rank_ops, moe_routing, head_ops
 from accel_dse.core.memplan import stage_storage
+from accel_dse.core.model import _PRODUCT_TAG_ORDER
+from accel_dse.core import vector_rules as vr
 from accel_dse.core.parallel import Layout, enumerate_layouts, plan_stages, stage_layer_counts
 
 
@@ -120,3 +124,148 @@ def test_lm_head_vocab_parallel():
     g = [o for o in head_ops(s, ph) if o.kind == "gemm"][0]
     r = [o for o in head_ops(s, ph, Shard(tp=4)) if o.kind == "gemm"][0]
     assert r.n == math.ceil(s.vocab / 4) and g.n == s.vocab
+
+
+def _gemm_sig(ops):
+    return [
+        (o.name, o.k, o.n, o.m, o.flops, o.w_params, o.count)
+        for o in ops if o.kind == "gemm"
+    ]
+
+
+def _ffn_names(ops):
+    keep = {"act", "mlp_mul", "expert_act", "expert_b.act"}
+    out = []
+    for o in ops:
+        if o.kind == "comm":
+            continue
+        if o.name in keep or o.name.startswith(("mlp.", "moe.", "expert")):
+            out.append(o.name)
+    return tuple(out)
+
+
+def _op_sig(ops):
+    return [
+        (o.name, o.kind, o.vec, o.sfu, o.a_fmt, o.k, o.n, o.m, o.flops)
+        for o in ops
+    ]
+
+
+def _bare(model):
+    return replace(
+        model,
+        layers=tuple(replace(L, vec_kind="", product_rule="") for L in model.layers),
+        vec_kind="")
+
+
+def _retarget(model, li: int, kind: str, rule: str):
+    layer = replace(model.layers[li], vec_kind=kind, product_rule=rule)
+    layers = model.layers[:li] + (layer,) + model.layers[li + 1:]
+    return replace(model, layers=layers)
+
+
+def _mlp_mul(model, li: int, ph: Phase, shard: Shard | None = None):
+    ops = build_rank_ops(model, li, ph, shard or Shard())
+    return [o for o in ops if o.name == "mlp_mul"]
+
+
+def test_silu_product_conserves_gemm_and_order():
+    """Shared silu(gate)*up billing keeps GEMM shape and inserts mlp_mul in place."""
+    ph = Phase("prefill", 1, 4096, 0)
+    expect = {
+        ("seed-oss-36b", 0): (
+            "mlp.gate_up", "act", "mlp_mul", "mlp.down"),
+        ("qwen3-8b", 0): (
+            "mlp.gate_up", "act", "mlp_mul", "mlp.down"),
+        ("exaone-4.0-32b", 0): (
+            "mlp.gate_up", "act", "mlp_mul", "mlp.down"),
+        ("glm-5", 0): (
+            "mlp.gate_up", "act", "mlp_mul", "mlp.down"),
+        ("glm-5", 3): (
+            "moe.router", "moe.shared_gate_up", "mlp_mul", "moe.shared_down",
+            "expert.gate_up", "expert_act", "mlp_mul", "expert.down"),
+        ("mixtral-8x22b", 0): (
+            "moe.router", "expert.gate_up", "expert_act", "mlp_mul", "expert.down"),
+        ("muse-spark-open", 0): (
+            "moe.router", "moe.latent_up", "moe.latent_down",
+            "expert.gate_up", "expert_act", "mlp_mul", "expert.down"),
+        ("qwen3.5-397b-a17b", 0): (
+            "moe.router", "moe.shared_gate_up", "mlp_mul", "moe.shared_down",
+            "moe.shared_expert_gate",
+            "expert.gate_up", "expert_act", "mlp_mul", "expert.down"),
+        ("ernie-4.5-300b-a47b-pt", 0): (
+            "mlp.gate_up", "act", "mlp_mul", "mlp.down"),
+        ("ernie-4.5-300b-a47b-pt", 3): (
+            "moe.router", "expert.gate_up", "expert_act", "mlp_mul", "expert.down"),
+    }
+    for (mid, li), names in expect.items():
+        model = get_model(mid)
+        tagged = build_rank_ops(model, li, ph, Shard())
+        bare = build_rank_ops(_bare(model), li, ph, Shard())
+        assert _gemm_sig(tagged) == _gemm_sig(bare), (mid, li)
+        assert _ffn_names(tagged) == names, (mid, li, _ffn_names(tagged))
+        assert "mlp_mul" not in _ffn_names(bare)
+
+
+def test_dense_silu_product_scales_with_tokens_and_tp():
+    model = get_model("seed-oss-36b")
+    assert model.layers[0].ffn.d_ff % 2 == 0
+    narrow = _mlp_mul(model, 0, Phase("prefill", 1, 128, 0))
+    wide = _mlp_mul(model, 0, Phase("prefill", 1, 256, 0))
+    split = _mlp_mul(model, 0, Phase("prefill", 1, 128, 0), Shard(tp=2))
+    assert len(narrow) == 1 and wide[0].vec == narrow[0].vec * 2
+    assert split[0].vec * 2 == narrow[0].vec
+    assert narrow[0].a_fmt == model.act_fmt and narrow[0].sfu == 0.0
+
+
+def test_product_rule_id_matches_frozen_kind():
+    """An unbound layer selects the same dense product by rule id, not a new vec_kind."""
+    ph = Phase("prefill", 1, 256, 0)
+    seed = get_model("seed-oss-36b")
+    tagged = build_rank_ops(seed, 0, ph, Shard())
+    by_rule = build_rank_ops(
+        _retarget(seed, 0, "", vr.RULE_DENSE), 0, ph, Shard())
+    assert _op_sig(by_rule) == _op_sig(tagged)
+    mix = get_model("mixtral-8x22b")
+    tagged_m = build_rank_ops(mix, 0, ph, Shard())
+    by_plain = build_rank_ops(
+        _retarget(mix, 0, "", vr.RULE_ROUTED_PLAIN), 0, ph, Shard())
+    assert _op_sig(by_plain) == _op_sig(tagged_m)
+    assert _mlp_mul(mix, 0, ph)[0].a_fmt == mix.act_fmt
+    muse = get_model("muse-spark-open")
+    role = muse.layers[0].ffn.expert_role or "expert"
+    assert _mlp_mul(muse, 0, ph)[-1].a_fmt == muse.act_fmt_for(role)
+
+
+def test_product_rule_rejects_bad_geometry_and_unknown_id():
+    seed = get_model("seed-oss-36b")
+    ungated = replace(seed.layers[0].ffn, gated=False)
+    bad = replace(seed, layers=(replace(seed.layers[0], ffn=ungated),) + seed.layers[1:])
+    try:
+        build_rank_ops(bad, 0, Phase("prefill", 1, 32, 0), Shard())
+        raise AssertionError("ungated seed accepted")
+    except ValueError as exc:
+        assert str(exc) == "seed swiglu mlp is not gate_up then down"
+    unknown = _retarget(seed, 0, "", "not_a_product_rule")
+    try:
+        build_rank_ops(unknown, 0, Phase("prefill", 1, 32, 0), Shard())
+        raise AssertionError("unknown product rule accepted")
+    except ValueError as exc:
+        assert "unknown product rule" in str(exc)
+
+
+def test_product_registry_order_and_frozen_kinds():
+    assert _PRODUCT_TAG_ORDER == vr.TAG_ORDER
+    assert set(vr.LEGACY_TAGGERS).isdisjoint(vr.ORDER_SLOTS)
+    assert vr.rule_ids() == tuple(vr.RULES)
+    assert "magistral" not in " ".join(vr.FROZEN_PRODUCT_KINDS)
+    src = (Path(__file__).resolve().parents[1] / "accel_dse" / "core" / "ir.py").read_text()
+    for kind in (
+        "seed_swiglu", "olmo3_swiglu", "jais3_swiglu", "ernievl_swiglu",
+        "glm5_swiglu", "qwen35_moe", "muse_swiglu", "mixtral_swiglu",
+        "minimax_swiglu",
+    ):
+        assert f'vec_kind == "{kind}"' not in src
+    assert 'vec_kind == "kimi_situ"' in src
+    assert "_emit_dense_silu" in src
+
