@@ -88,7 +88,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_465():
-    assert __version__ == "0.481.0"
+    assert __version__ == "0.482.0"
 
 
 def test_four_rows_are_front60_and_reuse_qwen3():
@@ -356,7 +356,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_coverage import _FULL_0651, _kpi
     from accel_dse.core import evaluate as E
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "9a66da621b20a5f8"
+    assert _fp({}) == "6381be58dbab8f57"
     # The no-DeepSeek-V4 pair is locked in 0.125. Re-run that assert.
     test_fingerprints_change_only_v4()
     with E.model_flags(FUSE_QKV=False):

@@ -80,7 +80,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_447():
-    assert __version__ == "0.481.0"
+    assert __version__ == "0.482.0"
 
 
 def test_post_rmsnorm_qk_and_the_product():
@@ -277,7 +277,7 @@ def test_non_vector_schedule_and_other_models():
     from tests.test_core_0100 import _fp
     from tests.test_core_coverage import _FULL_0651
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "9a66da621b20a5f8"
+    assert _fp({}) == "6381be58dbab8f57"
     assert "exaone-4.0-32b" not in _FULL_0651
     assert _FULL_0651["esmfold"] == "3bbede544308"
     assert _FULL_0651["esm2-3b"] == "34f7544287cd"

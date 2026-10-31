@@ -330,6 +330,75 @@ def test_phase_b_hot_zone_kind_compares_dropped():
     assert not vr.fp32_final_norm("evo2_gelu")
 
 
+def test_magistral_small_bills_dense_product_by_existing_rule():
+    """0.482: Magistral-Small-2506 silu(gate)*up uses dense_silu_product.
+
+    vec_kind stays empty, so the kind has no product binding. The row is
+    already in the front 60 and is not moved. Block norms stay on the
+    historical dtype. No new vec_kind.
+    """
+    from accel_dse.core.model import _apply_unbound_product_rule, _tc, from_release, load_release
+
+    m = get_model("magistral-small")
+    assert m.vec_kind == ""
+    assert all(L.vec_kind == "" and L.product_rule == vr.RULE_DENSE for L in m.layers)
+    assert m.hf_id == "mistralai/Magistral-Small-2506"
+    assert m.hidden == 5120 and m.n_layers == 40
+    assert m.layers[0].ffn.d_ff == 32768
+    assert m.layers[0].attn_linears[0].n == 32 * 128
+    assert m.layers[0].attn_linears[0].n != m.hidden
+    assert "magistral" not in " ".join(vr.FROZEN_PRODUCT_KINDS)
+    assert vr.UNBOUND_PRODUCT_RULES == {"magistral-small": vr.RULE_DENSE}
+    ph = Phase("prefill", 1, 4096, 0)
+    ops = build_rank_ops(m, 0, ph, Shard())
+    names = [o.name for o in ops if o.name in ("mlp.gate_up", "act", "mlp_mul", "mlp.down")]
+    assert names == ["mlp.gate_up", "act", "mlp_mul", "mlp.down"]
+    by = {o.name: o for o in ops}
+    assert by["mlp_mul"].vec == float(4096 * 32768) and by["mlp_mul"].sfu == 0.0
+    assert by["mlp_mul"].a_fmt == "bf16" and by["act"].a_fmt == "bf16"
+    assert by["act"].vec == 4096 * 32768 * 4 and by["act"].sfu == float(4096 * 32768 * 2)
+    assert by["attn_norm"].a_fmt == "bf16" and by["ffn_norm"].a_fmt == "bf16"
+    assert by["mlp.gate_up"].k == 5120 and by["mlp.gate_up"].n == 2 * 32768
+    assert by["mlp.down"].k == 32768 and by["mlp.down"].n == 5120
+    bare = replace(m, layers=tuple(replace(L, product_rule="") for L in m.layers))
+    assert _gemm_sig(ops) == _gemm_sig(build_rank_ops(bare, 0, ph, Shard()))
+    assert "mlp_mul" not in _ffn_names(build_rank_ops(bare, 0, ph, Shard()))
+    split = build_rank_ops(m, 0, ph, Shard(tp=2))
+    mul = next(o for o in split if o.name == "mlp_mul")
+    assert mul.vec * 2 == by["mlp_mul"].vec
+    head = {o.name: o for o in head_ops(m, ph, Shard())}
+    assert head["final_norm"].a_fmt == "bf16" and head["final_norm"].sfu == 0.0
+    width = sum(next(o for o in build_rank_ops(m, li, Phase("prefill", 1, 1, 0), Shard())
+                     if o.name == "mlp_mul").vec for li in range(m.n_layers))
+    assert width == 40 * 32768
+    fp8 = replace(m, act_fmt="fp8")
+    got = {o.name: o for o in build_rank_ops(fp8, 0, ph, Shard())}
+    assert got["act"].a_fmt == "fp8" and got["mlp_mul"].a_fmt == "fp8"
+    assert got["attn_norm"].a_fmt == "bf16" and got["mlp.gate_up"].w_fmt == "bf16"
+    small = get_model("mistral-small-3.2-24b-instruct-2506")
+    assert small.vec_kind == "mistral_small" and small.layers[0].product_rule == ""
+    large = get_model("mistral-large")
+    assert large.vec_kind == "mistral_small" and large.layers[0].product_rule == ""
+    plain = get_model("mistral-7b")
+    assert plain.vec_kind == "" and plain.layers[0].product_rule == ""
+    assert "mlp_mul" not in [o.name for o in build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())]
+    other = _apply_unbound_product_rule(plain, _tc(load_release(plain.hf_id)["config"]))
+    assert other is plain
+    rel = load_release(m.hf_id)
+    cfg = _tc(rel["config"])
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "hidden_act": "gelu"})
+        raise AssertionError("gelu accepted")
+    except ValueError as exc:
+        assert str(exc) == "magistral small hidden_act is not silu"
+    try:
+        build_rank_ops(replace(m, layers=(replace(m.layers[0], ffn=replace(m.layers[0].ffn, gated=False)),)
+                               + m.layers[1:]), 0, Phase("prefill", 1, 16, 0), Shard())
+        raise AssertionError("ungated accepted")
+    except ValueError as exc:
+        assert str(exc) == "dense silu product is not gate_up then down"
+
+
 def test_phase_b_predicate_leaves_foreign_id_untagged():
     from accel_dse.core.model import _apply_one_predicate, _tc, load_release
 
