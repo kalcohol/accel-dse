@@ -103,7 +103,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_468():
-    assert __version__ == "0.481.0"
+    assert __version__ == "0.482.0"
 
 
 def test_fifteen_rows_bill_the_published_product():
@@ -312,7 +312,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_125 import test_fingerprints_change_only_v4
     from tests.test_core_coverage import _FULL_0651, _kpi
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "9a66da621b20a5f8"
+    assert _fp({}) == "6381be58dbab8f57"
     test_fingerprints_change_only_v4()
     pins = {
         "qwen3-32b": "b975b7b3760e",

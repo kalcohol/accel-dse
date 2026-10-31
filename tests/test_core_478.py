@@ -95,7 +95,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_478():
-    assert __version__ == "0.481.0"
+    assert __version__ == "0.482.0"
 
 
 def test_three_rows_bill_the_expert_product():
@@ -374,7 +374,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_coverage import _FULL_0651, _kpi
 
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "9a66da621b20a5f8"
+    assert _fp({}) == "6381be58dbab8f57"
     test_fingerprints_change_only_v4()
     from accel_dse.core import evaluate as E
     pins = {

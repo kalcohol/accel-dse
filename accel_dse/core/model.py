@@ -42,8 +42,10 @@ from .vector_rules import (
     OLMO3_IDS as _OLMO3_SWIGLU,
     ORDER_SLOTS as _ORDER_SLOTS,
     QWEN35_IDS as _QWEN35_MOE,
+    RULE_DENSE as _RULE_DENSE,
     SEED_IDS as _SEED_SWIGLU,
     TAG_ORDER as _PRODUCT_TAG_ORDER,
+    UNBOUND_PRODUCT_RULES as _UNBOUND_PRODUCT_RULES,
     allow_row as _allow_row,
 )
 
@@ -464,6 +466,9 @@ class Layer:
     # "" keeps the shared full-forward assumption.
     # 0.480: product billing for silu(gate)*up is selected by vector_rules.
     # product_rule is used only when vec_kind has no product binding.
+    # 0.482 Magistral-Small-2506 keeps vec_kind empty and sets product_rule
+    # to dense_silu_product. The row stays in the front 60. RMSNorm dtype
+    # stays historical.
     vec_kind: str = ""
     product_rule: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -7690,6 +7695,130 @@ def _tag_product_cluster(spec: ModelSpec, c: dict) -> ModelSpec:
     return spec
 
 
+def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
+    """Point an unbound layer at an existing product rule.
+
+    ``vec_kind`` stays empty, so the kind has no product binding and
+    ``product_rule`` selects the rule. The predicate dispatcher is not
+    extended. No new vec_kind and no new swiglu tagger.
+    """
+    rule = _UNBOUND_PRODUCT_RULES.get(spec.id)
+    if rule is None:
+        return spec
+    if spec.id == "magistral-small":
+        if rule != _RULE_DENSE:
+            raise RuntimeError("magistral small product rule is not dense_silu_product")
+        return _bill_magistral_small_product(spec, c)
+    raise RuntimeError(f"{spec.id} unbound product rule has no checker")
+
+
+def _bill_magistral_small_product(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.482: bill published Magistral-Small-2506 silu(gate)*up.
+
+    MistralForCausalLM uses MistralMLP: down(act_fn(gate) * up). The
+    published hidden_act is silu. The class does not upcast. SiLU stays
+    act. The product is mlp_mul between fused gate_up and down. Width is
+    intermediate_size. Forty layers make 40 * 32768 = 1,310,720 elements
+    per token. q width is num_attention_heads * head_dim and is not hidden,
+    so the 0.462 Mistral-Large gate does not accept this row. The 0.451
+    gate still requires Mistral3ForConditionalGeneration. vec_kind stays
+    empty. product_rule is the existing dense_silu_product id. Block
+    RMSNorm stays on the historical dtype. This id is already inside the
+    first 60 catalog rows and is not moved.
+    """
+    if c.get("model_type") != "mistral":
+        raise ValueError("magistral small model_type is not mistral")
+    if c.get("architectures") != ["MistralForCausalLM"]:
+        raise ValueError("magistral small architecture is not mistral")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("magistral small hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("magistral small swiglu_limit is set")
+    if c.get("attention_bias") not in (None, False):
+        raise ValueError("magistral small attention_bias is not false")
+    if c.get("mlp_bias") not in (None, False):
+        raise ValueError("magistral small mlp_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("magistral small attention_dropout is not 0")
+    if c.get("sliding_window") is not None:
+        raise ValueError("magistral small sliding_window is not null")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("magistral small use_sliding_window is not false")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("magistral small rope_scaling is not null")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("magistral small layer_types is not full_attention")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("magistral small tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-5:
+        raise ValueError("magistral small rms_norm_eps is not 1e-5")
+    if c.get("torch_dtype") != "bfloat16":
+        raise ValueError("magistral small dtype is not bfloat16")
+    if c.get("quantization_config") not in (None,):
+        raise ValueError("magistral small quantization_config is set")
+    for key in ("num_experts", "num_local_experts", "n_routed_experts",
+                "num_experts_per_tok", "moe_intermediate_size",
+                "num_shared_experts", "shared_expert_intermediate_size"):
+        if key in c:
+            raise ValueError("magistral small moe key is set")
+    h = c.get("hidden_size")
+    de = c.get("intermediate_size")
+    depth = c.get("num_hidden_layers")
+    heads = c.get("num_attention_heads")
+    hkv = c.get("num_key_value_heads")
+    hd = c.get("head_dim")
+
+    def _pos(v) -> bool:
+        return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+    if not (_pos(h) and _pos(de) and _pos(depth) and _pos(heads) and _pos(hkv) and _pos(hd)):
+        raise ValueError("magistral small width is not positive")
+    if (h, de, depth, heads, hkv, hd) != (5120, 32768, 40, 32, 8, 128):
+        raise ValueError("magistral small geometry is not the published row")
+    if spec.act_fmt != "bf16" or spec.fmt("mlp").fmt != "bf16" or spec.fmt("attn").fmt != "bf16":
+        raise ValueError("magistral small dtype is not bfloat16")
+    if len(spec.layers) != depth or spec.n_layers != depth:
+        raise ValueError("magistral small depth is not num_hidden_layers")
+    if spec.mtp_layers:
+        raise ValueError("magistral small mtp is set")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("magistral small final norm is not one")
+    if spec.vec_kind or any(L.vec_kind for L in spec.layers):
+        raise ValueError("magistral small vec_kind is already set")
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "dense" or not f.gated or f.d_ff != de or f.n_experts or f.top_k
+                or f.d_expert or f.n_shared or f.d_shared or f.latent):
+            raise ValueError("magistral small mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("magistral small mlp is not gate_up then down")
+        up, down = L.ffn_linears
+        if up.k != h or up.n != 2 * de or down.k != de or down.n != h:
+            raise ValueError("magistral small mlp is not gate_up then down")
+        if (L.core is None or L.core.kind != "gqa" or L.core.n_q != heads or L.core.n_kv != hkv
+                or L.core.qk_dim != hd or L.core.v_dim != hd or L.core.window is not None):
+            raise ValueError("magistral small attention is not gqa head_dim")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("magistral small attention is not q k v o")
+        q, k, v, o = L.attn_linears
+        if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
+                or o.k != heads * hd or o.n != h or q.n == h):
+            raise ValueError("magistral small qk width is not heads times head_dim")
+        if L.misc_params != 2 * h:
+            raise ValueError("magistral small has no qk norm")
+    note = (
+        "0.482: Magistral-Small-2506 MLP is down(silu(gate) * up). "
+        "SiLU stays act. The product is mlp_mul. "
+        "a_fmt follows act_fmt. The class does not upcast. "
+        "vec_kind stays empty. product_rule is dense_silu_product. "
+        "Block RMSNorm stays on the historical dtype. "
+        "q width is heads times head_dim and is not hidden. "
+        "The row stays in the front 60."
+    )
+    layers = tuple(replace(L, product_rule=_RULE_DENSE) for L in spec.layers)
+    return replace(spec, layers=layers, notes=spec.notes + (note,))
+
+
 def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict | None = None) -> ModelSpec:
     rel = rel if rel is not None else load_release(hf_id)
     if cfg is None:
@@ -8636,7 +8765,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                 "LayerNorm 在 fp32 归约。仿射已经在参数里。eps 不另计。"
                 "窗口 gather、均值残差、整份残差加不单列。"
                 "GEMM 的 w_fmt 仍是 bf16。通用 GEMM 尾项不减。",))
-    return _tag_product_cluster(
+    return _apply_unbound_product_rule(_tag_product_cluster(
         _tag_llama2_vectors(
         _tag_qwen25_466_vectors(
         _tag_qwen25_72b_vectors(
@@ -8653,7 +8782,7 @@ def from_release(model_id: str, hf_id: str, rel: dict | None = None, cfg: dict |
                                 _tag_granite_vectors(
                                     _tag_exaone_vectors(
                                         _tag_qwen3vl_vectors(
-                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
+                                            _tag_carbon_vectors(spec, c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c), c)
 
 
 def has_indexer(spec: ModelSpec) -> bool:

@@ -351,6 +351,14 @@ GLM5_FP8_IDS = frozenset({
 })
 GLM5_IDS = GLM5_BF16_IDS | GLM5_FP8_IDS
 
+# Catalog ids whose layers stay unbound. ``product_rule`` names an existing
+# RULES id. Kind binding still wins, so these ids must not also sit on an
+# AllowRow. Do not add a vec_kind. Do not add a swiglu tagger. The row stays
+# where it already is; this table does not move a catalog row.
+UNBOUND_PRODUCT_RULES: dict[str, str] = {
+    "magistral-small": RULE_DENSE,
+}
+
 
 @dataclass(frozen=True)
 class AllowRow:
@@ -503,6 +511,15 @@ def _check_tables() -> None:
         for rule_id in binding.rule_ids:
             if rule_id not in RULES:
                 raise RuntimeError(f"{binding.vec_kind} names unknown rule {rule_id}")
+    for mid, rule_id in UNBOUND_PRODUCT_RULES.items():
+        if rule_id not in RULES:
+            raise RuntimeError(f"{mid} names unknown product rule {rule_id}")
+        if rule_id in FROZEN_PRODUCT_KINDS:
+            raise RuntimeError(f"{mid} product rule is a vec_kind")
+        if mid in seen:
+            raise RuntimeError(f"{mid} is both an allow row and an unbound product rule")
+        if mid in FROZEN_PRODUCT_KINDS:
+            raise RuntimeError(f"{mid} collides with a frozen kind")
 
 
 _check_tables()
