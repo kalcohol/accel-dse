@@ -357,6 +357,9 @@ GLM5_IDS = GLM5_BF16_IDS | GLM5_FP8_IDS
 # where it already is; this table does not move a catalog row.
 UNBOUND_PRODUCT_RULES: dict[str, str] = {
     "magistral-small": RULE_DENSE,
+    # 0.483: Qwen3-Coder-480B routed experts. vec_kind stays empty.
+    "qwen3-coder-480b-a35b": RULE_ROUTED_PLAIN,
+    "qwen3-coder-480b-a35b-fp8": RULE_ROUTED_PLAIN,
 }
 
 
