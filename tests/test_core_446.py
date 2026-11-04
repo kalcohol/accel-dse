@@ -87,7 +87,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_446():
-    assert __version__ == "0.484.0"
+    assert __version__ == "0.485.0"
 
 
 def test_dense_text_bills_fp32_rmsnorm_qk_and_the_product():
@@ -223,8 +223,9 @@ def test_non_vector_schedule_vision_and_other_models():
     bare = replace(m, layers=tuple(replace(L, vec_kind="") for L in m.layers), vec_kind="")
     for shard in (Shard(), Shard(tp=2)):
         assert _sched(m, ph, shard) == _sched(bare, ph, shard)
-    for mid in ("qwen3-vl-235b-a22b", "qwen3-vl-235b-a22b-fp8",
-                "qwen3-vl-30b-a3b", "qwen3-vl-30b-a3b-fp8",
+    # 0.485 bills qwen3-vl-235b-a22b through routed_plain_silu_product.
+    # vec_kind stays empty. The 30B rows stay on the historical tail.
+    for mid in ("qwen3-vl-30b-a3b", "qwen3-vl-30b-a3b-fp8",
                 "llama-3.1-8b"):
         other = get_model(mid)
         assert other.vec_kind == ""
