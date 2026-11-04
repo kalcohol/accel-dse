@@ -472,14 +472,12 @@ def test_qwen3_coder_bills_routed_product_by_existing_rule():
     assert got["mlp_mul"].a_fmt == "fp8" and got["expert_act"].a_fmt == "bf16"
     assert got["expert.gate_up"].a_fmt == "fp8" and got["expert.gate_up"].w_fmt == "bf16"
     assert got["attn_norm"].a_fmt == "bf16" and got["ffn_norm"].a_fmt == "bf16"
-    for mid in ("qwen3-235b-a22b", "qwen3-235b-a22b-fp8", "glm-4.5", "glm-4.6",
-                "qwen3-coder-next-fp8", "magistral-small"):
+    for mid in ("glm-4.5", "glm-4.6", "qwen3-coder-next-fp8", "qwen3-30b-a3b",
+                "qwen3-vl-235b-a22b"):
         other = get_model(mid)
-        if mid == "magistral-small":
-            assert other.layers[0].product_rule == vr.RULE_DENSE
-        else:
-            assert other.layers[0].product_rule == ""
-            assert "mlp_mul" not in _ffn_names(build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard()))
+        assert other.layers[0].product_rule == ""
+        assert "mlp_mul" not in _ffn_names(build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard()))
+    assert get_model("magistral-small").layers[0].product_rule == vr.RULE_DENSE
     rel = load_release(m.hf_id)
     cfg = _tc(rel["config"])
     try:
@@ -493,9 +491,109 @@ def test_qwen3_coder_bills_routed_product_by_existing_rule():
         raise AssertionError("shared expert accepted")
     except ValueError as exc:
         assert str(exc) == "routed silu product is not swiglu"
-    plain = get_model("qwen3-235b-a22b")
+    plain = get_model("qwen3-30b-a3b")
     skipped = _apply_unbound_product_rule(plain, _tc(load_release(plain.hf_id)["config"]))
     assert skipped is plain
+
+
+def test_qwen3_235b_bills_routed_product_by_existing_rule():
+    """0.484: Qwen3-235B-A22B silu(gate)*up uses routed_plain_silu_product.
+
+    vec_kind stays empty. Both rows stay in the front 60 and are not moved.
+    The product is the routed expert width. Block norms and q/k RMSNorm stay
+    on the historical path. No new vec_kind. glm-4.5 / glm-4.6 stay unbound.
+    """
+    from accel_dse.core.catalog import entries
+    from accel_dse.core.model import _apply_unbound_product_rule, _tc, from_release, load_release
+
+    width = 94 * 8 * 1536
+    assert width == 1_155_072
+    assert vr.UNBOUND_PRODUCT_RULES["qwen3-235b-a22b"] == vr.RULE_ROUTED_PLAIN
+    assert vr.UNBOUND_PRODUCT_RULES["qwen3-235b-a22b-fp8"] == vr.RULE_ROUTED_PLAIN
+    ids = [e["id"] for e in entries()]
+    assert ids.index("qwen3-235b-a22b") == 21
+    assert ids.index("qwen3-235b-a22b-fp8") == 42
+    assert ids[:60][-2:] == ["wan2.1-14b", "wan2.1-1.3b"]
+    assert "qwen3_235b" not in vr.FROZEN_PRODUCT_KINDS
+    assert "glm5_swiglu" in vr.FROZEN_PRODUCT_KINDS
+    ph = Phase("prefill", 1, 4096, 0)
+    one = Phase("prefill", 1, 1, 0)
+    for mid, af, ew, rw in (
+            ("qwen3-235b-a22b", "bf16", "bf16", "bf16"),
+            ("qwen3-235b-a22b-fp8", "fp8", "fp8", "fp32")):
+        m = get_model(mid)
+        assert m.vec_kind == ""
+        assert all(L.vec_kind == "" and L.product_rule == vr.RULE_ROUTED_PLAIN for L in m.layers)
+        assert m.hidden == 4096 and m.n_layers == 94 and not m.mtp_layers
+        assert m.layers[0].ffn.d_expert == 1536 and m.layers[0].ffn.top_k == 8
+        assert m.layers[0].ffn.n_experts == 128 and m.layers[0].ffn.n_shared == 0
+        assert m.layers[0].attn_linears[0].n == 64 * 128
+        assert m.layers[0].attn_linears[0].n != m.hidden
+        assert m.param_check()["rel_err"] == 0.0
+        ops = build_rank_ops(m, 0, ph, Shard())
+        names = _ffn_names(ops)
+        assert names == ("moe.router", "expert.gate_up", "expert_act", "mlp_mul", "expert.down")
+        by = {o.name: o for o in ops}
+        assert by["mlp_mul"].vec == float(4096 * 8 * 1536) and by["mlp_mul"].sfu == 0.0
+        assert by["mlp_mul"].a_fmt == af and by["mlp_mul"].flops == 0.0
+        assert by["expert_act"].a_fmt == "bf16"
+        assert by["expert_act"].vec == 4096 * 8 * 1536 * 4
+        assert by["expert_act"].sfu == float(4096 * 8 * 1536 * 2)
+        assert by["attn_norm"].a_fmt == "bf16" and by["ffn_norm"].a_fmt == "bf16"
+        assert "q_rms" not in by and "k_rms" not in by
+        assert by["expert.gate_up"].k == 4096 and by["expert.gate_up"].n == 2 * 1536
+        assert by["expert.down"].k == 1536 and by["expert.down"].n == 4096
+        assert by["expert.gate_up"].w_fmt == ew and by["moe.router"].w_fmt == rw
+        bare = replace(m, layers=tuple(replace(L, product_rule="") for L in m.layers))
+        bare_ops = build_rank_ops(bare, 0, ph, Shard())
+        assert _gemm_sig(ops) == _gemm_sig(bare_ops)
+        assert _ffn_names(bare_ops) == ("moe.router", "expert.gate_up", "expert.down", "expert_act")
+        got = sum(next(o for o in build_rank_ops(m, li, one, Shard()) if o.name == "mlp_mul").vec
+                  for li in range(m.n_layers))
+        assert got == width
+        head = {o.name: o for o in head_ops(m, ph, Shard())}
+        assert head["final_norm"].a_fmt == "bf16" and head["final_norm"].sfu == 0.0
+    m = get_model("qwen3-235b-a22b")
+    split = build_rank_ops(m, 0, ph, Shard(tp=2, ep=2))
+    mul = next(o for o in split if o.name == "mlp_mul")
+    assert mul.vec * 2 == 4096 * 8 * 1536
+    assert next(o for o in split if o.name == "expert.down").k == 1536
+    narrow = build_rank_ops(m, 0, ph, Shard(tp=2, etp=2))
+    assert next(o for o in narrow if o.name == "mlp_mul").vec * 2 == 4096 * 8 * 1536
+    assert next(o for o in narrow if o.name == "expert.down").k == 768
+    try:
+        build_rank_ops(m, 0, ph, Shard(tp=2))
+        raise AssertionError("tp without ep accepted")
+    except ValueError as exc:
+        assert "ep" in str(exc) and "tp" in str(exc)
+    fp8 = replace(m, act_fmt="fp8")
+    got = {o.name: o for o in build_rank_ops(fp8, 0, ph, Shard())}
+    assert got["mlp_mul"].a_fmt == "fp8" and got["expert_act"].a_fmt == "bf16"
+    assert got["expert.gate_up"].a_fmt == "fp8" and got["expert.gate_up"].w_fmt == "bf16"
+    assert got["attn_norm"].a_fmt == "bf16" and got["ffn_norm"].a_fmt == "bf16"
+    for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-235b-a22b",
+                "qwen3-vl-235b-a22b-fp8", "qwen3-coder-next-fp8"):
+        other = get_model(mid)
+        assert other.vec_kind != "glm5_swiglu"
+        assert other.layers[0].product_rule == ""
+        assert "mlp_mul" not in _ffn_names(build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard()))
+    assert get_model("qwen3-coder-480b-a35b").layers[0].product_rule == vr.RULE_ROUTED_PLAIN
+    rel = load_release(m.hf_id)
+    cfg = _tc(rel["config"])
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "hidden_act": "gelu"})
+        raise AssertionError("gelu accepted")
+    except ValueError as exc:
+        assert str(exc) == "qwen3 235b hidden_act is not silu"
+    shared = replace(m.layers[0], ffn=replace(m.layers[0].ffn, n_shared=1, d_shared=1536))
+    try:
+        build_rank_ops(replace(m, layers=(shared,) + m.layers[1:]), 0, ph, Shard())
+        raise AssertionError("shared expert accepted")
+    except ValueError as exc:
+        assert str(exc) == "routed silu product is not swiglu"
+    smaller = get_model("qwen3-30b-a3b")
+    skipped = _apply_unbound_product_rule(smaller, _tc(load_release(smaller.hf_id)["config"]))
+    assert skipped is smaller
 
 
 def test_phase_b_predicate_leaves_foreign_id_untagged():

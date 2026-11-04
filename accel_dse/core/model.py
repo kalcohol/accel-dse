@@ -472,6 +472,8 @@ class Layer:
     # stays historical.
     # 0.483 Qwen3-Coder-480B keeps vec_kind empty and sets product_rule to
     # routed_plain_silu_product. Both rows stay outside the front 60.
+    # 0.484 Qwen3-235B-A22B keeps vec_kind empty and sets product_rule to
+    # routed_plain_silu_product. Both rows stay in the front 60.
     vec_kind: str = ""
     product_rule: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -7862,6 +7864,160 @@ def _bill_qwen3_coder_product(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, notes=spec.notes + (note,))
 
 
+# 0.484: Qwen3-235B-A22B. Both rows stay inside the front 60.
+# The published expert forward is the same Qwen3MoeExperts act_fn(gate) * up.
+_QWEN3_235B_IDS = frozenset({
+    "qwen3-235b-a22b",
+    "qwen3-235b-a22b-fp8",
+})
+_QWEN3_235B_FP8 = "qwen3-235b-a22b-fp8"
+_QWEN3_235B_GEOM = (4096, 12288, 1536, 128, 8, 94, 64, 4, 128)
+
+
+def _bill_qwen3_235b_product(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.484: bill published Qwen3-235B-A22B silu(gate)*up.
+
+    Qwen3MoeExperts.forward is act_fn(gate) * up, then down, then the
+    routing-weight scale. hidden_act is silu. The class does not upcast
+    the product. SiLU stays expert_act and moves before expert.down.
+    The product is mlp_mul on the useful token-expert pairs. Width is
+    moe_intermediate_size, not the fused gate_up rows. Ninety-four sparse
+    layers, top-8, width 1536, make 94 * 8 * 1536 = 1,155,072 elements
+    per token. decoder_sparse_step is 1 and mlp_only_layers is empty, so
+    every layer is Qwen3MoeSparseMoeBlock. There is no shared expert.
+    vec_kind stays empty. product_rule is the existing
+    routed_plain_silu_product id. Block RMSNorm stays on the historical
+    dtype. q/k RMSNorm stays off this bill. Both rows stay in the first
+    60 catalog rows and are not moved.
+    """
+    if spec.id not in _QWEN3_235B_IDS:
+        raise ValueError("qwen3 235b id is not the published row")
+    if c.get("model_type") != "qwen3_moe":
+        raise ValueError("qwen3 235b model_type is not qwen3_moe")
+    if c.get("architectures") != ["Qwen3MoeForCausalLM"]:
+        raise ValueError("qwen3 235b architecture is not qwen3_moe")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("qwen3 235b hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("qwen3 235b swiglu_limit is set")
+    if c.get("decoder_sparse_step") != 1:
+        raise ValueError("qwen3 235b decoder_sparse_step is not 1")
+    if c.get("mlp_only_layers") not in ([], None):
+        raise ValueError("qwen3 235b mlp_only_layers is not empty")
+    if c.get("first_k_dense_replace") not in (None, 0):
+        raise ValueError("qwen3 235b first_k_dense_replace is set")
+    if c.get("shared_expert_intermediate_size") not in (None, 0):
+        raise ValueError("qwen3 235b shared expert is set")
+    for key in ("num_shared_experts", "n_shared_experts", "n_routed_experts"):
+        if c.get(key):
+            raise ValueError("qwen3 235b shared expert is set")
+    if c.get("norm_topk_prob") is not True:
+        raise ValueError("qwen3 235b norm_topk_prob is not true")
+    if c.get("output_router_logits") is not False:
+        raise ValueError("qwen3 235b output_router_logits is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("qwen3 235b attention_dropout is not 0")
+    if c.get("router_aux_loss_coef") != 0.001:
+        raise ValueError("qwen3 235b router_aux_loss_coef is not 0.001")
+    if c.get("sliding_window") is not None:
+        raise ValueError("qwen3 235b sliding_window is not null")
+    if c.get("use_sliding_window") is True:
+        raise ValueError("qwen3 235b use_sliding_window is not false")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("qwen3 235b rope_scaling is not null")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("qwen3 235b layer_types is not full_attention")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("qwen3 235b tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-6:
+        raise ValueError("qwen3 235b rms_norm_eps is not 1e-6")
+    if c.get("torch_dtype") != "bfloat16":
+        raise ValueError("qwen3 235b dtype is not bfloat16")
+    if c.get("use_qk_norm") not in (None, True):
+        raise ValueError("qwen3 235b use_qk_norm is not true")
+    if c.get("qkv_bias") not in (None, False):
+        raise ValueError("qwen3 235b qkv_bias is not false")
+    if c.get("attention_bias") is not False:
+        raise ValueError("qwen3 235b attention_bias is not false")
+    if c.get("num_nextn_predict_layers") not in (None, 0):
+        raise ValueError("qwen3 235b mtp is set")
+    h, dense_w, de, n_exp, topk, depth, heads, hkv, hd = _QWEN3_235B_GEOM
+    if (c.get("hidden_size"), c.get("intermediate_size"), c.get("moe_intermediate_size"),
+            c.get("num_experts"), c.get("num_experts_per_tok"), c.get("num_hidden_layers"),
+            c.get("num_attention_heads"), c.get("num_key_value_heads"), c.get("head_dim")) != (
+            h, dense_w, de, n_exp, topk, depth, heads, hkv, hd):
+        raise ValueError("qwen3 235b geometry is not the published row")
+    if c.get("num_local_experts") not in (None, n_exp):
+        raise ValueError("qwen3 235b geometry is not the published row")
+    fp8 = spec.id == _QWEN3_235B_FP8
+    qcfg = c.get("quantization_config")
+    if fp8:
+        if not isinstance(qcfg, dict):
+            raise ValueError("qwen3 235b quantization_config is not fp8")
+        if qcfg.get("quant_method") != "fp8" or qcfg.get("activation_scheme") != "dynamic":
+            raise ValueError("qwen3 235b quantization_config is not fp8")
+        if qcfg.get("weight_block_size") != [128, 128]:
+            raise ValueError("qwen3 235b quantization_config is not fp8")
+        if set(qcfg.get("modules_to_not_convert") or []) != _qwen3_coder_ignore(depth):
+            raise ValueError("qwen3 235b quantization_config is not fp8")
+        if (not spec.quantized_release or spec.act_fmt != "fp8"
+                or spec.fmt("expert").fmt != "fp8" or spec.fmt("attn").fmt != "fp8"
+                or spec.fmt("router").fmt != "fp32" or spec.fmt("embed").fmt != "fp32"
+                or spec.fmt("lm_head").fmt != "fp32" or spec.kv_fmt != "bf16"):
+            raise ValueError("qwen3 235b dtype is not fp8")
+    else:
+        if qcfg is not None or spec.quantized_release:
+            raise ValueError("qwen3 235b quantization_config is set")
+        if (spec.act_fmt != "bf16" or spec.fmt("expert").fmt != "bf16"
+                or spec.fmt("attn").fmt != "bf16" or spec.fmt("router").fmt != "bf16"
+                or spec.kv_fmt != "bf16"):
+            raise ValueError("qwen3 235b dtype is not bfloat16")
+    if len(spec.layers) != depth or spec.n_layers != depth:
+        raise ValueError("qwen3 235b depth is not num_hidden_layers")
+    if spec.mtp_layers:
+        raise ValueError("qwen3 235b mtp is set")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("qwen3 235b final norm is not one")
+    if spec.vec_kind or any(L.vec_kind for L in spec.layers):
+        raise ValueError("qwen3 235b vec_kind is already set")
+    if spec.hidden != h:
+        raise ValueError("qwen3 235b geometry is not the published row")
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "moe" or not f.gated or f.d_expert != de or f.top_k != topk
+                or f.n_experts != n_exp or f.latent or f.n_shared or f.d_shared or f.d_ff
+                or f.zero_experts or f.n_experts_b or f.d_expert_b or f.groups
+                or f.expert_role):
+            raise ValueError("qwen3 235b expert is not swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["router"]:
+            raise ValueError("qwen3 235b linears are not router")
+        router = L.ffn_linears[0]
+        if router.k != h or router.n != n_exp or router.split != "rep":
+            raise ValueError("qwen3 235b linears are not router")
+        if (L.core is None or L.core.kind != "gqa" or L.core.n_q != heads
+                or L.core.n_kv != hkv or L.core.qk_dim != hd or L.core.v_dim != hd
+                or L.core.window is not None or not L.core.qk_norm):
+            raise ValueError("qwen3 235b attention is not gqa head_dim")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("qwen3 235b attention is not q k v o")
+        q, k, v, o = L.attn_linears
+        if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
+                or o.k != heads * hd or o.n != h or q.n == h):
+            raise ValueError("qwen3 235b qk width is not heads times head_dim")
+        if L.misc_params != 2 * h + 2 * hd:
+            raise ValueError("qwen3 235b qk norm width is not head_dim")
+    note = (
+        "0.484: Qwen3-235B-A22B experts are down(silu(gate) * up). "
+        "SiLU stays expert_act. The product is mlp_mul on the useful "
+        "token-expert pairs. a_fmt follows act_fmt. The class does not upcast. "
+        "vec_kind stays empty. product_rule is routed_plain_silu_product. "
+        "There is no shared expert. Block RMSNorm stays on the historical dtype. "
+        "q/k RMSNorm stays off this bill. Both rows stay in the front 60."
+    )
+    layers = tuple(replace(L, product_rule=_RULE_ROUTED_PLAIN) for L in spec.layers)
+    return replace(spec, layers=layers, notes=spec.notes + (note,))
+
+
 def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
     """Point an unbound layer at an existing product rule.
 
@@ -7880,6 +8036,10 @@ def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
         if rule != _RULE_ROUTED_PLAIN:
             raise RuntimeError("qwen3 coder product rule is not routed_plain_silu_product")
         return _bill_qwen3_coder_product(spec, c)
+    if spec.id in _QWEN3_235B_IDS:
+        if rule != _RULE_ROUTED_PLAIN:
+            raise RuntimeError("qwen3 235b product rule is not routed_plain_silu_product")
+        return _bill_qwen3_235b_product(spec, c)
     raise RuntimeError(f"{spec.id} unbound product rule has no checker")
 
 
