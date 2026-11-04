@@ -103,7 +103,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_468():
-    assert __version__ == "0.483.0"
+    assert __version__ == "0.484.0"
 
 
 def test_fifteen_rows_bill_the_published_product():
@@ -248,8 +248,12 @@ def test_other_moe_rows_stay_untagged():
         assert m.vec_kind != "qwen35_moe"
         li = next(i for i, L in enumerate(m.layers) if L.ffn.kind == "moe") if any(
             L.ffn.kind == "moe" for L in m.layers) else 0
-        assert "mlp_mul" not in _names(build_rank_ops(m, li, ph, Shard())) or m.vec_kind in (
-            "qwen3", "carbon_llama", "qwen2_text", "mixtral_swiglu")
+        names = _names(build_rank_ops(m, li, ph, Shard()))
+        billed = m.vec_kind in ("qwen3", "carbon_llama", "qwen2_text", "mixtral_swiglu")
+        # 0.484 bills qwen3-235b-a22b through routed_plain_silu_product.
+        # vec_kind stays empty, so this row is still not qwen35_moe.
+        plain = m.layers[li].product_rule == "routed_plain_silu_product"
+        assert "mlp_mul" not in names or billed or plain
     ernie = get_model("ernie-4.5-300b-a47b-pt")
     li = next(i for i, L in enumerate(ernie.layers) if L.ffn.kind == "moe")
     names = _names(build_rank_ops(ernie, li, ph, Shard()))

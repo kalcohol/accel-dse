@@ -360,6 +360,9 @@ UNBOUND_PRODUCT_RULES: dict[str, str] = {
     # 0.483: Qwen3-Coder-480B routed experts. vec_kind stays empty.
     "qwen3-coder-480b-a35b": RULE_ROUTED_PLAIN,
     "qwen3-coder-480b-a35b-fp8": RULE_ROUTED_PLAIN,
+    # 0.484: Qwen3-235B-A22B routed experts. vec_kind stays empty.
+    "qwen3-235b-a22b": RULE_ROUTED_PLAIN,
+    "qwen3-235b-a22b-fp8": RULE_ROUTED_PLAIN,
 }
 
 
