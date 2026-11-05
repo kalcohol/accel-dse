@@ -857,6 +857,131 @@ def test_qwen38_27b_bills_dense_product_by_existing_rule():
         assert str(exc) == "qwen38 27b quantization_config is not fp8"
 
 
+def test_internlm2_20b_bills_dense_product_by_existing_rule():
+    """0.487: InternLM2.5-20B silu(gate)*up uses dense_silu_product.
+
+    vec_kind stays empty. The row is already in the front 60 and is not
+    moved. The product is the dense MLP width. Block RMSNorm and dynamic
+    NTK RoPE stay on the historical path. No new vec_kind. glm-4.5 /
+    glm-4.6 and the Qwen3.8 same-width clones stay unbound.
+    """
+    from accel_dse.core.catalog import entries
+    from accel_dse.core.model import (
+        _apply_unbound_product_rule, _tc, from_release, load_release)
+
+    width = 48 * 16384
+    assert width == 786_432
+    assert vr.UNBOUND_PRODUCT_RULES["internlm2-5-20b"] == vr.RULE_DENSE
+    ids = [e["id"] for e in entries()]
+    assert ids.index("internlm2-5-20b") == 35
+    assert "internlm2-5-20b" in ids[:60]
+    assert ids[:60][-2:] == ["wan2.1-14b", "wan2.1-1.3b"]
+    assert "internlm2_20b" not in vr.FROZEN_PRODUCT_KINDS
+    ph = Phase("prefill", 1, 4096, 0)
+    one = Phase("prefill", 1, 1, 0)
+    m = get_model("internlm2-5-20b")
+    assert m.vec_kind == ""
+    assert all(L.vec_kind == "" and L.product_rule == vr.RULE_DENSE for L in m.layers)
+    assert m.mtp_layers == ()
+    assert m.hidden == 6144 and m.n_layers == 48
+    assert m.layers[0].ffn.d_ff == 16384 and m.layers[0].ffn.kind == "dense"
+    assert m.layers[0].core.kind == "gqa"
+    assert m.layers[0].attn_linears[0].n == m.hidden
+    assert m.param_check()["rel_err"] == 0.0
+    ops = build_rank_ops(m, 0, ph, Shard())
+    names = _ffn_names(ops)
+    assert names == ("mlp.gate_up", "act", "mlp_mul", "mlp.down")
+    by = {o.name: o for o in ops}
+    assert by["mlp_mul"].vec == float(4096 * 16384) and by["mlp_mul"].sfu == 0.0
+    assert by["mlp_mul"].a_fmt == "bf16" and by["mlp_mul"].flops == 0.0
+    assert by["act"].a_fmt == "bf16"
+    assert by["act"].vec == 4096 * 16384 * 4
+    assert by["act"].sfu == float(4096 * 16384 * 2)
+    assert by["attn_norm"].a_fmt == "bf16" and by["ffn_norm"].a_fmt == "bf16"
+    assert by["attn_norm"].sfu == 4096 and by["ffn_norm"].sfu == 4096
+    assert "q_rms" not in by and "k_rms" not in by and "gelu" not in by
+    assert by["mlp.gate_up"].k == 6144 and by["mlp.gate_up"].n == 2 * 16384
+    assert by["mlp.down"].k == 16384 and by["mlp.down"].n == 6144
+    assert by["mlp.gate_up"].w_fmt == "bf16" and by["mlp.down"].w_fmt == "bf16"
+    bare = replace(m, layers=tuple(replace(L, product_rule="") for L in m.layers))
+    bare_ops = build_rank_ops(bare, 0, ph, Shard())
+    assert _gemm_sig(ops) == _gemm_sig(bare_ops)
+    assert _ffn_names(bare_ops) == ("mlp.gate_up", "mlp.down", "act")
+    assert by["rope"].vec == {o.name: o for o in bare_ops}["rope"].vec
+    got = sum(next(o for o in build_rank_ops(m, li, one, Shard()) if o.name == "mlp_mul").vec
+              for li in range(m.n_layers))
+    assert got == width
+    flops = 0.0
+    bare_flops = 0.0
+    for li in range(m.n_layers):
+        flops += sum(o.flops for o in build_rank_ops(m, li, ph, Shard())
+                     if o.kind == "gemm" and o.name.startswith("mlp."))
+        bare_flops += sum(o.flops for o in build_rank_ops(bare, li, ph, Shard())
+                          if o.kind == "gemm" and o.name.startswith("mlp."))
+    assert flops == bare_flops == 118.747255799808 * 1e12
+    head = {o.name: o for o in head_ops(m, ph, Shard())}
+    bare_head = {o.name: o for o in head_ops(bare, ph, Shard())}
+    assert head["final_norm"].a_fmt == "bf16" and head["final_norm"].sfu == 0.0
+    assert head["final_norm"].vec == bare_head["final_norm"].vec == 4096 * 6144 * 4
+    split = build_rank_ops(m, 0, ph, Shard(tp=2))
+    assert next(o for o in split if o.name == "mlp_mul").vec * 2 == 4096 * 16384
+    assert next(o for o in split if o.name == "mlp.down").k == 16384 // 2
+    narrow = build_rank_ops(m, 0, ph, Shard(tp=4))
+    assert next(o for o in narrow if o.name == "mlp_mul").vec * 4 == 4096 * 16384
+    assert next(o for o in narrow if o.name == "mlp.down").k == 16384 // 4
+    eighth = build_rank_ops(m, 0, ph, Shard(tp=8))
+    assert next(o for o in eighth if o.name == "mlp_mul").vec * 8 == 4096 * 16384
+    assert next(o for o in eighth if o.name == "mlp.down").k == 16384 // 8
+    fp8 = replace(m, act_fmt="fp8")
+    got_fp8 = {o.name: o for o in build_rank_ops(fp8, 0, ph, Shard())}
+    assert got_fp8["act"].a_fmt == "fp8" and got_fp8["mlp_mul"].a_fmt == "fp8"
+    assert got_fp8["mlp.gate_up"].a_fmt == "fp8" and got_fp8["mlp.gate_up"].w_fmt == "bf16"
+    assert got_fp8["attn_norm"].a_fmt == "bf16" and got_fp8["ffn_norm"].a_fmt == "bf16"
+    for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
+                "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
+                "phi-4", "minimax-m2", "internlm3-8b", "qwen3.5-9b"):
+        other = get_model(mid)
+        assert other.vec_kind != "glm5_swiglu"
+        assert other.layers[0].product_rule == ""
+        assert "mlp_mul" not in _ffn_names(build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard()))
+    assert get_model("qwen3.8-27b").layers[0].product_rule == vr.RULE_DENSE
+    assert get_model("magistral-small").layers[0].product_rule == vr.RULE_DENSE
+    rel = load_release(m.hf_id)
+    cfg = _tc(rel["config"])
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "hidden_act": "gelu"})
+        raise AssertionError("gelu accepted")
+    except ValueError as exc:
+        assert str(exc) == "internlm2 20b hidden_act is not silu"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "rope_scaling": None})
+        raise AssertionError("null rope accepted")
+    except ValueError as exc:
+        assert str(exc) == "internlm2 20b rope_scaling is not dynamic"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "bias": True})
+        raise AssertionError("bias accepted")
+    except ValueError as exc:
+        assert str(exc) == "internlm2 20b bias is not false"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "pretraining_tp": 2})
+        raise AssertionError("pretraining_tp accepted")
+    except ValueError as exc:
+        assert str(exc) == "internlm2 20b pretraining_tp is not 1"
+    ungated = replace(m.layers[0], ffn=replace(m.layers[0].ffn, gated=False))
+    try:
+        build_rank_ops(replace(m, layers=(ungated,) + m.layers[1:]), 0, ph, Shard())
+        raise AssertionError("ungated accepted")
+    except ValueError as exc:
+        assert str(exc) == "dense silu product is not gate_up then down"
+    phi = get_model("phi-4")
+    skipped = _apply_unbound_product_rule(phi, _tc(load_release(phi.hf_id)["config"]))
+    assert skipped is phi
+    ready = get_model("qwen3.8-27b-ready")
+    skipped_ready = _apply_unbound_product_rule(ready, _tc(load_release(ready.hf_id)["config"]))
+    assert skipped_ready is ready
+
+
 def test_phase_b_predicate_leaves_foreign_id_untagged():
     from accel_dse.core.model import _apply_one_predicate, _tc, load_release
 

@@ -371,6 +371,10 @@ UNBOUND_PRODUCT_RULES: dict[str, str] = {
     # Qwen3_5MLP is down(act_fn(gate) * up). 64 * 17408 = 1,114,112.
     "qwen3.8-27b": RULE_DENSE,
     "qwen3.8-27b-fp8": RULE_DENSE,
+    # 0.487: InternLM2.5-20B dense MLP. vec_kind stays empty.
+    # InternLM2MLP is w2(act_fn(w1) * w3). 48 * 16384 = 786,432.
+    # The row is already inside the front 60 (index 35).
+    "internlm2-5-20b": RULE_DENSE,
 }
 
 
