@@ -112,7 +112,7 @@ def _ffn(ops):
 
 
 def test_version_is_479():
-    assert __version__ == "0.487.0"
+    assert __version__ == "0.488.0"
 
 
 def test_five_rows_bill_the_shared_product():

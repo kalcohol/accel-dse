@@ -484,6 +484,9 @@ class Layer:
     # dense_silu_product. The row is already in the front 60 and is not
     # moved. Block RMSNorm stays on the historical dtype. Dynamic NTK RoPE
     # stays on the existing rope op.
+    # 0.488 MiniMax-M2 / M2.1 / M2.5 / M2.7 keep vec_kind empty and set
+    # product_rule to routed_plain_silu_product. All four rows stay outside
+    # the front 60. Full-width q/k RMSNorm and partial RoPE stay off this bill.
     vec_kind: str = ""
     product_rule: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -8619,6 +8622,194 @@ def _bill_internlm2_20b_product(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, notes=spec.notes + (note,))
 
 
+# 0.488: MiniMax-M2 / M2.1 / M2.5 / M2.7. All four rows stay outside the front 60.
+# MiniMaxM2MLP.forward is w2(act_fn(w1) * w3). The routing weight multiplies
+# after down. shared_intermediate_size is 0, so there is no shared expert.
+_MINIMAX_M2_IDS = frozenset({
+    "minimax-m2",
+    "minimax-m2.1",
+    "minimax-m2.5",
+    "minimax-m2.7",
+})
+_MINIMAX_M2_CTX = {
+    "minimax-m2": 196608,
+    "minimax-m2.1": 196608,
+    "minimax-m2.5": 196608,
+    "minimax-m2.7": 204800,
+}
+_MINIMAX_M2_GEOM = (3072, 1536, 256, 8, 62, 48, 8, 128)
+_MINIMAX_M2_IGNORE = ["gate", "e_score_correction_bias", "lm_head"]
+_MINIMAX_M2_ATTN = [1] * 62
+
+
+def _bill_minimax_m2_product(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.488: bill published MiniMax-M2 silu(gate)*up.
+
+    MiniMaxM2MLP.forward (modeling_minimax_m2.py) is
+    w2(act_fn(w1(x)) * w3(x)). w1 is the gate, w3 is up, w2 is down.
+    hidden_act is silu. ACT2FN["silu"] is x * sigmoid(x). The MLP
+    linears are bias=False and the class does not upcast the product.
+    MiniMaxM2Experts multiplies the routing weight after that MLP, so
+    the scale is not this product. SiLU stays expert_act and moves
+    before expert.down. The product is mlp_mul on the useful
+    token-expert pairs. Width is intermediate_size, not the fused
+    gate_up rows. Sixty-two layers, top-8, width 1536, make
+    62 * 8 * 1536 = 761,856 elements per token.
+    MiniMaxM2SparseMoeBlock has experts and a gate only.
+    shared_intermediate_size is 0, so there is no shared expert.
+    mlp_intermediate_size is unused by the class. Every decoder layer
+    is this block. attn_type_list is all ones, so every layer is GQA.
+    vec_kind stays empty. product_rule is the existing
+    routed_plain_silu_product id. Block RMSNorm is the T5 recipe and
+    stays on the historical dtype. Full-width q/k RMSNorm stays off
+    this bill. Partial RoPE (rotary_dim 64) stays on the existing rope
+    op. use_mtp is true, but the class builds no MTP modules and the
+    header has no MTP tensors. The four rows stay outside the first 60
+    catalog rows. There is no bf16 twin.
+    """
+    if spec.id not in _MINIMAX_M2_IDS:
+        raise ValueError("minimax m2 id is not the published row")
+    if c.get("model_type") != "minimax_m2":
+        raise ValueError("minimax m2 model_type is not minimax_m2")
+    if c.get("architectures") != ["MiniMaxM2ForCausalLM"]:
+        raise ValueError("minimax m2 architecture is not minimax m2")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("minimax m2 hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("minimax m2 swiglu_limit is set")
+    if c.get("shared_intermediate_size") != 0:
+        raise ValueError("minimax m2 shared expert is set")
+    if c.get("shared_moe_mode") not in (None, "sigmoid"):
+        raise ValueError("minimax m2 shared_moe_mode is not sigmoid")
+    if c.get("mlp_intermediate_size") not in (None, 8192):
+        raise ValueError("minimax m2 mlp_intermediate_size is not the release")
+    for key in ("num_shared_experts", "n_shared_experts",
+                "shared_expert_intermediate_size", "n_routed_experts",
+                "num_experts", "moe_intermediate_size", "first_k_dense_replace",
+                "vision_config", "text_config", "mtp_num_hidden_layers",
+                "num_nextn_predict_layers"):
+        if c.get(key):
+            raise ValueError("minimax m2 extra key is set")
+    if c.get("mlp_layer_types"):
+        raise ValueError("minimax m2 mlp_layer_types is set")
+    for key in ("layernorm_full_attention_alpha", "layernorm_linear_attention_alpha",
+                "layernorm_mlp_alpha"):
+        if c.get(key) is not None:
+            raise ValueError("minimax m2 layernorm alpha is set")
+    for key in ("layernorm_full_attention_beta", "layernorm_linear_attention_beta",
+                "layernorm_mlp_beta"):
+        if c.get(key) not in (None, 1.0):
+            raise ValueError("minimax m2 layernorm beta is not 1")
+    if c.get("attn_type_list") != _MINIMAX_M2_ATTN:
+        raise ValueError("minimax m2 attn_type_list is not full attention")
+    if c.get("scoring_func") != "sigmoid":
+        raise ValueError("minimax m2 scoring_func is not sigmoid")
+    if c.get("use_qk_norm") is not True:
+        raise ValueError("minimax m2 use_qk_norm is not true")
+    if c.get("qk_norm_type") != "per_layer":
+        raise ValueError("minimax m2 qk_norm_type is not per_layer")
+    if c.get("use_routing_bias") is not True:
+        raise ValueError("minimax m2 use_routing_bias is not true")
+    if c.get("use_mtp") is not True or c.get("num_mtp_modules") != 3:
+        raise ValueError("minimax m2 use_mtp is not the release")
+    if c.get("mtp_transformer_layers") != 1:
+        raise ValueError("minimax m2 use_mtp is not the release")
+    if c.get("router_jitter_noise") not in (None, 0, 0.0):
+        raise ValueError("minimax m2 router_jitter_noise is not 0")
+    if c.get("attention_dropout") not in (None, 0, 0.0):
+        raise ValueError("minimax m2 attention_dropout is not 0")
+    if c.get("output_router_logits") not in (None, False):
+        raise ValueError("minimax m2 output_router_logits is not false")
+    if c.get("router_aux_loss_coef") not in (None, 0.001):
+        raise ValueError("minimax m2 router_aux_loss_coef is not the release")
+    if c.get("sliding_window") is not None:
+        raise ValueError("minimax m2 sliding_window is set")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("minimax m2 rope_scaling is not null")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("minimax m2 tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-6:
+        raise ValueError("minimax m2 rms_norm_eps is not 1e-6")
+    if c.get("rope_theta") != 5_000_000:
+        raise ValueError("minimax m2 rope_theta is not 5000000")
+    if c.get("vocab_size") != 200064:
+        raise ValueError("minimax m2 vocab_size is not 200064")
+    if c.get("max_position_embeddings") != _MINIMAX_M2_CTX[spec.id]:
+        raise ValueError("minimax m2 max_position_embeddings is not the row")
+    h, de, n_exp, topk, depth, heads, hkv, hd = _MINIMAX_M2_GEOM
+    if (c.get("hidden_size"), c.get("intermediate_size"), c.get("num_local_experts"),
+            c.get("num_experts_per_tok"), c.get("num_hidden_layers"),
+            c.get("num_attention_heads"), c.get("num_key_value_heads"),
+            c.get("head_dim")) != (h, de, n_exp, topk, depth, heads, hkv, hd):
+        raise ValueError("minimax m2 geometry is not the published row")
+    if c.get("rotary_dim") != hd // 2:
+        raise ValueError("minimax m2 rotary_dim is not half the head")
+    qcfg = c.get("quantization_config")
+    if not isinstance(qcfg, dict):
+        raise ValueError("minimax m2 quantization_config is not fp8")
+    if (qcfg.get("quant_method") != "fp8" or qcfg.get("activation_scheme") != "dynamic"
+            or qcfg.get("fmt") != "float8_e4m3fn"
+            or qcfg.get("weight_block_size") != [128, 128]
+            or qcfg.get("modules_to_not_convert") != _MINIMAX_M2_IGNORE):
+        raise ValueError("minimax m2 quantization_config is not fp8")
+    if (not spec.quantized_release or spec.act_fmt != "fp8"
+            or spec.fmt("expert").fmt != "fp8" or spec.fmt("attn").fmt != "fp8"
+            or spec.fmt("router").fmt != "fp32" or spec.fmt("embed").fmt != "bf16"
+            or spec.fmt("lm_head").fmt != "bf16" or spec.kv_fmt != "bf16"):
+        raise ValueError("minimax m2 dtype is not fp8")
+    if len(spec.layers) != depth or spec.n_layers != depth:
+        raise ValueError("minimax m2 depth is not num_hidden_layers")
+    if spec.mtp_layers:
+        raise ValueError("minimax m2 mtp is set")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("minimax m2 final norm is not one")
+    if spec.vec_kind or any(L.vec_kind for L in spec.layers):
+        raise ValueError("minimax m2 vec_kind is already set")
+    if spec.hidden != h:
+        raise ValueError("minimax m2 geometry is not the published row")
+    misc = 2 * h + (heads + hkv) * hd + n_exp
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "moe" or not f.gated or f.d_expert != de or f.top_k != topk
+                or f.n_experts != n_exp or f.latent or f.n_shared or f.d_shared or f.d_ff
+                or f.zero_experts or f.n_experts_b or f.d_expert_b or f.groups
+                or f.expert_role):
+            raise ValueError("minimax m2 expert is not swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["router"]:
+            raise ValueError("minimax m2 linears are not router")
+        router = L.ffn_linears[0]
+        if router.k != h or router.n != n_exp or router.split != "rep":
+            raise ValueError("minimax m2 linears are not router")
+        if (L.core is None or L.core.kind != "gqa" or L.core.n_q != heads
+                or L.core.n_kv != hkv or L.core.qk_dim != hd or L.core.v_dim != hd
+                or L.core.window is not None or L.core.rope_dim != 0
+                or L.core.rope_n != 0 or L.core.no_rope or L.core.lin
+                or not L.core.qk_norm):
+            raise ValueError("minimax m2 attention is not gqa")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("minimax m2 attention is not q k v o")
+        q, k, v, o = L.attn_linears
+        if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
+                or o.k != heads * hd or o.n != h or q.n == h):
+            raise ValueError("minimax m2 qk width is not heads times head_dim")
+        if L.misc_params != misc:
+            raise ValueError("minimax m2 qk norm width is not the full projection")
+    note = (
+        "0.488: MiniMax-M2 experts are down(silu(gate) * up). "
+        "SiLU stays expert_act. The product is mlp_mul on the useful "
+        "token-expert pairs. a_fmt follows act_fmt. The class does not upcast. "
+        "vec_kind stays empty. product_rule is routed_plain_silu_product. "
+        "There is no shared expert. Block RMSNorm stays on the historical dtype. "
+        "Full-width q/k RMSNorm stays off this bill. "
+        "Partial RoPE stays on the existing rope op. "
+        "The routing-weight multiply after down is not this product. "
+        "There is no MTP layer. The four rows stay outside the front 60. "
+        "There is no bf16 twin."
+    )
+    layers = tuple(replace(L, product_rule=_RULE_ROUTED_PLAIN) for L in spec.layers)
+    return replace(spec, layers=layers, notes=spec.notes + (note,))
+
+
 def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
     """Point an unbound layer at an existing product rule.
 
@@ -8653,6 +8844,10 @@ def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
         if rule != _RULE_DENSE:
             raise RuntimeError("internlm2 20b product rule is not dense_silu_product")
         return _bill_internlm2_20b_product(spec, c)
+    if spec.id in _MINIMAX_M2_IDS:
+        if rule != _RULE_ROUTED_PLAIN:
+            raise RuntimeError("minimax m2 product rule is not routed_plain_silu_product")
+        return _bill_minimax_m2_product(spec, c)
     raise RuntimeError(f"{spec.id} unbound product rule has no checker")
 
 

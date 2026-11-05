@@ -114,7 +114,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_463():
-    assert __version__ == "0.487.0"
+    assert __version__ == "0.488.0"
 
 
 def test_qwen25_72b_is_the_front60_row_and_reuses_qwen2_text():
