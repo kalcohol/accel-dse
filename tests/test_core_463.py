@@ -114,7 +114,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_463():
-    assert __version__ == "0.485.0"
+    assert __version__ == "0.486.0"
 
 
 def test_qwen25_72b_is_the_front60_row_and_reuses_qwen2_text():
@@ -398,9 +398,9 @@ def test_fingerprints_and_kpi():
     # 0.463 left these hashes in place. 0.464 moves the default pipe and the
     # no-DeepSeek-V4 pipe. Stage hashes stay.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "6381be58dbab8f57"
+    assert _fp({}) == "e690d8b4df648f44"
     assert _fpx({"exec_overlap": "stage"}) == "5c058c9ed0f8f61e"
-    assert _fpx({}) == "98a7a0911ec0eefc"
+    assert _fpx({}) == "8b2b2628ae241327"
     from accel_dse.core import evaluate as E
     with E.model_flags(FUSE_QKV=False):
         assert _kpi("qwen2.5-72b") == "51b90d8f5e68"

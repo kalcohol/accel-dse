@@ -88,7 +88,11 @@ def test_ready_draft_structure_and_params():
     assert len(m.mtp_layers) == 5 and all(L.core.window is None for L in m.mtp_layers)
     ours = sum(L.params(m.hidden) for L in m.mtp_layers) + m.mtp_extra_params * len(m.mtp_layers)
     assert abs(ours - 1857358337 - 4894720) < 10                 # draft + reader safetensors headers
-    assert m.layers == t.layers and m.vocab == t.vocab           # the target is Qwen3.8-27B as released
+    # 0.486 tags only the published target. The ReaDy row stays unbound.
+    assert tuple(replace(L, product_rule="") for L in m.layers) == tuple(
+        replace(L, product_rule="") for L in t.layers)
+    assert m.layers[0].product_rule == "" and t.layers[0].product_rule == "dense_silu_product"
+    assert m.vocab == t.vocab
 
 
 def test_spec_accept_from_tau():

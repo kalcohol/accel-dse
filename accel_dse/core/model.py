@@ -477,6 +477,9 @@ class Layer:
     # 0.485 Qwen3-VL-235B-A22B keeps vec_kind empty and sets product_rule
     # to routed_plain_silu_product. Both rows stay outside the front 60.
     # mRoPE and the vision tower stay on the historical ops.
+    # 0.486 Qwen3.8-27B keeps vec_kind empty and sets product_rule to
+    # dense_silu_product. The bf16 row stays in the front 60. The FP8 row
+    # stays outside. MTP, q/k RMSNorm, and the vision tower stay off this bill.
     vec_kind: str = ""
     product_rule: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -8229,6 +8232,264 @@ def _bill_qwen3_vl_235b_product(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, notes=spec.notes + (note,))
 
 
+# 0.486: Qwen3.8-27B dense MLP. The bf16 row stays inside the front 60.
+# Qwen3_5MLP.forward is down(act_fn(gate) * up). hidden_act is silu.
+_QWEN38_27B_IDS = frozenset({
+    "qwen3.8-27b",
+    "qwen3.8-27b-fp8",
+})
+_QWEN38_27B_FP8 = "qwen3.8-27b-fp8"
+_QWEN38_27B_GEOM = (5120, 17408, 64, 24, 4, 256)
+_QWEN38_27B_LINEAR = (16, 128, 48, 128, 4)
+_QWEN38_27B_LAYER_TYPES = tuple(
+    "full_attention" if (i + 1) % 4 == 0 else "linear_attention" for i in range(64))
+_QWEN38_27B_ROPE = {
+    "mrope_interleaved": True,
+    "mrope_section": [11, 11, 10],
+    "partial_rotary_factor": 0.25,
+    "rope_theta": 10000000,
+    "rope_type": "default",
+}
+_QWEN38_27B_VISION_DEPTH = 27
+_QWEN38_27B_DEEPSTACK = 3
+
+
+def _qwen38_27b_ignore() -> set[str]:
+    """Published FP8 modules_to_not_convert.
+
+    Language norms, the unused dense gate names, Gated-DeltaNet tensors,
+    q/k norms, embed, lm_head, and the one MTP block stay bf16. The vision
+    tower stays bf16, including the two bare tower prefixes. Depth 27 and
+    three deepstack mergers are the released ignore list. The text config
+    leaves deepstack_visual_indexes empty; the quant list still names them.
+    """
+    out = {
+        "lm_head",
+        "model.embed_tokens",
+        "visual",
+        "model.visual",
+        "mtp.fc",
+        "mtp.norm",
+        "mtp.pre_fc_norm_embedding",
+        "mtp.pre_fc_norm_hidden",
+    }
+    depth = _QWEN38_27B_GEOM[2]
+    for i in range(depth):
+        prefix = f"model.language_model.layers.{i}"
+        out.add(f"{prefix}.input_layernorm")
+        out.add(f"{prefix}.post_attention_layernorm")
+        out.add(f"{prefix}.mlp.gate")
+        out.add(f"{prefix}.mlp.shared_expert_gate")
+        if (i + 1) % 4 == 0:
+            out.add(f"{prefix}.self_attn.k_norm")
+            out.add(f"{prefix}.self_attn.q_norm")
+        else:
+            for name in ("A_log", "conv1d", "dt_bias", "in_proj_ba",
+                         "in_proj_b", "in_proj_a", "norm"):
+                out.add(f"{prefix}.linear_attn.{name}")
+    mtp = "mtp.layers.0"
+    for name in ("input_layernorm", "post_attention_layernorm", "mlp.gate",
+                 "mlp.shared_expert_gate", "self_attn.k_norm", "self_attn.q_norm"):
+        out.add(f"{mtp}.{name}")
+    out.update((
+        "model.visual.merger.linear_fc1",
+        "model.visual.merger.linear_fc2",
+        "model.visual.merger.norm",
+        "model.visual.patch_embed.proj",
+        "model.visual.pos_embed",
+        "visual.merger.linear_fc1",
+        "visual.merger.linear_fc2",
+        "visual.merger.norm",
+        "visual.patch_embed.proj",
+        "visual.pos_embed",
+    ))
+    for i in range(_QWEN38_27B_VISION_DEPTH):
+        out.add(f"model.visual.blocks.{i}.attn.proj")
+        out.add(f"model.visual.blocks.{i}.attn.qkv")
+        out.add(f"model.visual.blocks.{i}.mlp.linear_fc1")
+        out.add(f"model.visual.blocks.{i}.mlp.linear_fc2")
+        out.add(f"visual.blocks.{i}.attn.proj")
+        out.add(f"visual.blocks.{i}.attn.qkv_proj")
+        out.add(f"visual.blocks.{i}.mlp.linear_fc1")
+        out.add(f"visual.blocks.{i}.mlp.linear_fc2")
+    for i in range(_QWEN38_27B_DEEPSTACK):
+        for prefix in ("model.visual", "visual"):
+            out.add(f"{prefix}.deepstack_merger_list.{i}.linear_fc1")
+            out.add(f"{prefix}.deepstack_merger_list.{i}.linear_fc2")
+            out.add(f"{prefix}.deepstack_merger_list.{i}.norm")
+    return out
+
+
+def _bill_qwen38_27b_product(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.486: bill published Qwen3.8-27B dense silu(gate)*up.
+
+    Qwen3_5MLP.forward (transformers modeling_qwen3_5.py) is
+    down_proj(act_fn(gate_proj(x)) * up_proj(x)). hidden_act is silu.
+    ACT2FN["silu"] is x * sigmoid(x). The class does not upcast the
+    product. SiLU stays act and moves before mlp.down. The product is
+    mlp_mul. Width is intermediate_size, not the fused gate_up rows.
+    All 64 layers, linear and full, use this MLP, so the width is
+    64 * 17408 = 1,114,112 elements per token. The one MTP layer is the
+    same MLP and stays unbound, so the width does not include it.
+    vec_kind stays empty. product_rule is the existing dense_silu_product
+    id. Block RMSNorm stays on the historical dtype. q/k RMSNorm stays
+    off this bill. mRoPE stays on the existing rope op. The vision
+    tower's hidden_act is gelu_pytorch_tanh and is not this product.
+    The bf16 row stays in the first 60 catalog rows and is not moved.
+    The FP8 row stays outside.
+    """
+    if spec.id not in _QWEN38_27B_IDS:
+        raise ValueError("qwen38 27b id is not the published row")
+    if c.get("model_type") != "qwen3_5_text":
+        raise ValueError("qwen38 27b model_type is not qwen3_5_text")
+    if c.get("architectures") != ["Qwen3_5ForConditionalGeneration"]:
+        raise ValueError("qwen38 27b architecture is not qwen3_5")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("qwen38 27b hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("qwen38 27b swiglu_limit is set")
+    for key in ("num_experts", "num_local_experts", "n_routed_experts",
+                "num_experts_per_tok", "moe_intermediate_size",
+                "num_shared_experts", "n_shared_experts",
+                "shared_expert_intermediate_size"):
+        if c.get(key):
+            raise ValueError("qwen38 27b moe key is set")
+    if c.get("attention_bias") is not False:
+        raise ValueError("qwen38 27b attention_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("qwen38 27b attention_dropout is not 0")
+    if c.get("attn_output_gate") is not True:
+        raise ValueError("qwen38 27b attn_output_gate is not true")
+    if c.get("output_gate_type") != "swish":
+        raise ValueError("qwen38 27b output_gate_type is not swish")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("qwen38 27b tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-6:
+        raise ValueError("qwen38 27b rms_norm_eps is not 1e-6")
+    if c.get("dtype") != "bfloat16" or c.get("torch_dtype") not in (None, "bfloat16"):
+        raise ValueError("qwen38 27b dtype is not bfloat16")
+    if c.get("full_attention_interval") != 4:
+        raise ValueError("qwen38 27b full_attention_interval is not 4")
+    if tuple(c.get("layer_types") or ()) != _QWEN38_27B_LAYER_TYPES:
+        raise ValueError("qwen38 27b layer_types is not 3 linear then 1 full")
+    if c.get("partial_rotary_factor") != 0.25:
+        raise ValueError("qwen38 27b partial_rotary_factor is not 0.25")
+    if c.get("rope_parameters") != _QWEN38_27B_ROPE:
+        raise ValueError("qwen38 27b rope_parameters is not mrope")
+    if c.get("mtp_num_hidden_layers") != 1:
+        raise ValueError("qwen38 27b mtp is not one")
+    if c.get("mtp_use_dedicated_embeddings") is not False:
+        raise ValueError("qwen38 27b mtp embeddings are dedicated")
+    if c.get("language_model_only") is not False:
+        raise ValueError("qwen38 27b language_model_only is not false")
+    vision = c.get("vision_config")
+    if not isinstance(vision, dict) or vision.get("hidden_act") != "gelu_pytorch_tanh":
+        raise ValueError("qwen38 27b vision hidden_act is not gelu")
+    if vision.get("depth") != _QWEN38_27B_VISION_DEPTH:
+        raise ValueError("qwen38 27b vision depth is not 27")
+    if vision.get("deepstack_visual_indexes") not in ([], None):
+        raise ValueError("qwen38 27b vision deepstack is set")
+    h, inter, depth, heads, hkv, hd = _QWEN38_27B_GEOM
+    nk, dk, nv, dv, kern = _QWEN38_27B_LINEAR
+    if (c.get("hidden_size"), c.get("intermediate_size"), c.get("num_hidden_layers"),
+            c.get("num_attention_heads"), c.get("num_key_value_heads"), c.get("head_dim")) != (
+            h, inter, depth, heads, hkv, hd):
+        raise ValueError("qwen38 27b geometry is not the published row")
+    if (c.get("linear_num_key_heads"), c.get("linear_key_head_dim"),
+            c.get("linear_num_value_heads"), c.get("linear_value_head_dim"),
+            c.get("linear_conv_kernel_dim")) != (nk, dk, nv, dv, kern):
+        raise ValueError("qwen38 27b linear geometry is not the published row")
+    fp8 = spec.id == _QWEN38_27B_FP8
+    qcfg = c.get("quantization_config")
+    if fp8:
+        if not isinstance(qcfg, dict):
+            raise ValueError("qwen38 27b quantization_config is not fp8")
+        if qcfg.get("quant_method") != "fp8" or qcfg.get("activation_scheme") != "dynamic":
+            raise ValueError("qwen38 27b quantization_config is not fp8")
+        if qcfg.get("fmt") != "e4m3" or qcfg.get("weight_block_size") != [128, 128]:
+            raise ValueError("qwen38 27b quantization_config is not fp8")
+        if set(qcfg.get("modules_to_not_convert") or []) != _qwen38_27b_ignore():
+            raise ValueError("qwen38 27b quantization_config is not fp8")
+        if (not spec.quantized_release or spec.act_fmt != "fp8"
+                or spec.fmt("mlp").fmt != "fp8" or spec.fmt("attn").fmt != "fp8"
+                or spec.fmt("embed").fmt != "bf16" or spec.fmt("lm_head").fmt != "bf16"
+                or spec.fmt("lin_ba").fmt != "bf16" or spec.kv_fmt != "bf16"):
+            raise ValueError("qwen38 27b dtype is not fp8")
+    else:
+        if qcfg is not None or spec.quantized_release:
+            raise ValueError("qwen38 27b quantization_config is set")
+        if (spec.act_fmt != "bf16" or spec.fmt("mlp").fmt != "bf16"
+                or spec.fmt("attn").fmt != "bf16" or spec.kv_fmt != "bf16"):
+            raise ValueError("qwen38 27b dtype is not bfloat16")
+    if len(spec.layers) != depth or spec.n_layers != depth:
+        raise ValueError("qwen38 27b depth is not num_hidden_layers")
+    if len(spec.mtp_layers) != 1:
+        raise ValueError("qwen38 27b mtp is not one")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("qwen38 27b final norm is not one")
+    if spec.vec_kind or any(L.vec_kind for L in spec.layers) or spec.mtp_layers[0].vec_kind:
+        raise ValueError("qwen38 27b vec_kind is already set")
+    if spec.hidden != h:
+        raise ValueError("qwen38 27b geometry is not the published row")
+    qkv_n = 2 * nk * dk + nv * dv
+    for i, L in enumerate(spec.layers):
+        f = L.ffn
+        if (f.kind != "dense" or not f.gated or f.d_ff != inter or f.n_experts or f.top_k
+                or f.d_expert or f.n_shared or f.d_shared or f.latent):
+            raise ValueError("qwen38 27b mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("qwen38 27b mlp is not gate_up then down")
+        up, down = L.ffn_linears
+        if up.k != h or up.n != 2 * inter or down.k != inter or down.n != h:
+            raise ValueError("qwen38 27b mlp is not gate_up then down")
+        if (i + 1) % 4 == 0:
+            if (L.core is None or L.core.kind != "gqa" or L.core.n_q != heads
+                    or L.core.n_kv != hkv or L.core.qk_dim != hd or L.core.v_dim != hd
+                    or L.core.window is not None):
+                raise ValueError("qwen38 27b attention is not gqa head_dim")
+            if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+                raise ValueError("qwen38 27b attention is not q k v o")
+            q, k, v, o = L.attn_linears
+            if (q.k != h or q.n != heads * hd * 2 or k.n != hkv * hd or v.n != hkv * hd
+                    or o.k != heads * hd or o.n != h or q.n == h):
+                raise ValueError("qwen38 27b q width is not heads times head_dim times 2")
+            if L.misc_params != 2 * h + 2 * hd:
+                raise ValueError("qwen38 27b qk norm width is not head_dim")
+        else:
+            if (L.core is None or L.core.kind != "linear" or L.core.lin != "gdn"
+                    or L.core.n_state_heads != nv or L.core.state_dk != dk
+                    or L.core.state_dv != dv or L.core.conv_kernel != kern
+                    or L.core.lin_chunk != 64 or L.core.conv_channels != qkv_n):
+                raise ValueError("qwen38 27b linear attention is not gated deltanet")
+            if [ln.name for ln in L.attn_linears] != ["lin_qkv", "lin_z", "lin_ba", "lin_out"]:
+                raise ValueError("qwen38 27b linear attention is not qkv z ba out")
+            qkv, z, ba, out = L.attn_linears
+            if (qkv.k != h or qkv.n != qkv_n or z.n != nv * dv or ba.n != 2 * nv
+                    or out.k != nv * dv or out.n != h):
+                raise ValueError("qwen38 27b linear attention is not qkv z ba out")
+            if L.misc_params != qkv_n * kern + 2 * nv + dv + 2 * h:
+                raise ValueError("qwen38 27b linear misc is not the published row")
+    mtp = spec.mtp_layers[0]
+    if mtp.product_rule or mtp.vec_kind:
+        raise ValueError("qwen38 27b mtp is already tagged")
+    if (mtp.ffn.kind != "dense" or not mtp.ffn.gated or mtp.ffn.d_ff != inter
+            or [ln.name for ln in mtp.ffn_linears] != ["gate_up", "down"]):
+        raise ValueError("qwen38 27b mtp is not the dense mlp")
+    note = (
+        "0.486: Qwen3.8-27B MLP is down(silu(gate) * up). "
+        "SiLU stays act. The product is mlp_mul. "
+        "a_fmt follows act_fmt. The class does not upcast. "
+        "vec_kind stays empty. product_rule is dense_silu_product. "
+        "Block RMSNorm stays on the historical dtype. "
+        "q/k RMSNorm stays off this bill. mRoPE stays on the existing rope op. "
+        "The vision tower stays gelu_pytorch_tanh. "
+        "The MTP layer stays unbound. "
+        "The bf16 row stays in the front 60. The FP8 row stays outside."
+    )
+    layers = tuple(replace(L, product_rule=_RULE_DENSE) for L in spec.layers)
+    return replace(spec, layers=layers, notes=spec.notes + (note,))
+
+
 def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
     """Point an unbound layer at an existing product rule.
 
@@ -8255,6 +8516,10 @@ def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
         if rule != _RULE_ROUTED_PLAIN:
             raise RuntimeError("qwen3 vl 235b product rule is not routed_plain_silu_product")
         return _bill_qwen3_vl_235b_product(spec, c)
+    if spec.id in _QWEN38_27B_IDS:
+        if rule != _RULE_DENSE:
+            raise RuntimeError("qwen38 27b product rule is not dense_silu_product")
+        return _bill_qwen38_27b_product(spec, c)
     raise RuntimeError(f"{spec.id} unbound product rule has no checker")
 
 

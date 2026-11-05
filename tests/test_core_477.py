@@ -94,7 +94,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_477():
-    assert __version__ == "0.485.0"
+    assert __version__ == "0.486.0"
 
 
 def test_two_rows_bill_the_expert_product():
@@ -357,7 +357,7 @@ def test_fingerprints_and_kpi_stay():
     # These two rows are inside the first 60. Default decode ticks match
     # the untagged schedule at the hashed summary, and TP2 still refuses.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "6381be58dbab8f57"
+    assert _fp({}) == "e690d8b4df648f44"
     test_fingerprints_change_only_v4()
     from accel_dse.core import evaluate as E
     pins = {

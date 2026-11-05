@@ -103,7 +103,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_468():
-    assert __version__ == "0.485.0"
+    assert __version__ == "0.486.0"
 
 
 def test_fifteen_rows_bill_the_published_product():
@@ -251,9 +251,11 @@ def test_other_moe_rows_stay_untagged():
         names = _names(build_rank_ops(m, li, ph, Shard()))
         billed = m.vec_kind in ("qwen3", "carbon_llama", "qwen2_text", "mixtral_swiglu")
         # 0.484 bills qwen3-235b-a22b through routed_plain_silu_product.
-        # vec_kind stays empty, so this row is still not qwen35_moe.
+        # 0.486 bills qwen3.8-27b through dense_silu_product.
+        # vec_kind stays empty, so neither row is qwen35_moe.
         plain = m.layers[li].product_rule == "routed_plain_silu_product"
-        assert "mlp_mul" not in names or billed or plain
+        dense = m.layers[li].product_rule == "dense_silu_product"
+        assert "mlp_mul" not in names or billed or plain or dense
     ernie = get_model("ernie-4.5-300b-a47b-pt")
     li = next(i for i, L in enumerate(ernie.layers) if L.ffn.kind == "moe")
     names = _names(build_rank_ops(ernie, li, ph, Shard()))
@@ -316,7 +318,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_125 import test_fingerprints_change_only_v4
     from tests.test_core_coverage import _FULL_0651, _kpi
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "6381be58dbab8f57"
+    assert _fp({}) == "e690d8b4df648f44"
     test_fingerprints_change_only_v4()
     pins = {
         "qwen3-32b": "b975b7b3760e",
