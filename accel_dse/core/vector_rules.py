@@ -375,6 +375,13 @@ UNBOUND_PRODUCT_RULES: dict[str, str] = {
     # InternLM2MLP is w2(act_fn(w1) * w3). 48 * 16384 = 786,432.
     # The row is already inside the front 60 (index 35).
     "internlm2-5-20b": RULE_DENSE,
+    # 0.488: MiniMax-M2 family routed experts. vec_kind stays empty.
+    # MiniMaxM2MLP is w2(act_fn(w1) * w3). shared_intermediate_size is 0.
+    # 62 * 8 * 1536 = 761,856. All four rows stay outside the front 60.
+    "minimax-m2": RULE_ROUTED_PLAIN,
+    "minimax-m2.1": RULE_ROUTED_PLAIN,
+    "minimax-m2.5": RULE_ROUTED_PLAIN,
+    "minimax-m2.7": RULE_ROUTED_PLAIN,
 }
 
 

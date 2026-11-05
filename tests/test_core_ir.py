@@ -939,7 +939,7 @@ def test_internlm2_20b_bills_dense_product_by_existing_rule():
     assert got_fp8["attn_norm"].a_fmt == "bf16" and got_fp8["ffn_norm"].a_fmt == "bf16"
     for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
                 "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
-                "phi-4", "minimax-m2", "internlm3-8b", "qwen3.5-9b"):
+                "phi-4", "internlm3-8b", "qwen3.5-9b"):
         other = get_model(mid)
         assert other.vec_kind != "glm5_swiglu"
         assert other.layers[0].product_rule == ""
@@ -974,6 +974,177 @@ def test_internlm2_20b_bills_dense_product_by_existing_rule():
         raise AssertionError("ungated accepted")
     except ValueError as exc:
         assert str(exc) == "dense silu product is not gate_up then down"
+    phi = get_model("phi-4")
+    skipped = _apply_unbound_product_rule(phi, _tc(load_release(phi.hf_id)["config"]))
+    assert skipped is phi
+    ready = get_model("qwen3.8-27b-ready")
+    skipped_ready = _apply_unbound_product_rule(ready, _tc(load_release(ready.hf_id)["config"]))
+    assert skipped_ready is ready
+
+
+def test_minimax_m2_bills_routed_product_by_existing_rule():
+    """0.488: MiniMax-M2 silu(gate)*up uses routed_plain_silu_product.
+
+    vec_kind stays empty. The four rows stay outside the front 60 and are
+    not moved. The product is the routed expert width. Block RMSNorm,
+    full-width q/k RMSNorm, and partial RoPE stay on the historical path.
+    No new vec_kind. glm-4.5 / glm-4.6 stay unbound. phi-4 is smaller.
+    """
+    from accel_dse.core.catalog import entries
+    from accel_dse.core.model import (
+        _MINIMAX_M2_IGNORE, _apply_unbound_product_rule, _bill_minimax_m2_product,
+        _tc, from_release, load_release)
+
+    width = 62 * 8 * 1536
+    assert width == 761_856
+    assert _MINIMAX_M2_IGNORE == ["gate", "e_score_correction_bias", "lm_head"]
+    for mid in ("minimax-m2", "minimax-m2.1", "minimax-m2.5", "minimax-m2.7"):
+        assert vr.UNBOUND_PRODUCT_RULES[mid] == vr.RULE_ROUTED_PLAIN
+    ids = [e["id"] for e in entries()]
+    assert ids.index("minimax-m2.7") == 93
+    assert ids.index("minimax-m2") == 141
+    assert ids.index("minimax-m2.1") == 142
+    assert ids.index("minimax-m2.5") == 143
+    assert "minimax-m2" not in ids[:60]
+    assert "minimax-m2.7" not in ids[:60]
+    assert ids[:60][-2:] == ["wan2.1-14b", "wan2.1-1.3b"]
+    assert ids.index("internlm2-5-20b") == 35
+    assert "minimax_m2" not in vr.FROZEN_PRODUCT_KINDS
+    ph = Phase("prefill", 1, 4096, 0)
+    one = Phase("prefill", 1, 1, 0)
+    ctx = {"minimax-m2": 196608, "minimax-m2.1": 196608,
+           "minimax-m2.5": 196608, "minimax-m2.7": 204800}
+    for mid in ctx:
+        m = get_model(mid)
+        assert m.vec_kind == ""
+        assert all(L.vec_kind == "" and L.product_rule == vr.RULE_ROUTED_PLAIN for L in m.layers)
+        assert m.mtp_layers == ()
+        assert m.hidden == 3072 and m.n_layers == 62 and m.max_ctx == ctx[mid]
+        assert m.layers[0].ffn.kind == "moe" and m.layers[0].ffn.d_expert == 1536
+        assert m.layers[0].ffn.top_k == 8 and m.layers[0].ffn.n_experts == 256
+        assert m.layers[0].ffn.n_shared == 0 and m.layers[0].ffn.d_shared == 0
+        assert m.layers[0].core.kind == "gqa"
+        assert m.layers[0].attn_linears[0].n == 48 * 128
+        assert m.layers[0].attn_linears[0].n != m.hidden
+        assert m.layers[0].misc_params == 2 * 3072 + (48 + 8) * 128 + 256
+        assert m.act_fmt == "fp8" and m.quantized_release
+        assert m.fmt("router").fmt == "fp32" and m.fmt("expert").fmt == "fp8"
+        assert m.param_check()["rel_err"] == 0.0
+        assert m.params() == 228_689_764_864
+        assert any(n.startswith("0.488:") for n in m.notes)
+        ops = build_rank_ops(m, 0, ph, Shard())
+        names = _ffn_names(ops)
+        assert names == ("moe.router", "expert.gate_up", "expert_act", "mlp_mul", "expert.down")
+        by = {o.name: o for o in ops}
+        assert by["mlp_mul"].vec == float(4096 * 8 * 1536) and by["mlp_mul"].sfu == 0.0
+        assert by["mlp_mul"].a_fmt == "fp8" and by["mlp_mul"].flops == 0.0
+        assert by["expert_act"].a_fmt == "bf16"
+        assert by["expert_act"].vec == 4096 * 8 * 1536 * 4
+        assert by["expert_act"].sfu == float(4096 * 8 * 1536 * 2)
+        assert by["attn_norm"].a_fmt == "bf16" and by["ffn_norm"].a_fmt == "bf16"
+        assert by["attn_norm"].sfu == 4096 and by["ffn_norm"].sfu == 4096
+        assert "q_rms" not in by and "k_rms" not in by and "gelu" not in by
+        assert by["expert.gate_up"].k == 3072 and by["expert.gate_up"].n == 2 * 1536
+        assert by["expert.down"].k == 1536 and by["expert.down"].n == 3072
+        assert by["expert.gate_up"].w_fmt == "fp8" and by["moe.router"].w_fmt == "fp32"
+        assert round(by["expert.gate_up"].w_bits, 6) == 8.001953
+        bare = replace(m, layers=tuple(replace(L, product_rule="") for L in m.layers))
+        bare_ops = build_rank_ops(bare, 0, ph, Shard())
+        assert _gemm_sig(ops) == _gemm_sig(bare_ops)
+        assert _ffn_names(bare_ops) == ("moe.router", "expert.gate_up", "expert.down", "expert_act")
+        assert by["rope"].vec == {o.name: o for o in bare_ops}["rope"].vec
+        got = sum(next(o for o in build_rank_ops(m, li, one, Shard()) if o.name == "mlp_mul").vec
+                  for li in range(m.n_layers))
+        assert got == width
+        head = {o.name: o for o in head_ops(m, ph, Shard())}
+        bare_head = {o.name: o for o in head_ops(bare, ph, Shard())}
+        assert head["final_norm"].a_fmt == "bf16" and head["final_norm"].sfu == 0.0
+        assert head["final_norm"].vec == bare_head["final_norm"].vec == 4096 * 3072 * 4
+    m = get_model("minimax-m2")
+    flops = 0.0
+    bare = replace(m, layers=tuple(replace(L, product_rule="") for L in m.layers))
+    bare_flops = 0.0
+    for li in range(m.n_layers):
+        flops += sum(o.flops for o in build_rank_ops(m, li, ph, Shard())
+                     if o.kind == "gemm" and o.name.startswith("expert."))
+        bare_flops += sum(o.flops for o in build_rank_ops(bare, li, ph, Shard())
+                          if o.kind == "gemm" and o.name.startswith("expert."))
+    assert flops == bare_flops == 57.518202028032 * 1e12
+    try:
+        build_rank_ops(m, 0, ph, Shard(tp=2))
+        raise AssertionError("tp without ep accepted")
+    except ValueError as exc:
+        assert "ep" in str(exc) and "tp" in str(exc)
+    split = build_rank_ops(m, 0, ph, Shard(tp=2, ep=2))
+    assert next(o for o in split if o.name == "mlp_mul").vec * 2 == 4096 * 8 * 1536
+    assert next(o for o in split if o.name == "expert.down").k == 1536
+    narrow = build_rank_ops(m, 0, ph, Shard(tp=2, etp=2))
+    assert next(o for o in narrow if o.name == "mlp_mul").vec * 2 == 4096 * 8 * 1536
+    assert next(o for o in narrow if o.name == "expert.down").k == 768
+    eighth = build_rank_ops(m, 0, ph, Shard(tp=8, ep=8))
+    assert next(o for o in eighth if o.name == "mlp_mul").vec * 8 == 4096 * 8 * 1536
+    assert next(o for o in eighth if o.name == "expert.down").k == 1536
+    bf16 = replace(m, act_fmt="bf16")
+    got_bf16 = {o.name: o for o in build_rank_ops(bf16, 0, ph, Shard())}
+    assert got_bf16["mlp_mul"].a_fmt == "bf16" and got_bf16["expert_act"].a_fmt == "bf16"
+    assert got_bf16["expert.gate_up"].a_fmt == "bf16" and got_bf16["expert.gate_up"].w_fmt == "fp8"
+    assert got_bf16["attn_norm"].a_fmt == "bf16" and got_bf16["ffn_norm"].a_fmt == "bf16"
+    for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
+                "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
+                "phi-4", "internlm3-8b", "qwen3.5-9b", "minimax-m3", "mimo-v2.6-pro"):
+        other = get_model(mid)
+        assert other.vec_kind != "glm5_swiglu"
+        assert other.vec_kind != "minimax_swiglu"
+        assert other.layers[0].product_rule == ""
+        assert "mlp_mul" not in _ffn_names(build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard()))
+    assert get_model("internlm2-5-20b").layers[0].product_rule == vr.RULE_DENSE
+    assert get_model("qwen3-235b-a22b").layers[0].product_rule == vr.RULE_ROUTED_PLAIN
+    assert get_model("minimax-text-01").vec_kind == "minimax_swiglu"
+    assert get_model("minimax-text-01").layers[0].product_rule == ""
+    rel = load_release(m.hf_id)
+    cfg = _tc(rel["config"])
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "hidden_act": "gelu"})
+        raise AssertionError("gelu accepted")
+    except ValueError as exc:
+        assert str(exc) == "minimax m2 hidden_act is not silu"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "shared_intermediate_size": 9216})
+        raise AssertionError("shared expert accepted")
+    except ValueError as exc:
+        assert str(exc) == "minimax m2 shared expert is set"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "mlp_intermediate_size": 4096})
+        raise AssertionError("mlp width accepted")
+    except ValueError as exc:
+        assert str(exc) == "minimax m2 mlp_intermediate_size is not the release"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "max_position_embeddings": 204800})
+        raise AssertionError("m2.7 context accepted on m2")
+    except ValueError as exc:
+        assert str(exc) == "minimax m2 max_position_embeddings is not the row"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "attn_type_list": [0] + [1] * 61})
+        raise AssertionError("lightning layer accepted")
+    except ValueError as exc:
+        assert str(exc) == "minimax m2 attn_type_list is not full attention"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "swiglu_limit": 7.0})
+        raise AssertionError("swiglu limit accepted")
+    except ValueError as exc:
+        assert str(exc) == "minimax m2 swiglu_limit is set"
+    shared = replace(m.layers[0], ffn=replace(m.layers[0].ffn, n_shared=1, d_shared=1536))
+    try:
+        build_rank_ops(replace(m, layers=(shared,) + m.layers[1:]), 0, ph, Shard())
+        raise AssertionError("shared expert accepted")
+    except ValueError as exc:
+        assert str(exc) == "routed silu product is not swiglu"
+    tagged = replace(m, vec_kind="minimax_swiglu")
+    try:
+        _bill_minimax_m2_product(tagged, cfg)
+        raise AssertionError("tagged kind accepted")
+    except ValueError as exc:
+        assert str(exc) == "minimax m2 vec_kind is already set"
     phi = get_model("phi-4")
     skipped = _apply_unbound_product_rule(phi, _tc(load_release(phi.hf_id)["config"]))
     assert skipped is phi
