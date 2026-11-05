@@ -675,7 +675,7 @@ def test_qwen3_vl_235b_bills_routed_product_by_existing_rule():
     assert got["expert.gate_up"].a_fmt == "fp8" and got["expert.gate_up"].w_fmt == "bf16"
     assert got["attn_norm"].a_fmt == "bf16" and got["ffn_norm"].a_fmt == "bf16"
     for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
-                "qwen3-vl-30b-a3b-fp8", "qwen3.8-27b", "qwen3-coder-next-fp8"):
+                "qwen3-vl-30b-a3b-fp8", "qwen3-coder-next-fp8"):
         other = get_model(mid)
         assert other.vec_kind != "glm5_swiglu"
         assert other.layers[0].product_rule == ""
@@ -722,6 +722,139 @@ def test_qwen3_vl_235b_bills_routed_product_by_existing_rule():
         raise AssertionError("trimmed ignore list accepted")
     except ValueError as exc:
         assert str(exc) == "qwen3 vl 235b quantization_config is not fp8"
+
+
+def test_qwen38_27b_bills_dense_product_by_existing_rule():
+    """0.486: Qwen3.8-27B silu(gate)*up uses dense_silu_product.
+
+    vec_kind stays empty. The bf16 row stays in the front 60 and is not
+    moved. The FP8 row stays outside. The product is the dense MLP width.
+    MTP, block norms, q/k RMSNorm, mRoPE, and the vision tower stay on the
+    historical path. No new vec_kind. glm-4.5 / glm-4.6 stay unbound.
+    """
+    from accel_dse.core.catalog import entries
+    from accel_dse.core.model import (
+        _apply_unbound_product_rule, _qwen38_27b_ignore, _tc, from_release, load_release)
+
+    width = 64 * 17408
+    assert width == 1_114_112
+    assert len(_qwen38_27b_ignore()) == 882
+    assert vr.UNBOUND_PRODUCT_RULES["qwen3.8-27b"] == vr.RULE_DENSE
+    assert vr.UNBOUND_PRODUCT_RULES["qwen3.8-27b-fp8"] == vr.RULE_DENSE
+    ids = [e["id"] for e in entries()]
+    assert ids.index("qwen3.8-27b") == 7
+    assert ids.index("qwen3.8-27b-fp8") == 325
+    assert "qwen3.8-27b" in ids[:60]
+    assert "qwen3.8-27b-fp8" not in ids[:60]
+    assert ids[:60][-2:] == ["wan2.1-14b", "wan2.1-1.3b"]
+    assert "qwen38_27b" not in vr.FROZEN_PRODUCT_KINDS
+    ph = Phase("prefill", 1, 4096, 0)
+    one = Phase("prefill", 1, 1, 0)
+    for mid, af, mw in (
+            ("qwen3.8-27b", "bf16", "bf16"),
+            ("qwen3.8-27b-fp8", "fp8", "fp8")):
+        m = get_model(mid)
+        assert m.vec_kind == ""
+        assert all(L.vec_kind == "" and L.product_rule == vr.RULE_DENSE for L in m.layers)
+        assert m.mtp_layers[0].product_rule == "" and m.mtp_layers[0].vec_kind == ""
+        assert m.hidden == 5120 and m.n_layers == 64 and len(m.mtp_layers) == 1
+        assert m.layers[0].ffn.d_ff == 17408 and m.layers[0].ffn.kind == "dense"
+        assert m.layers[0].core.kind == "linear" and m.layers[3].core.kind == "gqa"
+        assert m.layers[3].attn_linears[0].n == 24 * 256 * 2
+        assert m.layers[3].attn_linears[0].n != m.hidden
+        assert m.param_check()["rel_err"] == 0.0
+        ops = build_rank_ops(m, 0, ph, Shard())
+        names = _ffn_names(ops)
+        assert names == ("mlp.gate_up", "act", "mlp_mul", "mlp.down")
+        by = {o.name: o for o in ops}
+        assert by["mlp_mul"].vec == float(4096 * 17408) and by["mlp_mul"].sfu == 0.0
+        assert by["mlp_mul"].a_fmt == af and by["mlp_mul"].flops == 0.0
+        assert by["act"].a_fmt == af
+        assert by["act"].vec == 4096 * 17408 * 4
+        assert by["act"].sfu == float(4096 * 17408 * 2)
+        assert by["attn_norm"].a_fmt == "bf16" and by["ffn_norm"].a_fmt == "bf16"
+        assert "q_rms" not in by and "k_rms" not in by and "gelu" not in by
+        assert by["mlp.gate_up"].k == 5120 and by["mlp.gate_up"].n == 2 * 17408
+        assert by["mlp.down"].k == 17408 and by["mlp.down"].n == 5120
+        assert by["mlp.gate_up"].w_fmt == mw and by["mlp.down"].w_fmt == mw
+        full = build_rank_ops(m, 3, ph, Shard())
+        assert _ffn_names(full) == ("mlp.gate_up", "act", "mlp_mul", "mlp.down")
+        assert {o.name: o for o in full}["mlp_mul"].vec == float(4096 * 17408)
+        bare = replace(m, layers=tuple(replace(L, product_rule="") for L in m.layers))
+        bare_ops = build_rank_ops(bare, 0, ph, Shard())
+        assert _gemm_sig(ops) == _gemm_sig(bare_ops)
+        assert _ffn_names(bare_ops) == ("mlp.gate_up", "mlp.down", "act")
+        full_by = {o.name: o for o in full}
+        bare_full = {o.name: o for o in build_rank_ops(bare, 3, ph, Shard())}
+        assert full_by["rope"].vec == bare_full["rope"].vec
+        got = sum(next(o for o in build_rank_ops(m, li, one, Shard()) if o.name == "mlp_mul").vec
+                  for li in range(m.n_layers))
+        assert got == width
+        mtp_names = _ffn_names(build_rank_ops(m, 0, one, Shard(), layer=m.mtp_layers[0]))
+        assert "mlp_mul" not in mtp_names
+        head = {o.name: o for o in head_ops(m, ph, Shard())}
+        assert head["final_norm"].a_fmt == "bf16" and head["final_norm"].sfu == 0.0
+    m = get_model("qwen3.8-27b")
+    split = build_rank_ops(m, 0, ph, Shard(tp=2))
+    assert next(o for o in split if o.name == "mlp_mul").vec * 2 == 4096 * 17408
+    assert next(o for o in split if o.name == "mlp.down").k == 17408 // 2
+    narrow = build_rank_ops(m, 3, ph, Shard(tp=4))
+    assert next(o for o in narrow if o.name == "mlp_mul").vec * 4 == 4096 * 17408
+    assert next(o for o in narrow if o.name == "mlp.down").k == 17408 // 4
+    fp8 = replace(m, act_fmt="fp8")
+    got = {o.name: o for o in build_rank_ops(fp8, 0, ph, Shard())}
+    assert got["act"].a_fmt == "fp8" and got["mlp_mul"].a_fmt == "fp8"
+    assert got["mlp.gate_up"].a_fmt == "fp8" and got["mlp.gate_up"].w_fmt == "bf16"
+    assert got["attn_norm"].a_fmt == "bf16" and got["ffn_norm"].a_fmt == "bf16"
+    published = get_model("qwen3.8-27b-fp8")
+    pw = next(o for o in build_rank_ops(published, 0, ph, Shard()) if o.name == "mlp.gate_up")
+    assert pw.w_fmt == "fp8" and round(pw.w_bits, 6) == 8.000977
+    for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
+                "qwen3.8-27b-ready", "qwen3.5-9b", "qwen3-coder-next-fp8"):
+        other = get_model(mid)
+        assert other.vec_kind != "glm5_swiglu"
+        assert other.layers[0].product_rule == ""
+        assert "mlp_mul" not in _ffn_names(build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard()))
+    assert get_model("magistral-small").layers[0].product_rule == vr.RULE_DENSE
+    assert get_model("qwen3-vl-235b-a22b").layers[0].product_rule == vr.RULE_ROUTED_PLAIN
+    rel = load_release(m.hf_id)
+    cfg = _tc(rel["config"])
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "hidden_act": "gelu"})
+        raise AssertionError("gelu accepted")
+    except ValueError as exc:
+        assert str(exc) == "qwen38 27b hidden_act is not silu"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "rope_parameters": None})
+        raise AssertionError("null rope accepted")
+    except ValueError as exc:
+        assert str(exc) == "qwen38 27b rope_parameters is not mrope"
+    vis = dict(cfg["vision_config"])
+    vis["hidden_act"] = "silu"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "vision_config": vis})
+        raise AssertionError("vision silu accepted")
+    except ValueError as exc:
+        assert str(exc) == "qwen35 vision hidden_act is not gelu_pytorch_tanh"
+    ungated = replace(m.layers[0], ffn=replace(m.layers[0].ffn, gated=False))
+    try:
+        build_rank_ops(replace(m, layers=(ungated,) + m.layers[1:]), 0, ph, Shard())
+        raise AssertionError("ungated accepted")
+    except ValueError as exc:
+        assert str(exc) == "dense silu product is not gate_up then down"
+    ready = get_model("qwen3.8-27b-ready")
+    skipped = _apply_unbound_product_rule(ready, _tc(load_release(ready.hf_id)["config"]))
+    assert skipped is ready
+    fp8_m = get_model("qwen3.8-27b-fp8")
+    fp8_rel = load_release(fp8_m.hf_id)
+    fp8_cfg = _tc(fp8_rel["config"])
+    bad_q = dict(fp8_cfg["quantization_config"])
+    bad_q["modules_to_not_convert"] = [n for n in bad_q["modules_to_not_convert"] if n != "lm_head"]
+    try:
+        from_release(fp8_m.id, fp8_m.hf_id, fp8_rel, {**fp8_cfg, "quantization_config": bad_q})
+        raise AssertionError("trimmed ignore list accepted")
+    except ValueError as exc:
+        assert str(exc) == "qwen38 27b quantization_config is not fp8"
 
 
 def test_phase_b_predicate_leaves_foreign_id_untagged():

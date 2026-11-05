@@ -92,7 +92,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_473():
-    assert __version__ == "0.485.0"
+    assert __version__ == "0.486.0"
 
 
 def test_one_row_bills_the_dense_product():
@@ -291,7 +291,7 @@ def test_fingerprints_and_kpi_stay():
     from tests.test_core_coverage import _FULL_0651, _kpi
     # Stage summaries of the front 60 stay. Pipe tpot last bits move.
     assert _fp({"exec_overlap": "stage"}) == "f54f33dfa13cdd41"
-    assert _fp({}) == "6381be58dbab8f57"
+    assert _fp({}) == "e690d8b4df648f44"
     test_fingerprints_change_only_v4()
     from accel_dse.core import evaluate as E
     pins = {

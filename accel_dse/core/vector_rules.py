@@ -367,6 +367,10 @@ UNBOUND_PRODUCT_RULES: dict[str, str] = {
     # The text class is Qwen3VLMoeTextExperts, not Qwen3MoeExperts.
     "qwen3-vl-235b-a22b": RULE_ROUTED_PLAIN,
     "qwen3-vl-235b-a22b-fp8": RULE_ROUTED_PLAIN,
+    # 0.486: Qwen3.8-27B dense MLP. vec_kind stays empty.
+    # Qwen3_5MLP is down(act_fn(gate) * up). 64 * 17408 = 1,114,112.
+    "qwen3.8-27b": RULE_DENSE,
+    "qwen3.8-27b-fp8": RULE_DENSE,
 }
 
 
