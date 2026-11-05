@@ -487,6 +487,10 @@ class Layer:
     # 0.488 MiniMax-M2 / M2.1 / M2.5 / M2.7 keep vec_kind empty and set
     # product_rule to routed_plain_silu_product. All four rows stay outside
     # the front 60. Full-width q/k RMSNorm and partial RoPE stay off this bill.
+    # 0.489 Phi-4 keeps vec_kind empty and sets product_rule to
+    # dense_silu_product. The row is already in the front 60 and is not
+    # moved. Block RMSNorm stays on the historical dtype. Full-head RoPE
+    # stays on the existing rope op.
     vec_kind: str = ""
     product_rule: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -8810,6 +8814,144 @@ def _bill_minimax_m2_product(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, notes=spec.notes + (note,))
 
 
+# 0.489: Phi-4. The row is already inside the front 60 (index 32).
+# Phi3MLP.forward chunks fused gate_up into gate and up, then
+# down(act_fn(gate) * up). hidden_act is silu. rope_scaling is null,
+# so the class rotates the whole head. There is one catalog row.
+_PHI4 = "phi-4"
+_PHI4_GEOM = (5120, 17920, 40, 40, 10, 128)
+
+
+def _bill_phi4_product(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.489: bill published Phi-4 dense silu(gate)*up.
+
+    Phi3MLP.forward (transformers 4.47 modeling_phi3.py) is
+    down_proj(act_fn(gate) * up) after chunking the fused gate_up
+    projection. hidden_act is silu. ACT2FN["silu"] is x * sigmoid(x).
+    Both linears are bias=False and the class does not upcast the
+    product. SiLU stays act and moves before mlp.down. The product is
+    mlp_mul. Width is intermediate_size, not the fused gate_up rows.
+    All 40 layers use this MLP, so the width is 40 * 17920 = 716,800
+    elements per token. There is no MTP layer. vec_kind stays empty.
+    product_rule is the existing dense_silu_product id. Block RMSNorm
+    is the T5 recipe in the class and stays on the historical dtype.
+    There is no q/k RMSNorm. rope_scaling is null, so
+    Phi3RotaryEmbedding is built on the full head_dim. The existing
+    rope op is unchanged. The published attention is one qkv_proj.
+    The IR already splits it into q / k / v / o. The row is already
+    inside the first 60 catalog rows (index 32) and is not moved.
+    There is no FP8 twin.
+    """
+    if spec.id != _PHI4:
+        raise ValueError("phi4 id is not the published row")
+    if c.get("model_type") != "phi3":
+        raise ValueError("phi4 model_type is not phi3")
+    if c.get("architectures") != ["Phi3ForCausalLM"]:
+        raise ValueError("phi4 architecture is not phi3")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("phi4 hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("phi4 swiglu_limit is set")
+    if "partial_rotary_factor" in c:
+        raise ValueError("phi4 partial_rotary_factor is set")
+    for key in ("num_experts", "num_local_experts", "n_routed_experts",
+                "num_experts_per_tok", "moe_intermediate_size",
+                "num_shared_experts", "n_shared_experts",
+                "shared_expert_intermediate_size", "vision_config",
+                "text_config", "mtp_num_hidden_layers",
+                "num_nextn_predict_layers"):
+        if c.get(key):
+            raise ValueError("phi4 extra key is set")
+    if c.get("attention_bias") is not False:
+        raise ValueError("phi4 attention_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("phi4 attention_dropout is not 0")
+    if c.get("resid_pdrop") not in (0, 0.0) or c.get("embd_pdrop") not in (0, 0.0):
+        raise ValueError("phi4 dropout is not 0")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("phi4 tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-5:
+        raise ValueError("phi4 rms_norm_eps is not 1e-5")
+    if c.get("torch_dtype") != "bfloat16":
+        raise ValueError("phi4 dtype is not bfloat16")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("phi4 rope_scaling is not null")
+    if c.get("rope_theta") != 250_000:
+        raise ValueError("phi4 rope_theta is not 250000")
+    if c.get("max_position_embeddings") != 16384:
+        raise ValueError("phi4 max_position_embeddings is not 16384")
+    if c.get("original_max_position_embeddings") != 16384:
+        raise ValueError("phi4 original_max_position_embeddings is not 16384")
+    if c.get("vocab_size") != 100352:
+        raise ValueError("phi4 vocab_size is not 100352")
+    if (c.get("bos_token_id"), c.get("eos_token_id"), c.get("pad_token_id")) != (
+            100257, 100265, 100349):
+        raise ValueError("phi4 token ids are not the published row")
+    if c.get("use_cache") is not True:
+        raise ValueError("phi4 use_cache is not true")
+    if c.get("sliding_window") is not None or c.get("use_sliding_window") is True:
+        raise ValueError("phi4 sliding_window is set")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("phi4 layer_types is not full_attention")
+    h, inter, depth, heads, hkv, hd = _PHI4_GEOM
+    if (c.get("hidden_size"), c.get("intermediate_size"), c.get("num_hidden_layers"),
+            c.get("num_attention_heads"), c.get("num_key_value_heads")) != (
+            h, inter, depth, heads, hkv):
+        raise ValueError("phi4 geometry is not the published row")
+    if c.get("head_dim") not in (None, hd):
+        raise ValueError("phi4 head_dim is not hidden over heads")
+    qcfg = c.get("quantization_config")
+    if qcfg is not None or spec.quantized_release:
+        raise ValueError("phi4 quantization_config is set")
+    if (spec.act_fmt != "bf16" or spec.fmt("mlp").fmt != "bf16"
+            or spec.fmt("attn").fmt != "bf16" or spec.kv_fmt != "bf16"):
+        raise ValueError("phi4 dtype is not bfloat16")
+    if len(spec.layers) != depth or spec.n_layers != depth:
+        raise ValueError("phi4 depth is not num_hidden_layers")
+    if spec.mtp_layers:
+        raise ValueError("phi4 mtp is set")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("phi4 final norm is not one")
+    if spec.vec_kind or any(L.vec_kind for L in spec.layers):
+        raise ValueError("phi4 vec_kind is already set")
+    if spec.hidden != h:
+        raise ValueError("phi4 geometry is not the published row")
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "dense" or not f.gated or f.d_ff != inter or f.n_experts or f.top_k
+                or f.d_expert or f.n_shared or f.d_shared or f.latent):
+            raise ValueError("phi4 mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("phi4 mlp is not gate_up then down")
+        up, down = L.ffn_linears
+        if up.k != h or up.n != 2 * inter or down.k != inter or down.n != h:
+            raise ValueError("phi4 mlp is not gate_up then down")
+        if (L.core is None or L.core.kind != "gqa" or L.core.n_q != heads
+                or L.core.n_kv != hkv or L.core.qk_dim != hd or L.core.v_dim != hd
+                or L.core.window is not None or L.core.rope_dim != 0 or L.core.no_rope):
+            raise ValueError("phi4 attention is not gqa head_dim")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("phi4 attention is not q k v o")
+        q, k, v, o = L.attn_linears
+        if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
+                or o.k != heads * hd or o.n != h or q.n != h):
+            raise ValueError("phi4 q width is not hidden")
+        if L.misc_params != 2 * h:
+            raise ValueError("phi4 has no qk norm")
+    note = (
+        "0.489: Phi-4 MLP is down(silu(gate) * up). "
+        "SiLU stays act. The product is mlp_mul. "
+        "a_fmt follows act_fmt. The class does not upcast. "
+        "vec_kind stays empty. product_rule is dense_silu_product. "
+        "Block RMSNorm stays on the historical dtype. "
+        "There is no q/k RMSNorm. Full-head RoPE stays on the existing rope op. "
+        "The fused qkv projection stays the existing q / k / v / o GEMMs. "
+        "The row stays in the front 60. There is no FP8 twin."
+    )
+    layers = tuple(replace(L, product_rule=_RULE_DENSE) for L in spec.layers)
+    return replace(spec, layers=layers, notes=spec.notes + (note,))
+
+
 def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
     """Point an unbound layer at an existing product rule.
 
@@ -8848,6 +8990,10 @@ def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
         if rule != _RULE_ROUTED_PLAIN:
             raise RuntimeError("minimax m2 product rule is not routed_plain_silu_product")
         return _bill_minimax_m2_product(spec, c)
+    if spec.id == _PHI4:
+        if rule != _RULE_DENSE:
+            raise RuntimeError("phi4 product rule is not dense_silu_product")
+        return _bill_phi4_product(spec, c)
     raise RuntimeError(f"{spec.id} unbound product rule has no checker")
 
 

@@ -864,6 +864,7 @@ def test_internlm2_20b_bills_dense_product_by_existing_rule():
     moved. The product is the dense MLP width. Block RMSNorm and dynamic
     NTK RoPE stay on the historical path. No new vec_kind. glm-4.5 /
     glm-4.6 and the Qwen3.8 same-width clones stay unbound.
+    0.489 bills phi-4, so this test no longer treats that row as unbound.
     """
     from accel_dse.core.catalog import entries
     from accel_dse.core.model import (
@@ -939,7 +940,7 @@ def test_internlm2_20b_bills_dense_product_by_existing_rule():
     assert got_fp8["attn_norm"].a_fmt == "bf16" and got_fp8["ffn_norm"].a_fmt == "bf16"
     for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
                 "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
-                "phi-4", "internlm3-8b", "qwen3.5-9b"):
+                "internlm3-8b", "qwen3.5-9b"):
         other = get_model(mid)
         assert other.vec_kind != "glm5_swiglu"
         assert other.layers[0].product_rule == ""
@@ -974,9 +975,9 @@ def test_internlm2_20b_bills_dense_product_by_existing_rule():
         raise AssertionError("ungated accepted")
     except ValueError as exc:
         assert str(exc) == "dense silu product is not gate_up then down"
-    phi = get_model("phi-4")
-    skipped = _apply_unbound_product_rule(phi, _tc(load_release(phi.hf_id)["config"]))
-    assert skipped is phi
+    smaller = get_model("internlm3-8b")
+    skipped = _apply_unbound_product_rule(smaller, _tc(load_release(smaller.hf_id)["config"]))
+    assert skipped is smaller
     ready = get_model("qwen3.8-27b-ready")
     skipped_ready = _apply_unbound_product_rule(ready, _tc(load_release(ready.hf_id)["config"]))
     assert skipped_ready is ready
@@ -988,7 +989,8 @@ def test_minimax_m2_bills_routed_product_by_existing_rule():
     vec_kind stays empty. The four rows stay outside the front 60 and are
     not moved. The product is the routed expert width. Block RMSNorm,
     full-width q/k RMSNorm, and partial RoPE stay on the historical path.
-    No new vec_kind. glm-4.5 / glm-4.6 stay unbound. phi-4 is smaller.
+    No new vec_kind. glm-4.5 / glm-4.6 stay unbound.
+    0.489 bills phi-4, so this test no longer treats that row as unbound.
     """
     from accel_dse.core.catalog import entries
     from accel_dse.core.model import (
@@ -1091,7 +1093,7 @@ def test_minimax_m2_bills_routed_product_by_existing_rule():
     assert got_bf16["attn_norm"].a_fmt == "bf16" and got_bf16["ffn_norm"].a_fmt == "bf16"
     for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
                 "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
-                "phi-4", "internlm3-8b", "qwen3.5-9b", "minimax-m3", "mimo-v2.6-pro"):
+                "internlm3-8b", "qwen3.5-9b", "minimax-m3", "mimo-v2.6-pro"):
         other = get_model(mid)
         assert other.vec_kind != "glm5_swiglu"
         assert other.vec_kind != "minimax_swiglu"
@@ -1145,12 +1147,158 @@ def test_minimax_m2_bills_routed_product_by_existing_rule():
         raise AssertionError("tagged kind accepted")
     except ValueError as exc:
         assert str(exc) == "minimax m2 vec_kind is already set"
-    phi = get_model("phi-4")
-    skipped = _apply_unbound_product_rule(phi, _tc(load_release(phi.hf_id)["config"]))
-    assert skipped is phi
+    smaller = get_model("internlm3-8b")
+    skipped = _apply_unbound_product_rule(smaller, _tc(load_release(smaller.hf_id)["config"]))
+    assert skipped is smaller
     ready = get_model("qwen3.8-27b-ready")
     skipped_ready = _apply_unbound_product_rule(ready, _tc(load_release(ready.hf_id)["config"]))
     assert skipped_ready is ready
+
+
+def test_phi4_bills_dense_product_by_existing_rule():
+    """0.489: Phi-4 silu(gate)*up uses dense_silu_product.
+
+    vec_kind stays empty. The row is already in the front 60 and is not
+    moved. The product is the dense MLP width. Block RMSNorm and the
+    full-head RoPE stay on the historical path. No new vec_kind.
+    glm-4.5 / glm-4.6 stay unbound. internlm3-8b is smaller.
+    """
+    from accel_dse.core.catalog import entries
+    from accel_dse.core.model import (
+        _apply_unbound_product_rule, _bill_phi4_product, _tc, from_release, load_release)
+
+    width = 40 * 17920
+    assert width == 716_800
+    assert vr.UNBOUND_PRODUCT_RULES["phi-4"] == vr.RULE_DENSE
+    ids = [e["id"] for e in entries()]
+    assert ids.index("phi-4") == 32
+    assert "phi-4" in ids[:60]
+    assert ids[:60][-2:] == ["wan2.1-14b", "wan2.1-1.3b"]
+    assert "phi4" not in vr.FROZEN_PRODUCT_KINDS
+    ph = Phase("prefill", 1, 4096, 0)
+    one = Phase("prefill", 1, 1, 0)
+    m = get_model("phi-4")
+    assert m.hf_id == "microsoft/phi-4"
+    assert m.vec_kind == ""
+    assert all(L.vec_kind == "" and L.product_rule == vr.RULE_DENSE for L in m.layers)
+    assert m.mtp_layers == ()
+    assert m.hidden == 5120 and m.n_layers == 40 and m.max_ctx == 16384
+    assert m.layers[0].ffn.d_ff == 17920 and m.layers[0].ffn.kind == "dense"
+    assert m.layers[0].core.kind == "gqa"
+    assert m.layers[0].attn_linears[0].n == m.hidden
+    assert m.layers[0].misc_params == 2 * 5120
+    assert m.act_fmt == "bf16" and not m.quantized_release
+    assert m.params() == 14_659_507_200
+    assert m.param_check()["rel_err"] == 0.0
+    assert any(n.startswith("0.489:") for n in m.notes)
+    ops = build_rank_ops(m, 0, ph, Shard())
+    names = _ffn_names(ops)
+    assert names == ("mlp.gate_up", "act", "mlp_mul", "mlp.down")
+    by = {o.name: o for o in ops}
+    assert by["mlp_mul"].vec == float(4096 * 17920) and by["mlp_mul"].sfu == 0.0
+    assert by["mlp_mul"].a_fmt == "bf16" and by["mlp_mul"].flops == 0.0
+    assert by["act"].a_fmt == "bf16"
+    assert by["act"].vec == 4096 * 17920 * 4
+    assert by["act"].sfu == float(4096 * 17920 * 2)
+    assert by["attn_norm"].a_fmt == "bf16" and by["ffn_norm"].a_fmt == "bf16"
+    assert by["attn_norm"].sfu == 4096 and by["ffn_norm"].sfu == 4096
+    assert "q_rms" not in by and "k_rms" not in by and "gelu" not in by
+    assert by["mlp.gate_up"].k == 5120 and by["mlp.gate_up"].n == 2 * 17920
+    assert by["mlp.down"].k == 17920 and by["mlp.down"].n == 5120
+    assert by["mlp.gate_up"].w_fmt == "bf16" and by["mlp.down"].w_fmt == "bf16"
+    bare = replace(m, layers=tuple(replace(L, product_rule="") for L in m.layers))
+    bare_ops = build_rank_ops(bare, 0, ph, Shard())
+    assert _gemm_sig(ops) == _gemm_sig(bare_ops)
+    assert _ffn_names(bare_ops) == ("mlp.gate_up", "mlp.down", "act")
+    assert by["rope"].vec == {o.name: o for o in bare_ops}["rope"].vec
+    got = sum(next(o for o in build_rank_ops(m, li, one, Shard()) if o.name == "mlp_mul").vec
+              for li in range(m.n_layers))
+    assert got == width
+    flops = 0.0
+    bare_flops = 0.0
+    for li in range(m.n_layers):
+        flops += sum(o.flops for o in build_rank_ops(m, li, ph, Shard())
+                     if o.kind == "gemm" and o.name.startswith("mlp."))
+        bare_flops += sum(o.flops for o in build_rank_ops(bare, li, ph, Shard())
+                          if o.kind == "gemm" and o.name.startswith("mlp."))
+    assert flops == bare_flops == 90.194313216 * 1e12
+    head = {o.name: o for o in head_ops(m, ph, Shard())}
+    bare_head = {o.name: o for o in head_ops(bare, ph, Shard())}
+    assert head["final_norm"].a_fmt == "bf16" and head["final_norm"].sfu == 0.0
+    assert head["final_norm"].vec == bare_head["final_norm"].vec == 4096 * 5120 * 4
+    split = build_rank_ops(m, 0, ph, Shard(tp=2))
+    assert next(o for o in split if o.name == "mlp_mul").vec * 2 == 4096 * 17920
+    assert next(o for o in split if o.name == "mlp.down").k == 17920 // 2
+    narrow = build_rank_ops(m, 0, ph, Shard(tp=4))
+    assert next(o for o in narrow if o.name == "mlp_mul").vec * 4 == 4096 * 17920
+    assert next(o for o in narrow if o.name == "mlp.down").k == 17920 // 4
+    eighth = build_rank_ops(m, 0, ph, Shard(tp=8))
+    assert next(o for o in eighth if o.name == "mlp_mul").vec * 8 == 4096 * 17920
+    assert next(o for o in eighth if o.name == "mlp.down").k == 17920 // 8
+    fp8 = replace(m, act_fmt="fp8")
+    got_fp8 = {o.name: o for o in build_rank_ops(fp8, 0, ph, Shard())}
+    assert got_fp8["act"].a_fmt == "fp8" and got_fp8["mlp_mul"].a_fmt == "fp8"
+    assert got_fp8["mlp.gate_up"].a_fmt == "fp8" and got_fp8["mlp.gate_up"].w_fmt == "bf16"
+    assert got_fp8["attn_norm"].a_fmt == "bf16" and got_fp8["ffn_norm"].a_fmt == "bf16"
+    for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
+                "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
+                "internlm3-8b", "qwen3.5-9b", "minimax-m3", "mimo-v2.6-pro",
+                "llama-3.1-8b", "mistral-7b"):
+        other = get_model(mid)
+        assert other.vec_kind != "glm5_swiglu"
+        assert other.layers[0].product_rule == ""
+        assert "mlp_mul" not in _ffn_names(build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard()))
+    assert get_model("internlm2-5-20b").layers[0].product_rule == vr.RULE_DENSE
+    assert get_model("minimax-m2").layers[0].product_rule == vr.RULE_ROUTED_PLAIN
+    assert get_model("magistral-small").layers[0].product_rule == vr.RULE_DENSE
+    rel = load_release(m.hf_id)
+    cfg = _tc(rel["config"])
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "hidden_act": "gelu"})
+        raise AssertionError("gelu accepted")
+    except ValueError as exc:
+        assert str(exc) == "phi4 hidden_act is not silu"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "rope_scaling": {"type": "longrope"}})
+        raise AssertionError("longrope accepted")
+    except ValueError as exc:
+        assert str(exc) == "phi4 rope_scaling is not null"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "attention_bias": True})
+        raise AssertionError("bias accepted")
+    except ValueError as exc:
+        assert str(exc) == "phi4 attention_bias is not false"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "partial_rotary_factor": 0.5})
+        raise AssertionError("partial rotary accepted")
+    except ValueError as exc:
+        assert str(exc) == "phi4 partial_rotary_factor is set"
+    try:
+        from_release(m.id, m.hf_id, rel, {**cfg, "sliding_window": 2048})
+        raise AssertionError("sliding window accepted")
+    except ValueError as exc:
+        assert str(exc) == "phi4 sliding_window is set"
+    ungated = replace(m.layers[0], ffn=replace(m.layers[0].ffn, gated=False))
+    try:
+        build_rank_ops(replace(m, layers=(ungated,) + m.layers[1:]), 0, ph, Shard())
+        raise AssertionError("ungated accepted")
+    except ValueError as exc:
+        assert str(exc) == "dense silu product is not gate_up then down"
+    tagged = replace(m, vec_kind="carbon_llama")
+    try:
+        _bill_phi4_product(tagged, cfg)
+        raise AssertionError("tagged kind accepted")
+    except ValueError as exc:
+        assert str(exc) == "phi4 vec_kind is already set"
+    smaller = get_model("internlm3-8b")
+    skipped = _apply_unbound_product_rule(smaller, _tc(load_release(smaller.hf_id)["config"]))
+    assert skipped is smaller
+    ready = get_model("qwen3.8-27b-ready")
+    skipped_ready = _apply_unbound_product_rule(ready, _tc(load_release(ready.hf_id)["config"]))
+    assert skipped_ready is ready
+    glm = get_model("glm-4.5")
+    skipped_glm = _apply_unbound_product_rule(glm, _tc(load_release(glm.hf_id)["config"]))
+    assert skipped_glm is glm
 
 
 def test_phase_b_predicate_leaves_foreign_id_untagged():
