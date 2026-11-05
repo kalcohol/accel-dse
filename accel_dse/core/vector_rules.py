@@ -382,6 +382,10 @@ UNBOUND_PRODUCT_RULES: dict[str, str] = {
     "minimax-m2.1": RULE_ROUTED_PLAIN,
     "minimax-m2.5": RULE_ROUTED_PLAIN,
     "minimax-m2.7": RULE_ROUTED_PLAIN,
+    # 0.489: Phi-4 dense MLP. vec_kind stays empty.
+    # Phi3MLP is down(act_fn(gate) * up). 40 * 17920 = 716,800.
+    # The row is already inside the front 60 (index 32).
+    "phi-4": RULE_DENSE,
 }
 
 
