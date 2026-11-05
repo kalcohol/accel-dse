@@ -80,7 +80,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_447():
-    assert __version__ == "0.486.0"
+    assert __version__ == "0.487.0"
 
 
 def test_post_rmsnorm_qk_and_the_product():
