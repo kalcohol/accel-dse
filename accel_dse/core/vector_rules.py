@@ -397,6 +397,12 @@ UNBOUND_PRODUCT_RULES: dict[str, str] = {
     # Neither row has an FP8 twin.
     "llama-3.1-8b": RULE_DENSE,
     "mistral-7b": RULE_DENSE,
+    # 0.492: Jais-3-7B dense MLP. vec_kind stays empty.
+    # K2HorizonMLP is down(act_fn(gate) * up). 36 * 12288 = 442,368.
+    # Both rows stay outside the front 60 (indexes 304 and 309).
+    # This does not extend jais3_swiglu. That allowlist is the 32B rows.
+    "jais-3-7b": RULE_DENSE,
+    "jais-3-7b-fp8": RULE_DENSE,
 }
 
 

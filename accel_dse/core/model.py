@@ -9376,6 +9376,184 @@ def _bill_mistral_7b_product(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, notes=spec.notes + (note,))
 
 
+# 0.492: Jais-3-7B and its IFM FP8 twin. K2HorizonMLP is
+# down(act_fn(gate) * up) with hidden_act silu. num_experts is 0 and
+# mlp_only_layers lists every layer, so the MLP is dense. The 0.475
+# jais3_swiglu allowlist stays the 32B rows. These two stay outside it.
+# Both catalog rows are outside the front 60.
+_JAIS3_7B_IDS = frozenset({"jais-3-7b", "jais-3-7b-fp8"})
+_JAIS3_7B_FP8 = "jais-3-7b-fp8"
+_JAIS3_7B_GEOM = (4096, 12288, 36, 32, 8, 128)
+_JAIS3_7B_GROUPS = 4
+_JAIS3_7B_ROPE = {"rope_theta": 10000000.0, "rope_type": "default"}
+
+
+def _bill_jais3_7b_product(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.492: bill published Jais-3-7B dense silu(gate)*up.
+
+    K2HorizonMLP.forward (modeling_k2_horizon.py, transformers 5.13.0
+    auto_map) is down_proj(act_fn(gate_proj(x)) * up_proj(x)). The three
+    linears hardcode bias=False. hidden_act is silu. ACT2FN["silu"] is
+    SiLUActivation, whose forward is nn.functional.silu (x * sigmoid(x)).
+    The class does not upcast the product. SiLU stays act and moves
+    before mlp.down. The product is mlp_mul. Width is intermediate_size,
+    not the fused gate_up rows. num_experts is 0 and mlp_only_layers
+    lists all 36 layers, so every layer is this dense MLP. The width is
+    36 * 12288 = 442,368 elements per token. There is no MTP layer and
+    no vision tower. vec_kind stays empty. product_rule is the existing
+    dense_silu_product id. This does not extend jais3_swiglu and does
+    not add a vec_kind. K2HorizonRMSNorm reshapes to
+    layernorm_num_groups (4), reduces in fp32, and applies one rsqrt
+    per group. The historical attn_norm, ffn_norm, and final_norm
+    already have the same element width and one rsqrt per token, so
+    this bill does not move them. query_key_norm is false, so there is
+    no q/k RMSNorm. rope_head_dim equals head_dim, so the existing rope
+    op is unchanged. attention_gate_func is null. q width equals
+    hidden. The published attention is four linears. The IR already
+    stores q / k / v / o. Both rows stay outside the first 60 catalog
+    rows and are not moved.
+    """
+    if spec.id not in _JAIS3_7B_IDS:
+        raise ValueError("jais3 7b id is not the published row")
+    if c.get("model_type") != "k2_horizon":
+        raise ValueError("jais3 7b model_type is not k2_horizon")
+    if c.get("architectures") != ["K2HorizonForCausalLM"]:
+        raise ValueError("jais3 7b architecture is not k2_horizon")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("jais3 7b hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("jais3 7b swiglu_limit is set")
+    if "partial_rotary_factor" in c:
+        raise ValueError("jais3 7b partial_rotary_factor is set")
+    for key in ("vision_config", "text_config", "mtp_num_hidden_layers",
+                "num_nextn_predict_layers"):
+        if c.get(key):
+            raise ValueError("jais3 7b extra key is set")
+    if c.get("attention_bias") is not False:
+        raise ValueError("jais3 7b attention_bias is not false")
+    if "attention_out_bias" in c or "mlp_bias" in c or "residual_dropout" in c:
+        raise ValueError("jais3 7b bias key is set")
+    if "attention_gate_func" not in c or c.get("attention_gate_func") is not None:
+        raise ValueError("jais3 7b attention_gate_func is set")
+    if c.get("query_key_norm") is not False:
+        raise ValueError("jais3 7b query_key_norm is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("jais3 7b attention_dropout is not 0")
+    if c.get("layernorm_num_groups") != _JAIS3_7B_GROUPS:
+        raise ValueError("jais3 7b layernorm_num_groups is not 4")
+    if c.get("rope_parameters") != _JAIS3_7B_ROPE:
+        raise ValueError("jais3 7b rope_parameters is not default")
+    if c.get("rope_head_dim") != 128 or c.get("head_dim") != 128:
+        raise ValueError("jais3 7b rope_head_dim is not head_dim")
+    if "sliding_window" not in c or c.get("sliding_window") is not None:
+        raise ValueError("jais3 7b sliding_window is set")
+    if c.get("use_sliding_window") is not False:
+        raise ValueError("jais3 7b use_sliding_window is not false")
+    if c.get("dtype") != "bfloat16" or c.get("torch_dtype") not in (None, "bfloat16"):
+        raise ValueError("jais3 7b dtype is not bfloat16")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("jais3 7b tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-6:
+        raise ValueError("jais3 7b rms_norm_eps is not 1e-6")
+    if c.get("decoder_sparse_step") != 1:
+        raise ValueError("jais3 7b decoder_sparse_step is not 1")
+    if c.get("moe_gate_bias") is not False:
+        raise ValueError("jais3 7b moe_gate_bias is not false")
+    for key, expect in (
+            ("num_experts", 0), ("num_experts_per_tok", 0),
+            ("moe_intermediate_size", 0), ("num_shared_experts", 0),
+            ("mova_num_experts", 0), ("mova_num_experts_per_tok", 0)):
+        if c.get(key) != expect:
+            raise ValueError("jais3 7b moe key is set")
+    if c.get("vocab_size") != 250624:
+        raise ValueError("jais3 7b vocab_size is not 250624")
+    if (c.get("bos_token_id"), c.get("eos_token_id")) != (0, 1):
+        raise ValueError("jais3 7b token ids are not the published row")
+    if c.get("pad_token_id") is not None:
+        raise ValueError("jais3 7b pad_token_id is set")
+    if c.get("max_position_embeddings") != 524288:
+        raise ValueError("jais3 7b max_position_embeddings is not 524288")
+    if c.get("use_cache") is not True:
+        raise ValueError("jais3 7b use_cache is not true")
+    h, inter, depth, heads, hkv, hd = _JAIS3_7B_GEOM
+    if (c.get("hidden_size"), c.get("intermediate_size"), c.get("num_hidden_layers"),
+            c.get("num_attention_heads"), c.get("num_key_value_heads"),
+            c.get("head_dim")) != (h, inter, depth, heads, hkv, hd):
+        raise ValueError("jais3 7b geometry is not the published row")
+    if c.get("mlp_only_layers") != list(range(depth)):
+        raise ValueError("jais3 7b mlp_only_layers is not every layer")
+    fp8 = spec.id == _JAIS3_7B_FP8
+    qcfg = c.get("quantization_config")
+    if fp8:
+        if not isinstance(qcfg, dict) or qcfg.get("quant_method") != "compressed-tensors":
+            raise ValueError("jais3 7b quant method is not compressed-tensors")
+        if qcfg.get("ignore") != ["lm_head"]:
+            raise ValueError("jais3 7b quant ignore is not lm_head")
+        if qcfg.get("format") != "float-quantized":
+            raise ValueError("jais3 7b quant format is not float-quantized")
+        if (spec.act_fmt != "fp8" or spec.fmt("mlp").fmt != "fp8"
+                or spec.fmt("attn").fmt != "fp8" or not spec.quantized_release):
+            raise ValueError("jais3 7b activation is not fp8")
+        if spec.fmt("embed").fmt != "bf16" or spec.fmt("lm_head").fmt != "bf16":
+            raise ValueError("jais3 7b embed is not bf16")
+    else:
+        if qcfg is not None or spec.quantized_release:
+            raise ValueError("jais3 7b quantization_config is set")
+        if (spec.act_fmt != "bf16" or spec.fmt("mlp").fmt != "bf16"
+                or spec.fmt("attn").fmt != "bf16"):
+            raise ValueError("jais3 7b dtype is not bfloat16")
+    if spec.kv_fmt != "bf16":
+        raise ValueError("jais3 7b kv is not bf16")
+    if len(spec.layers) != depth or spec.n_layers != depth:
+        raise ValueError("jais3 7b depth is not num_hidden_layers")
+    if spec.mtp_layers:
+        raise ValueError("jais3 7b mtp is set")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("jais3 7b final norm is not one")
+    if spec.vec_kind or any(L.vec_kind for L in spec.layers):
+        raise ValueError("jais3 7b vec_kind is already set")
+    if spec.hidden != h:
+        raise ValueError("jais3 7b geometry is not the published row")
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "dense" or not f.gated or f.d_ff != inter or f.n_experts or f.top_k
+                or f.d_expert or f.n_shared or f.d_shared or f.latent):
+            raise ValueError("jais3 7b mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("jais3 7b mlp is not gate_up then down")
+        up, down = L.ffn_linears
+        if up.k != h or up.n != 2 * inter or down.k != inter or down.n != h:
+            raise ValueError("jais3 7b mlp is not gate_up then down")
+        if (L.core is None or L.core.kind != "gqa" or L.core.n_q != heads
+                or L.core.n_kv != hkv or L.core.qk_dim != hd or L.core.v_dim != hd
+                or L.core.window is not None or L.core.rope_dim != 0 or L.core.no_rope
+                or L.core.out_gate_fn):
+            raise ValueError("jais3 7b attention is not gqa head_dim")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("jais3 7b attention is not q k v o")
+        q, k, v, o = L.attn_linears
+        if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
+                or o.k != heads * hd or o.n != h or q.n != h):
+            raise ValueError("jais3 7b q width is not hidden")
+        if L.misc_params != 2 * h:
+            raise ValueError("jais3 7b has no qk norm")
+    note = (
+        "0.492: Jais-3-7B MLP is down(silu(gate) * up). "
+        "SiLU stays act. The product is mlp_mul. "
+        "a_fmt follows act_fmt. The class does not upcast. "
+        "vec_kind stays empty. product_rule is dense_silu_product. "
+        "This does not extend jais3_swiglu. "
+        "Group RMSNorm stays on the historical dtype. "
+        "query_key_norm is false. rope_head_dim equals head_dim. "
+        "There is no attention output gate. "
+        "The four attention linears stay the existing q / k / v / o GEMMs. "
+        "q width equals hidden. "
+        "Both rows stay outside the front 60."
+    )
+    layers = tuple(replace(L, product_rule=_RULE_DENSE) for L in spec.layers)
+    return replace(spec, layers=layers, notes=spec.notes + (note,))
+
+
 def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
     """Point an unbound layer at an existing product rule.
 
@@ -9430,6 +9608,10 @@ def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
         if rule != _RULE_DENSE:
             raise RuntimeError("mistral 7b product rule is not dense_silu_product")
         return _bill_mistral_7b_product(spec, c)
+    if spec.id in _JAIS3_7B_IDS:
+        if rule != _RULE_DENSE:
+            raise RuntimeError("jais3 7b product rule is not dense_silu_product")
+        return _bill_jais3_7b_product(spec, c)
     raise RuntimeError(f"{spec.id} unbound product rule has no checker")
 
 
