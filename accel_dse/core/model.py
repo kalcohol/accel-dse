@@ -491,6 +491,11 @@ class Layer:
     # dense_silu_product. The row is already in the front 60 and is not
     # moved. Block RMSNorm stays on the historical dtype. Full-head RoPE
     # stays on the existing rope op.
+    # 0.490 InternLM3-8B keeps vec_kind empty and sets product_rule to
+    # dense_silu_product. The row is already in the front 60 and is not
+    # moved. Block RMSNorm stays on the historical dtype. Dynamic NTK
+    # RoPE stays on the existing rope op. Catalog aliases resolve to
+    # this id.
     vec_kind: str = ""
     product_rule: str = ""
     vec_width: int = 0                       # 0 = ModelSpec.hidden. ESMFold language layers set the ESM-2 width.
@@ -8952,6 +8957,140 @@ def _bill_phi4_product(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, notes=spec.notes + (note,))
 
 
+# 0.490: InternLM3-8B. The row is already inside the front 60 (index 34).
+# InternLM3MLP.forward is down(act_fn(gate) * up). hidden_act is silu.
+# rope_scaling is dynamic NTK with factor 6. Catalog aliases resolve
+# to this id. There is one catalog row and no FP8 twin.
+_INTERNLM3_8B = "internlm3-8b"
+_INTERNLM3_8B_GEOM = (4096, 10240, 48, 32, 2, 128)
+_INTERNLM3_8B_ROPE = {"factor": 6.0, "rope_type": "dynamic"}
+
+
+def _bill_internlm3_8b_product(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.490: bill published InternLM3-8B dense silu(gate)*up.
+
+    InternLM3MLP.forward (modeling_internlm3.py, internlm/internlm3-8b-instruct)
+    is down_proj(act_fn(gate_proj(x)) * up_proj(x)). hidden_act is silu.
+    ACT2FN["silu"] is x * sigmoid(x). The three linears use config.bias,
+    which is false, and the class does not upcast the product. SiLU stays
+    act and moves before mlp.down. The product is mlp_mul. Width is
+    intermediate_size, not the fused gate_up rows. All 48 layers use this
+    MLP, so the width is 48 * 10240 = 491,520 elements per token. There
+    is no MTP layer. vec_kind stays empty. product_rule is the existing
+    dense_silu_product id. Block RMSNorm is the T5 recipe in the class
+    and stays on the historical dtype. There is no q/k RMSNorm.
+    rope_scaling is dynamic NTK (factor 6, rope_type dynamic). The
+    existing rope op is unchanged. The published attention is four
+    linears. The IR already stores q / k / v / o. The row is already
+    inside the first 60 catalog rows (index 34) and is not moved.
+    Catalog aliases resolve to this id. There is no FP8 twin.
+    """
+    if spec.id != _INTERNLM3_8B:
+        raise ValueError("internlm3 8b id is not the published row")
+    if c.get("model_type") != "internlm3":
+        raise ValueError("internlm3 8b model_type is not internlm3")
+    if c.get("architectures") != ["InternLM3ForCausalLM"]:
+        raise ValueError("internlm3 8b architecture is not internlm3")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("internlm3 8b hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("internlm3 8b swiglu_limit is set")
+    if "partial_rotary_factor" in c:
+        raise ValueError("internlm3 8b partial_rotary_factor is set")
+    for key in ("num_experts", "num_local_experts", "n_routed_experts",
+                "num_experts_per_tok", "moe_intermediate_size",
+                "num_shared_experts", "n_shared_experts",
+                "shared_expert_intermediate_size", "vision_config",
+                "text_config", "mtp_num_hidden_layers",
+                "num_nextn_predict_layers"):
+        if c.get(key):
+            raise ValueError("internlm3 8b extra key is set")
+    if c.get("bias") is not False:
+        raise ValueError("internlm3 8b bias is not false")
+    if c.get("qkv_bias") is not False:
+        raise ValueError("internlm3 8b qkv_bias is not false")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("internlm3 8b attention_dropout is not 0")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("internlm3 8b tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-5:
+        raise ValueError("internlm3 8b rms_norm_eps is not 1e-5")
+    if c.get("torch_dtype") != "bfloat16":
+        raise ValueError("internlm3 8b dtype is not bfloat16")
+    if c.get("rope_scaling") != _INTERNLM3_8B_ROPE:
+        raise ValueError("internlm3 8b rope_scaling is not dynamic")
+    if c.get("rope_theta") != 50_000_000:
+        raise ValueError("internlm3 8b rope_theta is not 50000000")
+    if c.get("max_position_embeddings") != 32768:
+        raise ValueError("internlm3 8b max_position_embeddings is not 32768")
+    if c.get("vocab_size") != 128512:
+        raise ValueError("internlm3 8b vocab_size is not 128512")
+    if (c.get("bos_token_id"), c.get("eos_token_id"), c.get("pad_token_id")) != (1, 2, 2):
+        raise ValueError("internlm3 8b token ids are not the published row")
+    if c.get("use_cache") is not True:
+        raise ValueError("internlm3 8b use_cache is not true")
+    if c.get("sliding_window") is not None or c.get("use_sliding_window") is True:
+        raise ValueError("internlm3 8b sliding_window is set")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("internlm3 8b layer_types is not full_attention")
+    h, inter, depth, heads, hkv, hd = _INTERNLM3_8B_GEOM
+    if (c.get("hidden_size"), c.get("intermediate_size"), c.get("num_hidden_layers"),
+            c.get("num_attention_heads"), c.get("num_key_value_heads"), c.get("head_dim")) != (
+            h, inter, depth, heads, hkv, hd):
+        raise ValueError("internlm3 8b geometry is not the published row")
+    qcfg = c.get("quantization_config")
+    if qcfg is not None or spec.quantized_release:
+        raise ValueError("internlm3 8b quantization_config is set")
+    if (spec.act_fmt != "bf16" or spec.fmt("mlp").fmt != "bf16"
+            or spec.fmt("attn").fmt != "bf16" or spec.kv_fmt != "bf16"):
+        raise ValueError("internlm3 8b dtype is not bfloat16")
+    if len(spec.layers) != depth or spec.n_layers != depth:
+        raise ValueError("internlm3 8b depth is not num_hidden_layers")
+    if spec.mtp_layers:
+        raise ValueError("internlm3 8b mtp is set")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("internlm3 8b final norm is not one")
+    if spec.vec_kind or any(L.vec_kind for L in spec.layers):
+        raise ValueError("internlm3 8b vec_kind is already set")
+    if spec.hidden != h:
+        raise ValueError("internlm3 8b geometry is not the published row")
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "dense" or not f.gated or f.d_ff != inter or f.n_experts or f.top_k
+                or f.d_expert or f.n_shared or f.d_shared or f.latent):
+            raise ValueError("internlm3 8b mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("internlm3 8b mlp is not gate_up then down")
+        up, down = L.ffn_linears
+        if up.k != h or up.n != 2 * inter or down.k != inter or down.n != h:
+            raise ValueError("internlm3 8b mlp is not gate_up then down")
+        if (L.core is None or L.core.kind != "gqa" or L.core.n_q != heads
+                or L.core.n_kv != hkv or L.core.qk_dim != hd or L.core.v_dim != hd
+                or L.core.window is not None or L.core.rope_dim != 0 or L.core.no_rope):
+            raise ValueError("internlm3 8b attention is not gqa head_dim")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("internlm3 8b attention is not q k v o")
+        q, k, v, o = L.attn_linears
+        if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
+                or o.k != heads * hd or o.n != h or q.n != h):
+            raise ValueError("internlm3 8b q width is not hidden")
+        if L.misc_params != 2 * h:
+            raise ValueError("internlm3 8b has no qk norm")
+    note = (
+        "0.490: InternLM3-8B MLP is down(silu(gate) * up). "
+        "SiLU stays act. The product is mlp_mul. "
+        "a_fmt follows act_fmt. The class does not upcast. "
+        "vec_kind stays empty. product_rule is dense_silu_product. "
+        "Block RMSNorm stays on the historical dtype. "
+        "There is no q/k RMSNorm. Dynamic NTK RoPE stays on the existing rope op. "
+        "The four attention linears stay the existing q / k / v / o GEMMs. "
+        "The row stays in the front 60. Catalog aliases resolve to this id. "
+        "There is no FP8 twin."
+    )
+    layers = tuple(replace(L, product_rule=_RULE_DENSE) for L in spec.layers)
+    return replace(spec, layers=layers, notes=spec.notes + (note,))
+
+
 def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
     """Point an unbound layer at an existing product rule.
 
@@ -8994,6 +9133,10 @@ def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
         if rule != _RULE_DENSE:
             raise RuntimeError("phi4 product rule is not dense_silu_product")
         return _bill_phi4_product(spec, c)
+    if spec.id == _INTERNLM3_8B:
+        if rule != _RULE_DENSE:
+            raise RuntimeError("internlm3 8b product rule is not dense_silu_product")
+        return _bill_internlm3_8b_product(spec, c)
     raise RuntimeError(f"{spec.id} unbound product rule has no checker")
 
 
