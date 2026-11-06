@@ -386,6 +386,11 @@ UNBOUND_PRODUCT_RULES: dict[str, str] = {
     # Phi3MLP is down(act_fn(gate) * up). 40 * 17920 = 716,800.
     # The row is already inside the front 60 (index 32).
     "phi-4": RULE_DENSE,
+    # 0.490: InternLM3-8B dense MLP. vec_kind stays empty.
+    # InternLM3MLP is down(act_fn(gate) * up). 48 * 10240 = 491,520.
+    # The row is already inside the front 60 (index 34).
+    # Catalog aliases resolve to this id. There is no FP8 twin.
+    "internlm3-8b": RULE_DENSE,
 }
 
 
