@@ -1252,7 +1252,7 @@ def test_phi4_bills_dense_product_by_existing_rule():
     for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
                 "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
                 "qwen3.5-9b", "minimax-m3", "mimo-v2.6-pro",
-                "jais-3-7b", "llama-3.2-3b"):
+                "llama-3.2-3b"):
         other = get_model(mid)
         assert other.vec_kind != "glm5_swiglu"
         assert other.layers[0].product_rule == ""
@@ -1406,7 +1406,7 @@ def test_internlm3_8b_bills_dense_product_by_existing_rule():
     for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
                 "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
                 "qwen3.5-9b", "minimax-m3", "mimo-v2.6-pro",
-                "jais-3-7b", "llama-3.2-3b"):
+                "llama-3.2-3b"):
         other = get_model(mid)
         assert other.vec_kind != "glm5_swiglu"
         assert other.layers[0].product_rule == ""
@@ -1483,8 +1483,8 @@ def test_llama31_8b_and_mistral7b_bill_dense_product_by_existing_rule():
     empty. Both rows are already in the front 60 and are not moved. The
     product is the dense MLP width. Block RMSNorm stays on the historical
     path. Llama3 RoPE and the Mistral sliding window stay on the existing
-    ops. No new vec_kind. glm-4.5 / glm-4.6 stay unbound. jais-3-7b is the
-    next smaller honest single-rule gap.
+    ops. No new vec_kind. glm-4.5 / glm-4.6 stay unbound. 0.492 bills
+    jais-3-7b and jais-3-7b-fp8.
     """
     from accel_dse.core.catalog import entries
     from accel_dse.core.model import (
@@ -1577,7 +1577,7 @@ def test_llama31_8b_and_mistral7b_bill_dense_product_by_existing_rule():
     for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
                 "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
                 "qwen3.5-9b", "minimax-m3", "mimo-v2.6-pro",
-                "jais-3-7b", "jais-3-7b-fp8", "llama-3.2-3b"):
+                "jais-3-3.7b", "llama-3.2-3b"):
         other = get_model(mid)
         assert other.vec_kind != "glm5_swiglu"
         assert other.layers[0].product_rule == ""
@@ -1691,6 +1691,218 @@ def test_llama31_8b_and_mistral7b_bill_dense_product_by_existing_rule():
     skipped = _apply_unbound_product_rule(smaller, _tc(load_release(smaller.hf_id)["config"]))
     assert skipped is smaller
     ready = get_model("qwen3.8-27b-ready")
+    skipped_ready = _apply_unbound_product_rule(ready, _tc(load_release(ready.hf_id)["config"]))
+    assert skipped_ready is ready
+    glm = get_model("glm-4.5")
+    skipped_glm = _apply_unbound_product_rule(glm, _tc(load_release(glm.hf_id)["config"]))
+    assert skipped_glm is glm
+
+
+def test_jais3_7b_bills_dense_product_by_existing_rule():
+    """0.492: Jais-3-7B and Jais-3-7B-FP8 silu(gate)*up use dense_silu_product.
+
+    Both rows are dense GQA, hidden_act silu, 36 * 12288. vec_kind stays
+    empty. Neither row is in the front 60. The product is the dense MLP
+    width. Group RMSNorm, full-head RoPE, and the four attention linears
+    stay on the historical path. No new vec_kind. jais3_swiglu stays the
+    32B rows. glm-4.5 / glm-4.6 stay unbound.
+    """
+    from accel_dse.core.catalog import entries
+    from accel_dse.core.model import (
+        _apply_unbound_product_rule, _bill_jais3_7b_product, _tc, from_release, load_release)
+
+    width = 36 * 12288
+    assert width == 442_368
+    assert vr.UNBOUND_PRODUCT_RULES["jais-3-7b"] == vr.RULE_DENSE
+    assert vr.UNBOUND_PRODUCT_RULES["jais-3-7b-fp8"] == vr.RULE_DENSE
+    assert "jais-3-7b" not in vr.JAIS3_IDS
+    assert "jais-3-7b-fp8" not in vr.JAIS3_IDS
+    assert "jais3_7b" not in vr.FROZEN_PRODUCT_KINDS
+    assert "jais3_swiglu" in vr.FROZEN_PRODUCT_KINDS
+    ids = [e["id"] for e in entries()]
+    assert ids.index("jais-3-7b") == 304
+    assert ids.index("jais-3-7b-fp8") == 309
+    assert "jais-3-7b" not in ids[:60] and "jais-3-7b-fp8" not in ids[:60]
+    assert ids[:60][-2:] == ["wan2.1-14b", "wan2.1-1.3b"]
+    ph = Phase("prefill", 1, 4096, 0)
+    one = Phase("prefill", 1, 1, 0)
+    flops_expect = 36 * (2 * 4096 * 4096 * (2 * 12288) + 2 * 4096 * 12288 * 4096)
+    assert flops_expect == 44.530220924928 * 1e12
+    rows = (
+        ("jais-3-7b", "inception42/Jais-3-7B", 17_998_356_480, False, "bf16", "bf16"),
+        ("jais-3-7b-fp8", "IFM/Jais-3-7B-FP8", 11_053_436_928, True, "fp8", "fp8"),
+    )
+    for mid, hf, nbytes, quant, af, mw in rows:
+        m = get_model(mid)
+        assert m.hf_id == hf
+        assert m.vec_kind == ""
+        assert all(L.vec_kind == "" and L.product_rule == vr.RULE_DENSE for L in m.layers)
+        assert m.mtp_layers == ()
+        assert m.hidden == 4096 and m.n_layers == 36 and m.max_ctx == 524288
+        assert m.layers[0].ffn.d_ff == 12288 and m.layers[0].ffn.kind == "dense"
+        assert m.layers[0].core.kind == "gqa" and m.layers[0].core.window is None
+        assert m.layers[0].core.out_gate_fn == ""
+        assert m.layers[0].attn_linears[0].n == m.hidden
+        assert m.layers[0].attn_linears[1].n == 8 * 128
+        assert m.layers[0].misc_params == 2 * 4096
+        assert m.act_fmt == af and m.quantized_release is quant
+        assert m.kv_fmt == "bf16"
+        assert m.fmt("embed").fmt == "bf16" and m.fmt("lm_head").fmt == "bf16"
+        assert m.params() == 8_999_178_240
+        assert m.param_check()["rel_err"] == 0.0
+        assert m.release_bytes == nbytes
+        assert any(n.startswith("0.492:") for n in m.notes)
+        aliased = get_model(hf)
+        assert aliased.id == mid and aliased.layers[0].product_rule == vr.RULE_DENSE
+        ops = build_rank_ops(m, 0, ph, Shard())
+        assert _ffn_names(ops) == ("mlp.gate_up", "act", "mlp_mul", "mlp.down")
+        by = {o.name: o for o in ops}
+        assert by["mlp_mul"].vec == float(4096 * 12288) and by["mlp_mul"].sfu == 0.0
+        assert by["mlp_mul"].a_fmt == af and by["mlp_mul"].flops == 0.0
+        assert by["act"].a_fmt == af
+        assert by["act"].vec == 4096 * 12288 * 4
+        assert by["act"].sfu == float(4096 * 12288 * 2)
+        assert by["attn_norm"].a_fmt == "bf16" and by["ffn_norm"].a_fmt == "bf16"
+        assert by["attn_norm"].sfu == 4096 and by["ffn_norm"].sfu == 4096
+        assert "q_rms" not in by and "k_rms" not in by and "gelu" not in by
+        assert by["mlp.gate_up"].k == 4096 and by["mlp.gate_up"].n == 2 * 12288
+        assert by["mlp.down"].k == 12288 and by["mlp.down"].n == 4096
+        assert by["mlp.gate_up"].w_fmt == mw and by["mlp.down"].w_fmt == mw
+        bare = replace(m, layers=tuple(replace(L, product_rule="") for L in m.layers))
+        bare_ops = build_rank_ops(bare, 0, ph, Shard())
+        assert _gemm_sig(ops) == _gemm_sig(bare_ops)
+        assert _ffn_names(bare_ops) == ("mlp.gate_up", "mlp.down", "act")
+        assert by["rope"].vec == {o.name: o for o in bare_ops}["rope"].vec
+        assert by["mlp.gate_up"].w_bits == {o.name: o for o in bare_ops}["mlp.gate_up"].w_bits
+        got = sum(next(o for o in build_rank_ops(m, li, one, Shard()) if o.name == "mlp_mul").vec
+                  for li in range(m.n_layers))
+        assert got == width
+        flops = 0.0
+        bare_flops = 0.0
+        for li in range(m.n_layers):
+            flops += sum(o.flops for o in build_rank_ops(m, li, ph, Shard())
+                         if o.kind == "gemm" and o.name.startswith("mlp."))
+            bare_flops += sum(o.flops for o in build_rank_ops(bare, li, ph, Shard())
+                              if o.kind == "gemm" and o.name.startswith("mlp."))
+        assert flops == bare_flops == flops_expect
+        head = {o.name: o for o in head_ops(m, ph, Shard())}
+        bare_head = {o.name: o for o in head_ops(bare, ph, Shard())}
+        assert head["final_norm"].a_fmt == "bf16" and head["final_norm"].sfu == 0.0
+        assert head["final_norm"].vec == bare_head["final_norm"].vec == 4096 * 4096 * 4
+        for tp in (2, 4, 8):
+            split = build_rank_ops(m, 0, ph, Shard(tp=tp))
+            assert next(o for o in split if o.name == "mlp_mul").vec * tp == 4096 * 12288
+            assert next(o for o in split if o.name == "mlp.down").k == 12288 // tp
+    bf = get_model("jais-3-7b")
+    fp8_req = replace(bf, act_fmt="fp8")
+    got_fp8 = {o.name: o for o in build_rank_ops(fp8_req, 0, ph, Shard())}
+    assert got_fp8["act"].a_fmt == "fp8" and got_fp8["mlp_mul"].a_fmt == "fp8"
+    assert got_fp8["mlp.gate_up"].a_fmt == "fp8" and got_fp8["mlp.gate_up"].w_fmt == "bf16"
+    assert got_fp8["attn_norm"].a_fmt == "bf16" and got_fp8["ffn_norm"].a_fmt == "bf16"
+    published = get_model("jais-3-7b-fp8")
+    pw = next(o for o in build_rank_ops(published, 0, ph, Shard()) if o.name == "mlp.gate_up")
+    assert pw.w_fmt == "fp8" and round(pw.w_bits, 6) == 8.000977
+    for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
+                "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
+                "qwen3.5-9b", "minimax-m3", "mimo-v2.6-pro",
+                "jais-3-3.7b", "jais-3-3.7b-fp8", "llama-3.2-3b"):
+        other = get_model(mid)
+        assert other.vec_kind != "glm5_swiglu"
+        assert other.layers[0].product_rule == ""
+        assert "mlp_mul" not in _ffn_names(build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard()))
+    assert get_model("jais-3-32b").vec_kind == "jais3_swiglu"
+    assert get_model("jais-3-32b").layers[0].product_rule == ""
+    assert get_model("jais-3-32b-fp8").vec_kind == "jais3_swiglu"
+    assert get_model("llama-3.1-8b").layers[0].product_rule == vr.RULE_DENSE
+    assert get_model("mistral-7b").layers[0].product_rule == vr.RULE_DENSE
+    assert get_model("internlm3-8b").layers[0].product_rule == vr.RULE_DENSE
+    rel = load_release(bf.hf_id)
+    cfg = _tc(rel["config"])
+    try:
+        from_release(bf.id, bf.hf_id, rel, {**cfg, "hidden_act": "gelu"})
+        raise AssertionError("gelu accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b hidden_act is not silu"
+    try:
+        from_release(bf.id, bf.hf_id, rel, {**cfg, "attention_gate_func": "softplus"})
+        raise AssertionError("attention gate accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b attention_gate_func is set"
+    try:
+        from_release(bf.id, bf.hf_id, rel, {**cfg, "query_key_norm": True})
+        raise AssertionError("query key norm accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b query_key_norm is not false"
+    try:
+        from_release(bf.id, bf.hf_id, rel, {**cfg, "layernorm_num_groups": 2})
+        raise AssertionError("group count accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b layernorm_num_groups is not 4"
+    try:
+        from_release(bf.id, bf.hf_id, rel, {**cfg, "num_experts": 8})
+        raise AssertionError("experts accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b moe key is set"
+    try:
+        from_release(bf.id, bf.hf_id, rel, {**cfg, "mlp_only_layers": [0]})
+        raise AssertionError("partial mlp_only accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b mlp_only_layers is not every layer"
+    try:
+        from_release(bf.id, bf.hf_id, rel, {**cfg, "rope_parameters": {"rope_theta": 10000.0, "rope_type": "default"}})
+        raise AssertionError("rope theta accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b rope_parameters is not default"
+    try:
+        from_release(bf.id, bf.hf_id, rel, {**cfg, "sliding_window": 4096})
+        raise AssertionError("sliding window accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b sliding_window is set"
+    try:
+        from_release(bf.id, bf.hf_id, rel, {**cfg, "quantization_config": {"quant_method": "fp8"}})
+        raise AssertionError("quant accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b quantization_config is set"
+    ungated = replace(bf.layers[0], ffn=replace(bf.layers[0].ffn, gated=False))
+    try:
+        build_rank_ops(replace(bf, layers=(ungated,) + bf.layers[1:]), 0, ph, Shard())
+        raise AssertionError("ungated accepted")
+    except ValueError as exc:
+        assert str(exc) == "dense silu product is not gate_up then down"
+    tagged = replace(bf, vec_kind="jais3_swiglu")
+    try:
+        _bill_jais3_7b_product(tagged, cfg)
+        raise AssertionError("tagged kind accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b vec_kind is already set"
+    fp = get_model("jais-3-7b-fp8")
+    frel = load_release(fp.hf_id)
+    fcfg = _tc(frel["config"])
+    bare_q = dict(fcfg)
+    bare_q.pop("quantization_config", None)
+    try:
+        from_release(fp.id, fp.hf_id, frel, bare_q)
+        raise AssertionError("missing quant accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b quant method is not compressed-tensors"
+    bad_q = dict(fcfg["quantization_config"])
+    bad_q["quant_method"] = "fp8"
+    try:
+        from_release(fp.id, fp.hf_id, frel, {**fcfg, "quantization_config": bad_q})
+        raise AssertionError("fp8 method accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b quant method is not compressed-tensors"
+    bad_ig = dict(fcfg["quantization_config"])
+    bad_ig["ignore"] = []
+    try:
+        from_release(fp.id, fp.hf_id, frel, {**fcfg, "quantization_config": bad_ig})
+        raise AssertionError("empty ignore accepted")
+    except ValueError as exc:
+        assert str(exc) == "jais3 7b quant ignore is not lm_head"
+    smaller = get_model("jais-3-3.7b")
+    skipped = _apply_unbound_product_rule(smaller, _tc(load_release(smaller.hf_id)["config"]))
+    assert skipped is smaller
+    ready = get_model("qwen3.5-9b")
     skipped_ready = _apply_unbound_product_rule(ready, _tc(load_release(ready.hf_id)["config"]))
     assert skipped_ready is ready
     glm = get_model("glm-4.5")

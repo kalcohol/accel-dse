@@ -111,7 +111,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_476():
-    assert __version__ == "0.491.0"
+    assert __version__ == "0.492.0"
 
 
 def test_two_rows_bill_the_text_product():
@@ -337,7 +337,9 @@ def test_other_rows_and_refuses():
         other = get_model(mid)
         assert other.vec_kind != "ernievl_swiglu"
         assert all(L.vec_kind != "ernievl_swiglu" for L in other.layers)
-        if other.layers[0].ffn.kind == "dense" and other.vec_kind == "":
+        # 0.492 bills jais-3-7b through dense_silu_product. vec_kind stays empty.
+        if (other.layers[0].ffn.kind == "dense" and other.vec_kind == ""
+                and other.layers[0].product_rule == ""):
             names = _names(build_rank_ops(other, 0, ph, Shard()))
             assert "mlp_mul" not in names
     ernie = get_model("ernie-4.5-300b-a47b-pt")
