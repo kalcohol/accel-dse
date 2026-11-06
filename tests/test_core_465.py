@@ -88,7 +88,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_465():
-    assert __version__ == "0.490.0"
+    assert __version__ == "0.491.0"
 
 
 def test_four_rows_are_front60_and_reuse_qwen3():
@@ -264,7 +264,10 @@ def test_non_vector_schedule_and_other_rows_stay_untagged():
         spoof = replace(_bare(other), id="qwen3-8b")
         _raises(lambda c=cfg, s=spoof: _tag_qwen3_vectors(s, c),
                 "qwen3 hidden is not heads times head_dim")
-    for mid in ("llama-3.1-8b",):
+    # 0.491 bills llama-3.1-8b via dense_silu_product. vec_kind stays empty.
+    assert get_model("llama-3.1-8b").vec_kind == ""
+    assert get_model("llama-3.1-8b").layers[0].product_rule == "dense_silu_product"
+    for mid in ("llama-3.2-3b",):
         other = get_model(mid)
         assert other.vec_kind == ""
         assert "mlp_mul" not in [o.name for o in build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard())]

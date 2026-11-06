@@ -9091,6 +9091,291 @@ def _bill_internlm3_8b_product(spec: ModelSpec, c: dict) -> ModelSpec:
     return replace(spec, layers=layers, notes=spec.notes + (note,))
 
 
+# 0.491: Llama-3.1-8B. The row is already inside the front 60 (index 51).
+# LlamaMLP.forward is down(act_fn(gate) * up) when pretraining_tp is 1.
+# hidden_act is silu. rope_scaling is the llama3 factor dict. There is
+# one catalog row and no FP8 twin.
+_LLAMA31_8B = "llama-3.1-8b"
+_LLAMA31_8B_GEOM = (4096, 14336, 32, 32, 8, 128)
+_LLAMA31_8B_ROPE = {
+    "factor": 8.0,
+    "high_freq_factor": 4.0,
+    "low_freq_factor": 1.0,
+    "original_max_position_embeddings": 8192,
+    "rope_type": "llama3",
+}
+
+
+def _bill_llama31_8b_product(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.491: bill published Llama-3.1-8B dense silu(gate)*up.
+
+    LlamaMLP.forward (transformers Llama, pretraining_tp == 1) is
+    down_proj(act_fn(gate_proj(x)) * up_proj(x)). hidden_act is silu.
+    ACT2FN["silu"] is x * sigmoid(x). The three linears use
+    config.mlp_bias, which is false, and the class does not upcast the
+    product. SiLU stays act and moves before mlp.down. The product is
+    mlp_mul. Width is intermediate_size, not the fused gate_up rows.
+    All 32 layers use this MLP, so the width is 32 * 14336 = 458,752
+    elements per token. There is no MTP layer. vec_kind stays empty.
+    product_rule is the existing dense_silu_product id. Block RMSNorm
+    is the T5 recipe in the class and stays on the historical dtype.
+    There is no q/k RMSNorm. rope_scaling is the llama3 factor dict.
+    attention_scaling stays 1, so the existing rope op is unchanged.
+    The published attention is four linears. The IR already stores
+    q / k / v / o. The row is already inside the first 60 catalog rows
+    (index 51) and is not moved. There is no FP8 twin.
+    """
+    if spec.id != _LLAMA31_8B:
+        raise ValueError("llama31 8b id is not the published row")
+    if c.get("model_type") != "llama":
+        raise ValueError("llama31 8b model_type is not llama")
+    if c.get("architectures") != ["LlamaForCausalLM"]:
+        raise ValueError("llama31 8b architecture is not llama")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("llama31 8b hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("llama31 8b swiglu_limit is set")
+    if "partial_rotary_factor" in c:
+        raise ValueError("llama31 8b partial_rotary_factor is set")
+    for key in ("num_experts", "num_local_experts", "n_routed_experts",
+                "num_experts_per_tok", "moe_intermediate_size",
+                "num_shared_experts", "n_shared_experts",
+                "shared_expert_intermediate_size", "vision_config",
+                "text_config", "mtp_num_hidden_layers",
+                "num_nextn_predict_layers"):
+        if c.get(key):
+            raise ValueError("llama31 8b extra key is set")
+    if c.get("attention_bias") is not False:
+        raise ValueError("llama31 8b attention_bias is not false")
+    if c.get("mlp_bias") is not False:
+        raise ValueError("llama31 8b mlp_bias is not false")
+    if c.get("pretraining_tp") != 1:
+        raise ValueError("llama31 8b pretraining_tp is not 1")
+    if c.get("attention_dropout") not in (0, 0.0):
+        raise ValueError("llama31 8b attention_dropout is not 0")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("llama31 8b tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-5:
+        raise ValueError("llama31 8b rms_norm_eps is not 1e-5")
+    if c.get("torch_dtype") != "bfloat16":
+        raise ValueError("llama31 8b dtype is not bfloat16")
+    if c.get("rope_scaling") != _LLAMA31_8B_ROPE:
+        raise ValueError("llama31 8b rope_scaling is not llama3")
+    if c.get("rope_theta") != 500_000:
+        raise ValueError("llama31 8b rope_theta is not 500000")
+    if c.get("max_position_embeddings") != 131072:
+        raise ValueError("llama31 8b max_position_embeddings is not 131072")
+    if c.get("vocab_size") != 128256:
+        raise ValueError("llama31 8b vocab_size is not 128256")
+    if (c.get("bos_token_id"), c.get("eos_token_id"), c.get("pad_token_id")) != (
+            128000, 128009, 128004):
+        raise ValueError("llama31 8b token ids are not the published row")
+    if c.get("use_cache") is not True:
+        raise ValueError("llama31 8b use_cache is not true")
+    if c.get("sliding_window") is not None or c.get("use_sliding_window") is True:
+        raise ValueError("llama31 8b sliding_window is set")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("llama31 8b layer_types is not full_attention")
+    h, inter, depth, heads, hkv, hd = _LLAMA31_8B_GEOM
+    if (c.get("hidden_size"), c.get("intermediate_size"), c.get("num_hidden_layers"),
+            c.get("num_attention_heads"), c.get("num_key_value_heads"), c.get("head_dim")) != (
+            h, inter, depth, heads, hkv, hd):
+        raise ValueError("llama31 8b geometry is not the published row")
+    qcfg = c.get("quantization_config")
+    if qcfg is not None or spec.quantized_release:
+        raise ValueError("llama31 8b quantization_config is set")
+    if (spec.act_fmt != "bf16" or spec.fmt("mlp").fmt != "bf16"
+            or spec.fmt("attn").fmt != "bf16" or spec.kv_fmt != "bf16"):
+        raise ValueError("llama31 8b dtype is not bfloat16")
+    if len(spec.layers) != depth or spec.n_layers != depth:
+        raise ValueError("llama31 8b depth is not num_hidden_layers")
+    if spec.mtp_layers:
+        raise ValueError("llama31 8b mtp is set")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("llama31 8b final norm is not one")
+    if spec.vec_kind or any(L.vec_kind for L in spec.layers):
+        raise ValueError("llama31 8b vec_kind is already set")
+    if spec.hidden != h:
+        raise ValueError("llama31 8b geometry is not the published row")
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "dense" or not f.gated or f.d_ff != inter or f.n_experts or f.top_k
+                or f.d_expert or f.n_shared or f.d_shared or f.latent):
+            raise ValueError("llama31 8b mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("llama31 8b mlp is not gate_up then down")
+        up, down = L.ffn_linears
+        if up.k != h or up.n != 2 * inter or down.k != inter or down.n != h:
+            raise ValueError("llama31 8b mlp is not gate_up then down")
+        if (L.core is None or L.core.kind != "gqa" or L.core.n_q != heads
+                or L.core.n_kv != hkv or L.core.qk_dim != hd or L.core.v_dim != hd
+                or L.core.window is not None or L.core.rope_dim != 0 or L.core.no_rope):
+            raise ValueError("llama31 8b attention is not gqa head_dim")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("llama31 8b attention is not q k v o")
+        q, k, v, o = L.attn_linears
+        if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
+                or o.k != heads * hd or o.n != h or q.n != h):
+            raise ValueError("llama31 8b q width is not hidden")
+        if L.misc_params != 2 * h:
+            raise ValueError("llama31 8b has no qk norm")
+    note = (
+        "0.491: Llama-3.1-8B MLP is down(silu(gate) * up). "
+        "SiLU stays act. The product is mlp_mul. "
+        "a_fmt follows act_fmt. The class does not upcast. "
+        "vec_kind stays empty. product_rule is dense_silu_product. "
+        "Block RMSNorm stays on the historical dtype. "
+        "There is no q/k RMSNorm. Llama3 RoPE stays on the existing rope op. "
+        "The four attention linears stay the existing q / k / v / o GEMMs. "
+        "The row stays in the front 60. There is no FP8 twin."
+    )
+    layers = tuple(replace(L, product_rule=_RULE_DENSE) for L in spec.layers)
+    return replace(spec, layers=layers, notes=spec.notes + (note,))
+
+
+# 0.491: Mistral-7B. The row is already inside the front 60 (index 57).
+# MistralMLP.forward is down(act_fn(gate) * up). hidden_act is silu.
+# sliding_window is 4096 and is already the modeled attention window.
+# There is one catalog row and no FP8 twin.
+_MISTRAL_7B = "mistral-7b"
+_MISTRAL_7B_GEOM = (4096, 14336, 32, 32, 8, 128)
+_MISTRAL_7B_WINDOW = 4096
+
+
+def _bill_mistral_7b_product(spec: ModelSpec, c: dict) -> ModelSpec:
+    """0.491: bill published Mistral-7B dense silu(gate)*up.
+
+    MistralMLP.forward (transformers 4.34 Mistral) is
+    down_proj(act_fn(gate_proj(x)) * up_proj(x)). hidden_act is silu.
+    ACT2FN["silu"] is x * sigmoid(x). The three linears hardcode
+    bias=False. attention_bias and mlp_bias are omitted. The class
+    does not upcast the product. SiLU stays act and moves before
+    mlp.down. The product is mlp_mul. Width is intermediate_size, not
+    the fused gate_up rows. All 32 layers use this MLP, so the width
+    is 32 * 14336 = 458,752 elements per token. There is no MTP layer.
+    vec_kind stays empty. product_rule is the existing
+    dense_silu_product id. Block RMSNorm is the T5 recipe in the class
+    and stays on the historical dtype. There is no q/k RMSNorm.
+    sliding_window is 4096, already the modeled attention window. That
+    window is not a second product rule. There is no rope_scaling.
+    The existing rope op is unchanged. The published attention is four
+    linears. The IR already stores q / k / v / o. The row is already
+    inside the first 60 catalog rows (index 57) and is not moved.
+    There is no FP8 twin.
+    """
+    if spec.id != _MISTRAL_7B:
+        raise ValueError("mistral 7b id is not the published row")
+    if c.get("model_type") != "mistral":
+        raise ValueError("mistral 7b model_type is not mistral")
+    if c.get("architectures") != ["MistralForCausalLM"]:
+        raise ValueError("mistral 7b architecture is not mistral")
+    if c.get("hidden_act") != "silu":
+        raise ValueError("mistral 7b hidden_act is not silu")
+    if any("swiglu" in k or "clamp" in k for k in c):
+        raise ValueError("mistral 7b swiglu_limit is set")
+    if "partial_rotary_factor" in c:
+        raise ValueError("mistral 7b partial_rotary_factor is set")
+    for key in ("num_experts", "num_local_experts", "n_routed_experts",
+                "num_experts_per_tok", "moe_intermediate_size",
+                "num_shared_experts", "n_shared_experts",
+                "shared_expert_intermediate_size", "vision_config",
+                "text_config", "mtp_num_hidden_layers",
+                "num_nextn_predict_layers"):
+        if c.get(key):
+            raise ValueError("mistral 7b extra key is set")
+    if c.get("attention_bias") not in (None, False):
+        raise ValueError("mistral 7b attention_bias is not false")
+    if c.get("mlp_bias") not in (None, False):
+        raise ValueError("mistral 7b mlp_bias is not false")
+    if c.get("pretraining_tp") is not None:
+        raise ValueError("mistral 7b pretraining_tp is set")
+    if c.get("attention_dropout") not in (None, 0, 0.0):
+        raise ValueError("mistral 7b attention_dropout is not 0")
+    if c.get("tie_word_embeddings") is not False:
+        raise ValueError("mistral 7b tie_word_embeddings is not false")
+    if c.get("rms_norm_eps") != 1e-5:
+        raise ValueError("mistral 7b rms_norm_eps is not 1e-5")
+    if c.get("torch_dtype") != "bfloat16":
+        raise ValueError("mistral 7b dtype is not bfloat16")
+    if c.get("rope_scaling") is not None:
+        raise ValueError("mistral 7b rope_scaling is set")
+    if c.get("rope_theta") != 10_000:
+        raise ValueError("mistral 7b rope_theta is not 10000")
+    if c.get("max_position_embeddings") != 32768:
+        raise ValueError("mistral 7b max_position_embeddings is not 32768")
+    if c.get("vocab_size") != 32000:
+        raise ValueError("mistral 7b vocab_size is not 32000")
+    if (c.get("bos_token_id"), c.get("eos_token_id")) != (1, 2):
+        raise ValueError("mistral 7b token ids are not the published row")
+    if c.get("pad_token_id") is not None:
+        raise ValueError("mistral 7b pad_token_id is set")
+    if c.get("use_cache") is not True:
+        raise ValueError("mistral 7b use_cache is not true")
+    if c.get("sliding_window") != _MISTRAL_7B_WINDOW:
+        raise ValueError("mistral 7b sliding_window is not 4096")
+    if any(t != "full_attention" for t in (c.get("layer_types") or [])):
+        raise ValueError("mistral 7b layer_types is not full_attention")
+    h, inter, depth, heads, hkv, hd = _MISTRAL_7B_GEOM
+    if (c.get("hidden_size"), c.get("intermediate_size"), c.get("num_hidden_layers"),
+            c.get("num_attention_heads"), c.get("num_key_value_heads")) != (
+            h, inter, depth, heads, hkv):
+        raise ValueError("mistral 7b geometry is not the published row")
+    if c.get("head_dim") not in (None, hd):
+        raise ValueError("mistral 7b head_dim is not 128")
+    qcfg = c.get("quantization_config")
+    if qcfg is not None or spec.quantized_release:
+        raise ValueError("mistral 7b quantization_config is set")
+    if (spec.act_fmt != "bf16" or spec.fmt("mlp").fmt != "bf16"
+            or spec.fmt("attn").fmt != "bf16" or spec.kv_fmt != "bf16"):
+        raise ValueError("mistral 7b dtype is not bfloat16")
+    if len(spec.layers) != depth or spec.n_layers != depth:
+        raise ValueError("mistral 7b depth is not num_hidden_layers")
+    if spec.mtp_layers:
+        raise ValueError("mistral 7b mtp is set")
+    if spec.final_norm_params not in (None, h):
+        raise ValueError("mistral 7b final norm is not one")
+    if spec.vec_kind or any(L.vec_kind for L in spec.layers):
+        raise ValueError("mistral 7b vec_kind is already set")
+    if spec.hidden != h:
+        raise ValueError("mistral 7b geometry is not the published row")
+    for L in spec.layers:
+        f = L.ffn
+        if (f.kind != "dense" or not f.gated or f.d_ff != inter or f.n_experts or f.top_k
+                or f.d_expert or f.n_shared or f.d_shared or f.latent):
+            raise ValueError("mistral 7b mlp is not dense swiglu")
+        if [ln.name for ln in L.ffn_linears] != ["gate_up", "down"]:
+            raise ValueError("mistral 7b mlp is not gate_up then down")
+        up, down = L.ffn_linears
+        if up.k != h or up.n != 2 * inter or down.k != inter or down.n != h:
+            raise ValueError("mistral 7b mlp is not gate_up then down")
+        if (L.core is None or L.core.kind != "gqa" or L.core.n_q != heads
+                or L.core.n_kv != hkv or L.core.qk_dim != hd or L.core.v_dim != hd
+                or L.core.window != _MISTRAL_7B_WINDOW or L.core.rope_dim != 0
+                or L.core.no_rope):
+            raise ValueError("mistral 7b attention is not gqa head_dim")
+        if [ln.name for ln in L.attn_linears] != ["q", "k", "v", "o"]:
+            raise ValueError("mistral 7b attention is not q k v o")
+        q, k, v, o = L.attn_linears
+        if (q.k != h or q.n != heads * hd or k.n != hkv * hd or v.n != hkv * hd
+                or o.k != heads * hd or o.n != h or q.n != h):
+            raise ValueError("mistral 7b q width is not hidden")
+        if L.misc_params != 2 * h:
+            raise ValueError("mistral 7b has no qk norm")
+    note = (
+        "0.491: Mistral-7B MLP is down(silu(gate) * up). "
+        "SiLU stays act. The product is mlp_mul. "
+        "a_fmt follows act_fmt. The class does not upcast. "
+        "vec_kind stays empty. product_rule is dense_silu_product. "
+        "Block RMSNorm stays on the historical dtype. "
+        "There is no q/k RMSNorm. "
+        "The sliding window 4096 stays the existing modeled window. "
+        "The four attention linears stay the existing q / k / v / o GEMMs. "
+        "The row stays in the front 60. There is no FP8 twin."
+    )
+    layers = tuple(replace(L, product_rule=_RULE_DENSE) for L in spec.layers)
+    return replace(spec, layers=layers, notes=spec.notes + (note,))
+
+
 def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
     """Point an unbound layer at an existing product rule.
 
@@ -9137,6 +9422,14 @@ def _apply_unbound_product_rule(spec: ModelSpec, c: dict) -> ModelSpec:
         if rule != _RULE_DENSE:
             raise RuntimeError("internlm3 8b product rule is not dense_silu_product")
         return _bill_internlm3_8b_product(spec, c)
+    if spec.id == _LLAMA31_8B:
+        if rule != _RULE_DENSE:
+            raise RuntimeError("llama31 8b product rule is not dense_silu_product")
+        return _bill_llama31_8b_product(spec, c)
+    if spec.id == _MISTRAL_7B:
+        if rule != _RULE_DENSE:
+            raise RuntimeError("mistral 7b product rule is not dense_silu_product")
+        return _bill_mistral_7b_product(spec, c)
     raise RuntimeError(f"{spec.id} unbound product rule has no checker")
 
 

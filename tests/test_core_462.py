@@ -40,13 +40,13 @@ _UNTOUCHED = (
     # 0.463 bills qwen2.5-72b with vec_kind qwen2_text.
     # 0.464 bills llama-2-70b, llama-2-7b, and yi-1.5-34b with carbon_llama.
     # 0.466 bills qwen2.5-3b and qwen2.5-1.5b with qwen2_text.
-    "llama-3.1-8b",
     # 0.465 bills qwen3-8b, its fp8 and AWQ twins, and qwen3-1.7b with qwen3.
     # 0.467 bills qwen3-32b, its fp8 and AWQ twins, qwen3-4b, and qwen3-0.6b.
     # 0.472 bills mixtral-8x22b with mixtral_swiglu.
     # 0.482 bills magistral-small with product_rule dense_silu_product.
-    # vec_kind stays empty.
-    "mistral-7b",
+    # 0.491 bills llama-3.1-8b and mistral-7b via dense_silu_product.
+    # vec_kind stays empty. The shared-tail exemplar is llama-3.2-3b.
+    "llama-3.2-3b",
 )
 
 
@@ -112,7 +112,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_462():
-    assert __version__ == "0.490.0"
+    assert __version__ == "0.491.0"
 
 
 def test_mistral_large_is_the_front60_row_and_reuses_mistral_small():

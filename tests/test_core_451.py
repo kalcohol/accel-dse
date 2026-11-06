@@ -93,7 +93,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_451():
-    assert __version__ == "0.490.0"
+    assert __version__ == "0.491.0"
 
 
 def test_mistral_small_bills_fp32_rmsnorm_and_the_product():
@@ -280,7 +280,9 @@ def test_non_vector_schedule_and_other_models():
     assert get_model("exaone-4.0-32b").vec_kind == "exaone4"
     assert get_model("qwen3-vl-32b").vec_kind == "qwen3vl_text"
     assert get_model("carbon-x").vec_kind == "carbon_qwen"
-    plain = get_model("mistral-7b")
+    # 0.491 bills mistral-7b via dense_silu_product. vec_kind stays empty.
+    # The shared-tail exemplar is llama-3.2-3b.
+    plain = get_model("llama-3.2-3b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]

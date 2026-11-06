@@ -379,7 +379,11 @@ def test_magistral_small_bills_dense_product_by_existing_rule():
     assert small.vec_kind == "mistral_small" and small.layers[0].product_rule == ""
     large = get_model("mistral-large")
     assert large.vec_kind == "mistral_small" and large.layers[0].product_rule == ""
-    plain = get_model("mistral-7b")
+    # 0.491 bills mistral-7b via dense_silu_product. vec_kind stays empty.
+    # The shared-tail exemplar is llama-3.2-3b.
+    billed7 = get_model("mistral-7b")
+    assert billed7.vec_kind == "" and billed7.layers[0].product_rule == vr.RULE_DENSE
+    plain = get_model("llama-3.2-3b")
     assert plain.vec_kind == "" and plain.layers[0].product_rule == ""
     assert "mlp_mul" not in [o.name for o in build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())]
     other = _apply_unbound_product_rule(plain, _tc(load_release(plain.hf_id)["config"]))
@@ -976,7 +980,8 @@ def test_internlm2_20b_bills_dense_product_by_existing_rule():
         raise AssertionError("ungated accepted")
     except ValueError as exc:
         assert str(exc) == "dense silu product is not gate_up then down"
-    smaller = get_model("llama-3.1-8b")
+    # 0.491 bills llama-3.1-8b and mistral-7b via dense_silu_product.
+    smaller = get_model("llama-3.2-3b")
     skipped = _apply_unbound_product_rule(smaller, _tc(load_release(smaller.hf_id)["config"]))
     assert skipped is smaller
     ready = get_model("qwen3.8-27b-ready")
@@ -1149,7 +1154,8 @@ def test_minimax_m2_bills_routed_product_by_existing_rule():
         raise AssertionError("tagged kind accepted")
     except ValueError as exc:
         assert str(exc) == "minimax m2 vec_kind is already set"
-    smaller = get_model("llama-3.1-8b")
+    # 0.491 bills llama-3.1-8b and mistral-7b via dense_silu_product.
+    smaller = get_model("llama-3.2-3b")
     skipped = _apply_unbound_product_rule(smaller, _tc(load_release(smaller.hf_id)["config"]))
     assert skipped is smaller
     ready = get_model("qwen3.8-27b-ready")
@@ -1164,7 +1170,7 @@ def test_phi4_bills_dense_product_by_existing_rule():
     moved. The product is the dense MLP width. Block RMSNorm and the
     full-head RoPE stay on the historical path. No new vec_kind.
     glm-4.5 / glm-4.6 stay unbound. 0.490 bills internlm3-8b.
-    llama-3.1-8b and mistral-7b are smaller.
+    0.491 bills llama-3.1-8b and mistral-7b.
     """
     from accel_dse.core.catalog import entries
     from accel_dse.core.model import (
@@ -1246,7 +1252,7 @@ def test_phi4_bills_dense_product_by_existing_rule():
     for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
                 "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
                 "qwen3.5-9b", "minimax-m3", "mimo-v2.6-pro",
-                "llama-3.1-8b", "mistral-7b"):
+                "jais-3-7b", "llama-3.2-3b"):
         other = get_model(mid)
         assert other.vec_kind != "glm5_swiglu"
         assert other.layers[0].product_rule == ""
@@ -1293,7 +1299,8 @@ def test_phi4_bills_dense_product_by_existing_rule():
         raise AssertionError("tagged kind accepted")
     except ValueError as exc:
         assert str(exc) == "phi4 vec_kind is already set"
-    smaller = get_model("llama-3.1-8b")
+    # 0.491 bills llama-3.1-8b and mistral-7b via dense_silu_product.
+    smaller = get_model("llama-3.2-3b")
     skipped = _apply_unbound_product_rule(smaller, _tc(load_release(smaller.hf_id)["config"]))
     assert skipped is smaller
     ready = get_model("qwen3.8-27b-ready")
@@ -1311,7 +1318,7 @@ def test_internlm3_8b_bills_dense_product_by_existing_rule():
     moved. Catalog aliases resolve to this id. The product is the dense
     MLP width. Block RMSNorm and dynamic NTK RoPE stay on the historical
     path. No new vec_kind. glm-4.5 / glm-4.6 stay unbound.
-    llama-3.1-8b and mistral-7b are smaller.
+    0.491 bills llama-3.1-8b and mistral-7b.
     """
     from accel_dse.core.catalog import entries
     from accel_dse.core.model import (
@@ -1399,7 +1406,7 @@ def test_internlm3_8b_bills_dense_product_by_existing_rule():
     for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
                 "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
                 "qwen3.5-9b", "minimax-m3", "mimo-v2.6-pro",
-                "llama-3.1-8b", "mistral-7b"):
+                "jais-3-7b", "llama-3.2-3b"):
         other = get_model(mid)
         assert other.vec_kind != "glm5_swiglu"
         assert other.layers[0].product_rule == ""
@@ -1457,7 +1464,230 @@ def test_internlm3_8b_bills_dense_product_by_existing_rule():
         raise AssertionError("tagged kind accepted")
     except ValueError as exc:
         assert str(exc) == "internlm3 8b vec_kind is already set"
-    smaller = get_model("llama-3.1-8b")
+    # 0.491 bills llama-3.1-8b and mistral-7b via dense_silu_product.
+    smaller = get_model("llama-3.2-3b")
+    skipped = _apply_unbound_product_rule(smaller, _tc(load_release(smaller.hf_id)["config"]))
+    assert skipped is smaller
+    ready = get_model("qwen3.8-27b-ready")
+    skipped_ready = _apply_unbound_product_rule(ready, _tc(load_release(ready.hf_id)["config"]))
+    assert skipped_ready is ready
+    glm = get_model("glm-4.5")
+    skipped_glm = _apply_unbound_product_rule(glm, _tc(load_release(glm.hf_id)["config"]))
+    assert skipped_glm is glm
+
+
+def test_llama31_8b_and_mistral7b_bill_dense_product_by_existing_rule():
+    """0.491: Llama-3.1-8B and Mistral-7B silu(gate)*up use dense_silu_product.
+
+    Both rows are dense GQA, hidden_act silu, 32 * 14336. vec_kind stays
+    empty. Both rows are already in the front 60 and are not moved. The
+    product is the dense MLP width. Block RMSNorm stays on the historical
+    path. Llama3 RoPE and the Mistral sliding window stay on the existing
+    ops. No new vec_kind. glm-4.5 / glm-4.6 stay unbound. jais-3-7b is the
+    next smaller honest single-rule gap.
+    """
+    from accel_dse.core.catalog import entries
+    from accel_dse.core.model import (
+        _apply_unbound_product_rule, _bill_llama31_8b_product, _bill_mistral_7b_product,
+        _tc, from_release, load_release)
+
+    width = 32 * 14336
+    assert width == 458_752
+    assert vr.UNBOUND_PRODUCT_RULES["llama-3.1-8b"] == vr.RULE_DENSE
+    assert vr.UNBOUND_PRODUCT_RULES["mistral-7b"] == vr.RULE_DENSE
+    assert "llama31_swiglu" not in vr.FROZEN_PRODUCT_KINDS
+    assert "mistral7_swiglu" not in vr.FROZEN_PRODUCT_KINDS
+    ids = [e["id"] for e in entries()]
+    assert ids.index("llama-3.1-8b") == 51
+    assert ids.index("mistral-7b") == 57
+    assert "llama-3.1-8b" in ids[:60] and "mistral-7b" in ids[:60]
+    assert ids[:60][-2:] == ["wan2.1-14b", "wan2.1-1.3b"]
+    ph = Phase("prefill", 1, 4096, 0)
+    one = Phase("prefill", 1, 1, 0)
+    flops_expect = 32 * (2 * 4096 * 4096 * (2 * 14336) + 2 * 4096 * 14336 * 4096)
+    assert flops_expect == 46.179488366592 * 1e12
+    rows = (
+        ("llama-3.1-8b", "unsloth/Llama-3.1-8B-Instruct", 8_030_261_248, 16_060_522_496, None, 131072),
+        ("mistral-7b", "mistralai/Mistral-7B-v0.1", 7_241_732_096, 14_483_464_192, 4096, 32768),
+    )
+    for mid, hf, params, nbytes, window, ctx in rows:
+        m = get_model(mid)
+        assert m.hf_id == hf
+        assert m.vec_kind == ""
+        assert all(L.vec_kind == "" and L.product_rule == vr.RULE_DENSE for L in m.layers)
+        assert m.mtp_layers == ()
+        assert m.hidden == 4096 and m.n_layers == 32 and m.max_ctx == ctx
+        assert m.layers[0].ffn.d_ff == 14336 and m.layers[0].ffn.kind == "dense"
+        assert m.layers[0].core.kind == "gqa" and m.layers[0].core.window == window
+        assert all(L.core.window == window for L in m.layers)
+        assert m.layers[0].attn_linears[0].n == m.hidden
+        assert m.layers[0].attn_linears[1].n == 8 * 128
+        assert m.layers[0].misc_params == 2 * 4096
+        assert m.act_fmt == "bf16" and not m.quantized_release
+        assert m.params() == params
+        assert m.param_check()["rel_err"] == 0.0
+        assert m.release_bytes == nbytes
+        assert any(n.startswith("0.491:") for n in m.notes)
+        aliased = get_model(hf)
+        assert aliased.id == mid and aliased.layers[0].product_rule == vr.RULE_DENSE
+        ops = build_rank_ops(m, 0, ph, Shard())
+        assert _ffn_names(ops) == ("mlp.gate_up", "act", "mlp_mul", "mlp.down")
+        by = {o.name: o for o in ops}
+        assert by["mlp_mul"].vec == float(4096 * 14336) and by["mlp_mul"].sfu == 0.0
+        assert by["mlp_mul"].a_fmt == "bf16" and by["mlp_mul"].flops == 0.0
+        assert by["act"].a_fmt == "bf16"
+        assert by["act"].vec == 4096 * 14336 * 4
+        assert by["act"].sfu == float(4096 * 14336 * 2)
+        assert by["attn_norm"].a_fmt == "bf16" and by["ffn_norm"].a_fmt == "bf16"
+        assert by["attn_norm"].sfu == 4096 and by["ffn_norm"].sfu == 4096
+        assert "q_rms" not in by and "k_rms" not in by and "gelu" not in by
+        assert by["mlp.gate_up"].k == 4096 and by["mlp.gate_up"].n == 2 * 14336
+        assert by["mlp.down"].k == 14336 and by["mlp.down"].n == 4096
+        assert by["mlp.gate_up"].w_fmt == "bf16" and by["mlp.down"].w_fmt == "bf16"
+        bare = replace(m, layers=tuple(replace(L, product_rule="") for L in m.layers))
+        bare_ops = build_rank_ops(bare, 0, ph, Shard())
+        assert _gemm_sig(ops) == _gemm_sig(bare_ops)
+        assert _ffn_names(bare_ops) == ("mlp.gate_up", "mlp.down", "act")
+        assert by["rope"].vec == {o.name: o for o in bare_ops}["rope"].vec
+        got = sum(next(o for o in build_rank_ops(m, li, one, Shard()) if o.name == "mlp_mul").vec
+                  for li in range(m.n_layers))
+        assert got == width
+        flops = 0.0
+        bare_flops = 0.0
+        for li in range(m.n_layers):
+            flops += sum(o.flops for o in build_rank_ops(m, li, ph, Shard())
+                         if o.kind == "gemm" and o.name.startswith("mlp."))
+            bare_flops += sum(o.flops for o in build_rank_ops(bare, li, ph, Shard())
+                              if o.kind == "gemm" and o.name.startswith("mlp."))
+        assert flops == bare_flops == flops_expect
+        head = {o.name: o for o in head_ops(m, ph, Shard())}
+        bare_head = {o.name: o for o in head_ops(bare, ph, Shard())}
+        assert head["final_norm"].a_fmt == "bf16" and head["final_norm"].sfu == 0.0
+        assert head["final_norm"].vec == bare_head["final_norm"].vec == 4096 * 4096 * 4
+        for tp in (2, 4, 8):
+            split = build_rank_ops(m, 0, ph, Shard(tp=tp))
+            assert next(o for o in split if o.name == "mlp_mul").vec * tp == 4096 * 14336
+            assert next(o for o in split if o.name == "mlp.down").k == 14336 // tp
+        fp8 = replace(m, act_fmt="fp8")
+        got_fp8 = {o.name: o for o in build_rank_ops(fp8, 0, ph, Shard())}
+        assert got_fp8["act"].a_fmt == "fp8" and got_fp8["mlp_mul"].a_fmt == "fp8"
+        assert got_fp8["mlp.gate_up"].a_fmt == "fp8" and got_fp8["mlp.gate_up"].w_fmt == "bf16"
+        assert got_fp8["attn_norm"].a_fmt == "bf16" and got_fp8["ffn_norm"].a_fmt == "bf16"
+    assert any("4096" in n and not n.startswith("0.491:") for n in get_model("mistral-7b").notes)
+    for mid in ("glm-4.5", "glm-4.6", "qwen3-30b-a3b", "qwen3-vl-30b-a3b",
+                "qwen3.8-27b-ready", "startlux-decision-v1-27b", "pplx-decider-v1-27b",
+                "qwen3.5-9b", "minimax-m3", "mimo-v2.6-pro",
+                "jais-3-7b", "jais-3-7b-fp8", "llama-3.2-3b"):
+        other = get_model(mid)
+        assert other.vec_kind != "glm5_swiglu"
+        assert other.layers[0].product_rule == ""
+        assert "mlp_mul" not in _ffn_names(build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard()))
+    assert get_model("internlm3-8b").layers[0].product_rule == vr.RULE_DENSE
+    assert get_model("phi-4").layers[0].product_rule == vr.RULE_DENSE
+    assert get_model("internlm2-5-20b").layers[0].product_rule == vr.RULE_DENSE
+    assert get_model("minimax-m2").layers[0].product_rule == vr.RULE_ROUTED_PLAIN
+    assert get_model("magistral-small").layers[0].product_rule == vr.RULE_DENSE
+    llama = get_model("llama-3.1-8b")
+    rel = load_release(llama.hf_id)
+    cfg = _tc(rel["config"])
+    try:
+        from_release(llama.id, llama.hf_id, rel, {**cfg, "hidden_act": "gelu"})
+        raise AssertionError("gelu accepted")
+    except ValueError as exc:
+        assert str(exc) == "llama31 8b hidden_act is not silu"
+    try:
+        from_release(llama.id, llama.hf_id, rel, {**cfg, "rope_scaling": None})
+        raise AssertionError("null rope accepted")
+    except ValueError as exc:
+        assert str(exc) == "llama31 8b rope_scaling is not llama3"
+    try:
+        from_release(llama.id, llama.hf_id, rel, {**cfg, "attention_bias": True})
+        raise AssertionError("attention bias accepted")
+    except ValueError as exc:
+        assert str(exc) == "llama31 8b attention_bias is not false"
+    try:
+        from_release(llama.id, llama.hf_id, rel, {**cfg, "mlp_bias": True})
+        raise AssertionError("mlp bias accepted")
+    except ValueError as exc:
+        assert str(exc) == "llama31 8b mlp_bias is not false"
+    try:
+        from_release(llama.id, llama.hf_id, rel, {**cfg, "attention_dropout": 0.1})
+        raise AssertionError("dropout accepted")
+    except ValueError as exc:
+        assert str(exc) == "llama31 8b attention_dropout is not 0"
+    try:
+        from_release(llama.id, llama.hf_id, rel, {**cfg, "partial_rotary_factor": 0.5})
+        raise AssertionError("partial rotary accepted")
+    except ValueError as exc:
+        assert str(exc) == "llama31 8b partial_rotary_factor is set"
+    try:
+        from_release(llama.id, llama.hf_id, rel, {**cfg, "sliding_window": 4096})
+        raise AssertionError("sliding window accepted")
+    except ValueError as exc:
+        assert str(exc) == "llama31 8b sliding_window is set"
+    try:
+        from_release(llama.id, llama.hf_id, rel, {**cfg, "pretraining_tp": 2})
+        raise AssertionError("pretraining_tp accepted")
+    except ValueError as exc:
+        assert str(exc) == "llama31 8b pretraining_tp is not 1"
+    ungated = replace(llama.layers[0], ffn=replace(llama.layers[0].ffn, gated=False))
+    try:
+        build_rank_ops(replace(llama, layers=(ungated,) + llama.layers[1:]), 0, ph, Shard())
+        raise AssertionError("ungated accepted")
+    except ValueError as exc:
+        assert str(exc) == "dense silu product is not gate_up then down"
+    tagged = replace(llama, vec_kind="carbon_llama")
+    try:
+        _bill_llama31_8b_product(tagged, cfg)
+        raise AssertionError("tagged kind accepted")
+    except ValueError as exc:
+        assert str(exc) == "llama31 8b vec_kind is already set"
+    mistral = get_model("mistral-7b")
+    mrel = load_release(mistral.hf_id)
+    mcfg = _tc(mrel["config"])
+    try:
+        from_release(mistral.id, mistral.hf_id, mrel, {**mcfg, "hidden_act": "gelu"})
+        raise AssertionError("gelu accepted")
+    except ValueError as exc:
+        assert str(exc) == "mistral 7b hidden_act is not silu"
+    try:
+        from_release(mistral.id, mistral.hf_id, mrel, {**mcfg, "rope_scaling": {"rope_type": "llama3"}})
+        raise AssertionError("rope accepted")
+    except ValueError as exc:
+        assert str(exc) == "mistral 7b rope_scaling is set"
+    try:
+        from_release(mistral.id, mistral.hf_id, mrel, {**mcfg, "attention_bias": True})
+        raise AssertionError("attention bias accepted")
+    except ValueError as exc:
+        assert str(exc) == "mistral 7b attention_bias is not false"
+    try:
+        from_release(mistral.id, mistral.hf_id, mrel, {**mcfg, "mlp_bias": True})
+        raise AssertionError("mlp bias accepted")
+    except ValueError as exc:
+        assert str(exc) == "mistral 7b mlp_bias is not false"
+    try:
+        from_release(mistral.id, mistral.hf_id, mrel, {**mcfg, "sliding_window": 2048})
+        raise AssertionError("sliding window accepted")
+    except ValueError as exc:
+        assert str(exc) == "mistral 7b sliding_window is not 4096"
+    try:
+        from_release(mistral.id, mistral.hf_id, mrel, {**mcfg, "partial_rotary_factor": 0.5})
+        raise AssertionError("partial rotary accepted")
+    except ValueError as exc:
+        assert str(exc) == "mistral 7b partial_rotary_factor is set"
+    m_ungated = replace(mistral.layers[0], ffn=replace(mistral.layers[0].ffn, gated=False))
+    try:
+        build_rank_ops(replace(mistral, layers=(m_ungated,) + mistral.layers[1:]), 0, ph, Shard())
+        raise AssertionError("ungated accepted")
+    except ValueError as exc:
+        assert str(exc) == "dense silu product is not gate_up then down"
+    m_tagged = replace(mistral, vec_kind="mistral_small")
+    try:
+        _bill_mistral_7b_product(m_tagged, mcfg)
+        raise AssertionError("tagged kind accepted")
+    except ValueError as exc:
+        assert str(exc) == "mistral 7b vec_kind is already set"
+    smaller = get_model("llama-3.2-3b")
     skipped = _apply_unbound_product_rule(smaller, _tc(load_release(smaller.hf_id)["config"]))
     assert skipped is smaller
     ready = get_model("qwen3.8-27b-ready")

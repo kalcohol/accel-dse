@@ -107,7 +107,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_467():
-    assert __version__ == "0.490.0"
+    assert __version__ == "0.491.0"
 
 
 def test_five_rows_are_front60_and_reuse_qwen3():
@@ -328,7 +328,10 @@ def test_non_vector_schedule_and_other_rows_stay_untagged():
         assert _tag_qwen3_467_vectors(bare, c).vec_kind == "qwen3"
     llama = get_model("llama-3.1-8b")
     assert llama.vec_kind == ""
-    assert "mlp_mul" not in [o.name for o in build_rank_ops(llama, 0, Phase("prefill", 1, 16, 0), Shard())]
+    assert llama.layers[0].product_rule == "dense_silu_product"
+    # 0.491 bills llama-3.1-8b. The shared-tail exemplar is llama-3.2-3b.
+    tail = get_model("llama-3.2-3b")
+    assert "mlp_mul" not in [o.name for o in build_rank_ops(tail, 0, Phase("prefill", 1, 16, 0), Shard())]
     spoof = replace(_bare(llama), id="qwen3-32b")
     _raises(lambda: _tag_qwen3_467_vectors(spoof, _tc(load_release(llama.hf_id)["config"])),
             "qwen3 head width model_type is not qwen3")

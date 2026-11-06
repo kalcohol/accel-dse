@@ -122,7 +122,7 @@ def _geom(row):
 
 
 def test_version_is_452():
-    assert __version__ == "0.490.0"
+    assert __version__ == "0.491.0"
 
 
 def test_qwen2_text_bills_fp32_rmsnorm_and_the_product():
@@ -328,8 +328,9 @@ def test_non_vector_schedule_and_other_models():
     assert billed.vec_kind == "qwen2_text"
     assert any(n.startswith("0.466") for n in billed.notes)
     assert not any(n.startswith("0.452") or n.startswith("0.455") for n in billed.notes)
-    # 0.467 bills qwen3-32b. The shared-tail exemplar is llama-3.1-8b.
-    plain = get_model("llama-3.1-8b")
+    # 0.467 bills qwen3-32b. 0.491 bills llama-3.1-8b and mistral-7b.
+    # The shared-tail exemplar is llama-3.2-3b.
+    plain = get_model("llama-3.2-3b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]
