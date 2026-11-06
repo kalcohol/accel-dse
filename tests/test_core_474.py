@@ -97,7 +97,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_474():
-    assert __version__ == "0.490.0"
+    assert __version__ == "0.491.0"
 
 
 def test_three_rows_bill_the_dense_product():
@@ -240,7 +240,8 @@ def test_other_rows_and_refuses():
         assert other.vec_kind != "olmo3_swiglu"
         assert all(L.vec_kind != "olmo3_swiglu" for L in other.layers)
         names = _names(build_rank_ops(other, 0, ph, Shard()))
-        if other.layers[0].ffn.kind == "dense" and other.vec_kind == "":
+        if (other.layers[0].ffn.kind == "dense" and other.vec_kind == ""
+                and other.layers[0].product_rule == ""):
             assert "mlp_mul" not in names
     wide = get_model("olmo-3-32b-think")
     c_ok = _tc(load_release(_ROWS["olmo-3-32b-think"])["config"])

@@ -84,7 +84,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_449():
-    assert __version__ == "0.490.0"
+    assert __version__ == "0.491.0"
 
 
 def test_qwen3_14b_bills_fp32_rmsnorm_qk_and_the_product():
@@ -252,8 +252,9 @@ def test_non_vector_schedule_and_other_models():
     assert get_model("exaone-4.0-32b").vec_kind == "exaone4"
     assert get_model("qwen3-vl-32b").vec_kind == "qwen3vl_text"
     assert get_model("carbon-x").vec_kind == "carbon_qwen"
-    # 0.467 bills qwen3-32b. The shared-tail exemplar is llama-3.1-8b.
-    plain = get_model("llama-3.1-8b")
+    # 0.467 bills qwen3-32b. 0.491 bills llama-3.1-8b and mistral-7b.
+    # The shared-tail exemplar is llama-3.2-3b.
+    plain = get_model("llama-3.2-3b")
     pops = build_rank_ops(plain, 0, Phase("prefill", 1, 16, 0), Shard())
     pby = _by(pops)
     assert "mlp_mul" not in [o.name for o in pops] and "q_rms" not in [o.name for o in pops]

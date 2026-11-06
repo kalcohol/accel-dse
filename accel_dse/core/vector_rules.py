@@ -391,6 +391,12 @@ UNBOUND_PRODUCT_RULES: dict[str, str] = {
     # The row is already inside the front 60 (index 34).
     # Catalog aliases resolve to this id. There is no FP8 twin.
     "internlm3-8b": RULE_DENSE,
+    # 0.491: Llama-3.1-8B and Mistral-7B dense MLP. vec_kind stays empty.
+    # LlamaMLP / MistralMLP are down(act_fn(gate) * up). 32 * 14336 = 458,752.
+    # Both rows are already inside the front 60 (indexes 51 and 57).
+    # Neither row has an FP8 twin.
+    "llama-3.1-8b": RULE_DENSE,
+    "mistral-7b": RULE_DENSE,
 }
 
 

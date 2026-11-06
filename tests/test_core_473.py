@@ -92,7 +92,7 @@ def _sched(model, ph, shard):
 
 
 def test_version_is_473():
-    assert __version__ == "0.490.0"
+    assert __version__ == "0.491.0"
 
 
 def test_one_row_bills_the_dense_product():
@@ -221,7 +221,8 @@ def test_other_rows_and_refuses():
         assert other.vec_kind != "seed_swiglu"
         assert all(L.vec_kind != "seed_swiglu" for L in other.layers)
         names = _names(build_rank_ops(other, 0, ph, Shard()))
-        if other.layers[0].ffn.kind == "dense" and other.vec_kind == "":
+        if (other.layers[0].ffn.kind == "dense" and other.vec_kind == ""
+                and other.layers[0].product_rule == ""):
             assert "mlp_mul" not in names
     wide = get_model(_MID)
     c_ok = _tc(load_release(_HF)["config"])

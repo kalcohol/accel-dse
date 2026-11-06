@@ -119,7 +119,7 @@ def _ffn(depth: int, h: int, inner: int, t: int = 4096) -> int:
 
 
 def test_version_is_470():
-    assert __version__ == "0.490.0"
+    assert __version__ == "0.491.0"
 
 
 def test_row_is_front60_and_reuses_carbon_llama():
@@ -305,11 +305,22 @@ def test_non_vector_schedule_and_smaller_llama_stay_untagged():
         assert other.vec_kind == "", mid
         assert all(L.vec_kind == "" for L in other.layers), mid
         pops = build_rank_ops(other, 0, Phase("prefill", 1, 16, 0), Shard())
-        assert "mlp_mul" not in [o.name for o in pops], mid
+        # 0.491 bills llama-3.1-8b via dense_silu_product. vec_kind stays empty.
+        if mid == "llama-3.1-8b":
+            assert other.layers[0].product_rule == "dense_silu_product"
+            assert "mlp_mul" in [o.name for o in pops]
+        else:
+            assert other.layers[0].product_rule == ""
+            assert "mlp_mul" not in [o.name for o in pops], mid
         assert load_release(other.hf_id)["config"].get("rope_scaling") is not None
-    swapped = from_release("llama-3.1-8b", _HF, load_release(_HF))
-    assert swapped.vec_kind == ""
-    assert _tag_llama3_vectors(swapped, c).vec_kind == ""
+    try:
+        from_release("llama-3.1-8b", _HF, load_release(_HF))
+        raise AssertionError("70b config accepted")
+    except ValueError as exc:
+        assert "llama31 8b" in str(exc)
+    small = get_model("llama-3.1-8b")
+    assert small.vec_kind == ""
+    assert _tag_llama3_vectors(small, c).vec_kind == ""
     llama2 = get_model("llama-2-70b")
     assert llama2.vec_kind == "carbon_llama"
     assert any("0.464" in n for n in llama2.notes)
